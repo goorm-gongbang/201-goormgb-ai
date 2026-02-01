@@ -8,7 +8,7 @@ from typing import Any
 
 from traffic_master_ai.attack.a0_poc.events import SemanticEvent
 from traffic_master_ai.attack.a0_poc.snapshots import PolicySnapshot, StateSnapshot
-from traffic_master_ai.attack.a0_poc.states import State
+from traffic_master_ai.attack.a0_poc.states import State, TERMINAL_REASONS
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,7 +106,7 @@ class ExecutionResult:
         """터미널 상태가 SX인지 검증."""
         if not self.terminal_state.is_terminal():
             raise ValueError("terminal_state는 SX_TERMINAL이어야 함")
-        if self.terminal_reason not in {"done", "abort", "cooldown", "reset"}:
+        if self.terminal_reason not in TERMINAL_REASONS:
             raise ValueError(f"유효하지 않은 terminal_reason: {self.terminal_reason}")
 
     def is_success(self) -> bool:

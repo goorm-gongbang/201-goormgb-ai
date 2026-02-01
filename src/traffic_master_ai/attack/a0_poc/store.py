@@ -209,7 +209,7 @@ class StateStore:
     
     def copy(self) -> "StateStore":
         """
-        이 StateStore의 깊은 복사본을 생성합니다.
+        이 StateStore와 동일한 상태를 가진 새 인스턴스를 생성합니다.
         
         체크포인트 생성이나 테스트에 유용합니다.
         """
