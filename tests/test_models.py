@@ -9,6 +9,7 @@ from traffic_master_ai.attack.a0_poc import (
     State,
     StateSnapshot,
     TERMINAL_REASONS,
+    TerminalReason,
     TransitionResult,
 )
 
@@ -162,11 +163,11 @@ class TestTransitionResult:
         """Create terminal transition result."""
         result = TransitionResult(
             next_state=State.SX_TERMINAL,
-            terminal_reason="done",
+            terminal_reason=TerminalReason.DONE,
             notes=["Payment complete"],
         )
         assert result.is_terminal()
-        assert result.terminal_reason == "done"
+        assert result.terminal_reason == TerminalReason.DONE
 
     def test_terminal_requires_reason(self) -> None:
         """SX transition without terminal_reason should raise."""
@@ -178,7 +179,7 @@ class TestTransitionResult:
         with pytest.raises(ValueError, match="terminal_reason은 None"):
             TransitionResult(
                 next_state=State.S4_SECTION,
-                terminal_reason="done",
+                terminal_reason=TerminalReason.DONE,
             )
 
     def test_immutability(self) -> None:

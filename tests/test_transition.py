@@ -13,6 +13,7 @@ from traffic_master_ai.attack.a0_poc import (
     SemanticEvent,
     State,
     StateSnapshot,
+    TerminalReason,
     transition,
 )
 
@@ -114,7 +115,7 @@ class TestNormalTransitions:
         result = transition(State.S6_TRANSACTION, event, default_policy, default_snapshot)
 
         assert result.next_state == State.SX_TERMINAL
-        assert result.terminal_reason == "done"
+        assert result.terminal_reason == TerminalReason.DONE
         assert result.is_terminal()
 
 
@@ -216,7 +217,7 @@ class TestSecurityInterrupt:
         result = transition(State.S3_SECURITY, event, default_policy, snapshot)
 
         assert result.next_state == State.SX_TERMINAL
-        assert result.terminal_reason == "abort"
+        assert result.terminal_reason == TerminalReason.ABORT
         assert result.failure_code == "SECURITY_BUDGET_EXHAUSTED"
 
 
@@ -327,7 +328,7 @@ class TestTerminalTransitions:
         for state in [State.S0_INIT, State.S2_QUEUE_ENTRY, State.S5_SEAT]:
             result = transition(state, event, default_policy, default_snapshot)
             assert result.next_state == State.SX_TERMINAL
-            assert result.terminal_reason == "abort"
+            assert result.terminal_reason == TerminalReason.ABORT
 
     def test_policy_abort(
         self,
@@ -339,7 +340,7 @@ class TestTerminalTransitions:
         result = transition(State.S4_SECTION, event, default_policy, default_snapshot)
 
         assert result.next_state == State.SX_TERMINAL
-        assert result.terminal_reason == "abort"
+        assert result.terminal_reason == TerminalReason.ABORT
 
     def test_cooldown_triggered(
         self,
@@ -351,7 +352,7 @@ class TestTerminalTransitions:
         result = transition(State.S2_QUEUE_ENTRY, event, default_policy, default_snapshot)
 
         assert result.next_state == State.SX_TERMINAL
-        assert result.terminal_reason == "cooldown"
+        assert result.terminal_reason == TerminalReason.COOLDOWN
 
     def test_payment_timeout(
         self,
@@ -363,7 +364,7 @@ class TestTerminalTransitions:
         result = transition(State.S6_TRANSACTION, event, default_policy, default_snapshot)
 
         assert result.next_state == State.SX_TERMINAL
-        assert result.terminal_reason == "abort"
+        assert result.terminal_reason == TerminalReason.ABORT
         assert result.failure_code == "PAYMENT_TIMEOUT"
 
 

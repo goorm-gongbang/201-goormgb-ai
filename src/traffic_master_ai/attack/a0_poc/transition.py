@@ -8,7 +8,7 @@ from typing import Any
 
 from traffic_master_ai.attack.a0_poc.events import SemanticEvent
 from traffic_master_ai.attack.a0_poc.snapshots import PolicySnapshot, StateSnapshot
-from traffic_master_ai.attack.a0_poc.states import State, TERMINAL_REASONS
+from traffic_master_ai.attack.a0_poc.states import State, TerminalReason
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +28,7 @@ class TransitionResult:
     """
 
     next_state: State
-    terminal_reason: str | None = None
+    terminal_reason: TerminalReason | None = None
     failure_code: str | None = None
     notes: list[str] = field(default_factory=list)
     commands: list[dict[str, Any]] = field(default_factory=list)
@@ -96,7 +96,7 @@ class ExecutionResult:
 
     state_path: list[State]
     terminal_state: State
-    terminal_reason: str
+    terminal_reason: TerminalReason
     handled_events: int
     total_elapsed_ms: int
     final_budgets: dict[str, int] = field(default_factory=dict)
@@ -106,12 +106,12 @@ class ExecutionResult:
         """터미널 상태가 SX인지 검증."""
         if not self.terminal_state.is_terminal():
             raise ValueError("terminal_state는 SX_TERMINAL이어야 함")
-        if self.terminal_reason not in TERMINAL_REASONS:
+        if not isinstance(self.terminal_reason, TerminalReason):
             raise ValueError(f"유효하지 않은 terminal_reason: {self.terminal_reason}")
 
     def is_success(self) -> bool:
         """실행이 성공적으로 완료되었는지 확인."""
-        return self.terminal_reason == "done"
+        return self.terminal_reason == TerminalReason.DONE
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -149,7 +149,7 @@ def transition(
     if event_type == "FATAL_ERROR":
         return TransitionResult(
             next_state=State.SX_TERMINAL,
-            terminal_reason="abort",
+            terminal_reason=TerminalReason.ABORT,
             failure_code=event.failure_code,
             notes=["FATAL_ERROR 발생 - 즉시 abort"],
         )
@@ -157,14 +157,14 @@ def transition(
     if event_type == "POLICY_ABORT":
         return TransitionResult(
             next_state=State.SX_TERMINAL,
-            terminal_reason="abort",
+            terminal_reason=TerminalReason.ABORT,
             notes=["정책 위반으로 abort"],
         )
 
     if event_type == "COOLDOWN_TRIGGERED":
         return TransitionResult(
             next_state=State.SX_TERMINAL,
-            terminal_reason="cooldown",
+            terminal_reason=TerminalReason.COOLDOWN,
             notes=["쿨다운 트리거됨"],
         )
 
@@ -208,7 +208,7 @@ def transition(
     if state == State.SX_TERMINAL:
         return TransitionResult(
             next_state=State.SX_TERMINAL,
-            terminal_reason="done",  # 이미 터미널
+            terminal_reason=TerminalReason.DONE,  # 이미 터미널
             notes=["이미 터미널 상태 - 상태 유지"],
         )
 
@@ -324,7 +324,7 @@ def _handle_s3_transition(
         # 예산 소진 - abort
         return TransitionResult(
             next_state=State.SX_TERMINAL,
-            terminal_reason="abort",
+            terminal_reason=TerminalReason.ABORT,
             failure_code="SECURITY_BUDGET_EXHAUSTED",
             notes=["챌린지 실패 - 보안 예산 소진, abort"],
         )
@@ -402,7 +402,7 @@ def _handle_s6_transition(
     if event_type == "PAYMENT_COMPLETE":
         return TransitionResult(
             next_state=State.SX_TERMINAL,
-            terminal_reason="done",
+            terminal_reason=TerminalReason.DONE,
             notes=["결제 완료 - 티켓팅 성공!"],
         )
 
@@ -437,7 +437,7 @@ def _handle_s6_transition(
     if event_type == "PAYMENT_TIMEOUT":
         return TransitionResult(
             next_state=State.SX_TERMINAL,
-            terminal_reason="abort",
+            terminal_reason=TerminalReason.ABORT,
             failure_code="PAYMENT_TIMEOUT",
             notes=["결제 타임아웃 - abort"],
         )
