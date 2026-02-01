@@ -170,12 +170,12 @@ class TestTransitionResult:
 
     def test_terminal_requires_reason(self) -> None:
         """SX transition without terminal_reason should raise."""
-        with pytest.raises(ValueError, match="terminal_reason required"):
+        with pytest.raises(ValueError, match="terminal_reason 필수"):
             TransitionResult(next_state=State.SX_TERMINAL)
 
     def test_non_terminal_no_reason(self) -> None:
         """Non-terminal with terminal_reason should raise."""
-        with pytest.raises(ValueError, match="terminal_reason must be None"):
+        with pytest.raises(ValueError, match="terminal_reason은 None"):
             TransitionResult(
                 next_state=State.S4_SECTION,
                 terminal_reason="done",
