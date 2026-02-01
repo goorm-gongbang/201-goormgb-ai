@@ -5,6 +5,7 @@ This package contains the core state machine implementation for A0-1.
 """
 
 from traffic_master_ai.attack.a0_poc.events import KNOWN_EVENT_TYPES, SemanticEvent
+from traffic_master_ai.attack.a0_poc.orchestrator import run_events
 from traffic_master_ai.attack.a0_poc.snapshots import PolicySnapshot, StateSnapshot
 from traffic_master_ai.attack.a0_poc.states import TERMINAL_REASONS, State, TerminalReason
 from traffic_master_ai.attack.a0_poc.store import StateStore
@@ -33,5 +34,6 @@ __all__ = [
     "TransitionResult",
     "ExecutionResult",
     "DecisionLog",
+    # Orchestrator
+    "run_events",
 ]
-
