@@ -168,10 +168,19 @@ def transition(
             notes=["쿨다운 트리거됨"],
         )
 
-    # ───────────────────────────────────────────────────────────────────────────
+    # SESSION_EXPIRED - 세션 만료 시 즉시 reset
+    if event_type == "SESSION_EXPIRED":
+        return TransitionResult(
+            next_state=State.SX_TERMINAL,
+            terminal_reason=TerminalReason.RESET,
+            failure_code="SESSION_EXPIRED",
+            notes=["세션 만료 - reset"],
+        )
+
     # 보안 인터럽트 (S3 진입) - S1, S2, S4, S5, S6에서 가능
+    # DEF_CHALLENGE_FORCED는 CHALLENGE_DETECTED의 alias
     # ───────────────────────────────────────────────────────────────────────────
-    if event_type == "CHALLENGE_DETECTED" and state.can_be_last_non_security():
+    if event_type in ("CHALLENGE_DETECTED", "DEF_CHALLENGE_FORCED") and state.can_be_last_non_security():
         return TransitionResult(
             next_state=State.S3_SECURITY,
             notes=[f"{state.value}에서 보안 챌린지 감지 - S3 인터럽트"],
@@ -226,7 +235,8 @@ def transition(
 
 def _handle_s0_transition(event: SemanticEvent) -> TransitionResult:
     """S0 (Init/Bootstrap) 상태에서의 전이 처리."""
-    if event.event_type == "BOOTSTRAP_COMPLETE":
+    # FLOW_START는 BOOTSTRAP_COMPLETE의 alias
+    if event.event_type in ("BOOTSTRAP_COMPLETE", "FLOW_START"):
         return TransitionResult(
             next_state=State.S1_PRE_ENTRY,
             notes=["부트스트랩 완료 - S1으로 전이"],
@@ -398,16 +408,16 @@ def _handle_s6_transition(
     """
     event_type = event.event_type
 
-    # 정상 완료: 결제 완료
-    if event_type == "PAYMENT_COMPLETE":
+    # 정상 완료: 결제 완료 (PAYMENT_COMPLETED는 alias)
+    if event_type in ("PAYMENT_COMPLETE", "PAYMENT_COMPLETED"):
         return TransitionResult(
             next_state=State.SX_TERMINAL,
             terminal_reason=TerminalReason.DONE,
             notes=["결제 완료 - 티켓팅 성공!"],
         )
 
-    # 홀드 확인
-    if event_type == "HOLD_CONFIRMED":
+    # 홀드 확인 (HOLD_ACQUIRED는 alias)
+    if event_type in ("HOLD_CONFIRMED", "HOLD_ACQUIRED"):
         return TransitionResult(
             next_state=State.S6_TRANSACTION,
             notes=["홀드 확인 - S6 유지, 결제 대기"],
