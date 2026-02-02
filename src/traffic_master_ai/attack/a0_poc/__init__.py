@@ -12,6 +12,7 @@ from traffic_master_ai.attack.a0_poc.transition import (
     DecisionLog,
     ExecutionResult,
     TransitionResult,
+    transition,
 )
 
 __all__ = [
@@ -32,3 +33,4 @@ __all__ = [
     "ExecutionResult",
     "DecisionLog",
 ]
+
