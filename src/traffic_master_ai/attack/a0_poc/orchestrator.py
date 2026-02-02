@@ -54,7 +54,8 @@ def run_events(
     last_result: TransitionResult | None = None
 
     for event in events:
-        current_state = store.get_snapshot().current_state
+        snapshot = store.get_snapshot()
+        current_state = snapshot.current_state
 
         # 이미 터미널이면 더 이상 처리하지 않음
         if current_state.is_terminal():
@@ -65,7 +66,7 @@ def run_events(
             state=current_state,
             event=event,
             policy_snapshot=policy,
-            state_snapshot=store.get_snapshot(),
+            state_snapshot=snapshot,
         )
         last_result = result
 
