@@ -4,7 +4,7 @@ A0-1-T4: State Machine Spec v1.0 기반 순수 전이 함수 구현.
 """
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from traffic_master_ai.attack.a0_poc.events import SemanticEvent
 from traffic_master_ai.attack.a0_poc.snapshots import PolicySnapshot, StateSnapshot
@@ -115,6 +115,41 @@ class ExecutionResult:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 상태별 핸들러 디스패치 (코드 리뷰 피드백: if/elif 체인 → 딕셔너리 패턴)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+# 핸들러 타입 정의 (통일된 시그니처)
+_StateHandler = Callable[[SemanticEvent, StateSnapshot], TransitionResult]
+
+
+def _get_state_handler(state: State) -> _StateHandler | None:
+    """상태에 해당하는 핸들러 함수를 반환한다."""
+    # 핸들러 시그니처 통일을 위한 래퍼 함수들
+    def _wrap_s0(event: SemanticEvent, _snapshot: StateSnapshot) -> TransitionResult:
+        return _handle_s0_transition(event)
+
+    def _wrap_s1(event: SemanticEvent, _snapshot: StateSnapshot) -> TransitionResult:
+        return _handle_s1_transition(event)
+
+    def _wrap_s2(event: SemanticEvent, _snapshot: StateSnapshot) -> TransitionResult:
+        return _handle_s2_transition(event)
+
+    def _wrap_s4(event: SemanticEvent, _snapshot: StateSnapshot) -> TransitionResult:
+        return _handle_s4_transition(event)
+
+    handlers: dict[State, _StateHandler] = {
+        State.S0_INIT: _wrap_s0,
+        State.S1_PRE_ENTRY: _wrap_s1,
+        State.S2_QUEUE_ENTRY: _wrap_s2,
+        State.S4_SECTION: _wrap_s4,
+        State.S5_SEAT: _handle_s5_transition,
+        State.S6_TRANSACTION: _handle_s6_transition,
+    }
+    return handlers.get(state)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # 순수 전이 함수 (Pure Transition Function)
 # State Machine Spec v1.0 구현
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -123,7 +158,7 @@ class ExecutionResult:
 def transition(
     state: State,
     event: SemanticEvent,
-    policy_snapshot: PolicySnapshot,
+    policy_snapshot: PolicySnapshot,  # noqa: ARG001 - 향후 정책 기반 분기용 (현재 미사용)
     state_snapshot: StateSnapshot,
 ) -> TransitionResult:
     """
@@ -193,25 +228,11 @@ def transition(
         return _handle_s3_transition(event, state_snapshot)
 
     # ───────────────────────────────────────────────────────────────────────────
-    # 상태별 정상 전이 규칙
+    # 상태별 정상 전이 규칙 (디스패치 딕셔너리 패턴)
     # ───────────────────────────────────────────────────────────────────────────
-    if state == State.S0_INIT:
-        return _handle_s0_transition(event)
-
-    if state == State.S1_PRE_ENTRY:
-        return _handle_s1_transition(event)
-
-    if state == State.S2_QUEUE_ENTRY:
-        return _handle_s2_transition(event)
-
-    if state == State.S4_SECTION:
-        return _handle_s4_transition(event)
-
-    if state == State.S5_SEAT:
-        return _handle_s5_transition(event, state_snapshot)
-
-    if state == State.S6_TRANSACTION:
-        return _handle_s6_transition(event, state_snapshot)
+    handler = _get_state_handler(state)
+    if handler is not None:
+        return handler(event, state_snapshot)
 
     # SX에서는 더 이상 전이 없음
     if state == State.SX_TERMINAL:
@@ -295,31 +316,19 @@ def _handle_s3_transition(
     """
     event_type = event.event_type
 
-    # 챌린지 통과 - last_non_security_state로 복귀
-    if event_type == "CHALLENGE_PASSED":
+    # 챌린지 통과 또는 없음 확인 - last_non_security_state로 복귀
+    if event_type in ("CHALLENGE_PASSED", "CHALLENGE_NOT_PRESENT"):
         return_to = state_snapshot.last_non_security_state
+        note_verb = "통과" if event_type == "CHALLENGE_PASSED" else "없음 확인"
         if return_to is not None:
             return TransitionResult(
                 next_state=return_to,
-                notes=[f"챌린지 통과 - {return_to.value}로 복귀"],
+                notes=[f"챌린지 {note_verb} - {return_to.value}로 복귀"],
             )
         # last_non_security_state가 없으면 S1으로 (안전한 기본값)
         return TransitionResult(
             next_state=State.S1_PRE_ENTRY,
-            notes=["챌린지 통과 - last_non_security_state 없음, S1로 복귀"],
-        )
-
-    # 챌린지 없음 확인 - last_non_security_state로 복귀
-    if event_type == "CHALLENGE_NOT_PRESENT":
-        return_to = state_snapshot.last_non_security_state
-        if return_to is not None:
-            return TransitionResult(
-                next_state=return_to,
-                notes=[f"챌린지 없음 확인 - {return_to.value}로 복귀"],
-            )
-        return TransitionResult(
-            next_state=State.S1_PRE_ENTRY,
-            notes=["챌린지 없음 - last_non_security_state 없음, S1로 복귀"],
+            notes=[f"챌린지 {note_verb} - last_non_security_state 없음, S1로 복귀"],
         )
 
     # 챌린지 실패 - 예산 확인 후 재시도 또는 터미널

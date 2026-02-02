@@ -213,9 +213,14 @@ class StateStore:
         
         체크포인트 생성이나 테스트에 유용합니다.
         """
-        new_store = StateStore.__new__(StateStore)
-        new_store._snapshot = self._snapshot.copy()
-        return new_store
+        return self._create_from_snapshot(self._snapshot.copy())
+
+    @classmethod
+    def _create_from_snapshot(cls, snapshot: StateSnapshot) -> "StateStore":
+        """내부용: 스냅샷으로 StateStore를 생성합니다. __init__을 호출하지 않습니다."""
+        store = cls.__new__(cls)
+        store._snapshot = snapshot
+        return store
     
     @classmethod
     def from_snapshot(cls, snapshot: StateSnapshot) -> "StateStore":
@@ -224,9 +229,7 @@ class StateStore:
         
         원본을 참조하지 않고 스냅샷의 복사본을 생성합니다.
         """
-        store = cls.__new__(cls)
-        store._snapshot = snapshot.copy()
-        return store
+        return cls._create_from_snapshot(snapshot.copy())
     
     # ─────────────────────────────────────────────────────────────────
     # 유틸리티
