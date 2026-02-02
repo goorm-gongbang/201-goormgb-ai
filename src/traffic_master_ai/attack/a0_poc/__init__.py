@@ -28,8 +28,7 @@ __all__ = [
     "PolicySnapshot",
     # Store
     "StateStore",
-    # Transition
-    "transition",
+    # Results
     "TransitionResult",
     "ExecutionResult",
     "DecisionLog",
