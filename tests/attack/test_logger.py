@@ -15,6 +15,7 @@ from traffic_master_ai.attack.a0_poc import (
     SemanticEvent,
     State,
     StateSnapshot,
+    TerminalReason,
     TransitionResult,
 )
 
@@ -315,7 +316,6 @@ class TestScenarioExecution:
             )
 
             if next_state == State.SX_TERMINAL:
-                from traffic_master_ai.attack.a0_poc import TerminalReason
                 result = TransitionResult(
                     next_state=next_state,
                     terminal_reason=TerminalReason.DONE,
