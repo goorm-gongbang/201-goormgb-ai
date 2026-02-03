@@ -36,25 +36,35 @@ class SemanticEvent:
 # This is a reference set, not exhaustive validation
 KNOWN_EVENT_TYPES = frozenset({
     # Normal flow events
-    "BOOTSTRAP_COMPLETE",
-    "ENTRY_ENABLED",
-    "QUEUE_PASSED",
-    "SECTION_SELECTED",
-    "SEAT_SELECTED",
-    "HOLD_CONFIRMED",
-    "PAYMENT_COMPLETE",
+    "FLOW_START",           # S0 → S1 (= BOOTSTRAP_COMPLETE)
+    "BOOTSTRAP_COMPLETE",   # S0 → S1
+    "ENTRY_ENABLED",        # S1 → S2
+    "QUEUE_PASSED",         # S2 → S4
+    "SECTION_LIST_READY",   # S4 상태 유지 (정보 이벤트)
+    "SECTION_SELECTED",     # S4 → S5
+    "SEATMAP_READY",        # S5 상태 유지 (정보 이벤트)
+    "SEAT_SELECTED",        # S5 → S6
+    "HOLD_ACQUIRED",        # S6 상태에서 홀드 확인 (= HOLD_CONFIRMED)
+    "HOLD_CONFIRMED",       # S6 상태에서 홀드 확인
+    "PAYMENT_PAGE_ENTERED", # S6 상태 유지 (정보 이벤트)
+    "PAYMENT_COMPLETE",     # S6 → SX
+    "PAYMENT_COMPLETED",    # S6 → SX (alias)
     # Security events
-    "CHALLENGE_DETECTED",
-    "CHALLENGE_PASSED",
-    "CHALLENGE_NOT_PRESENT",
-    "CHALLENGE_FAILED",
+    "CHALLENGE_DETECTED",       # Any → S3
+    "DEF_CHALLENGE_FORCED",     # Any → S3 (= CHALLENGE_DETECTED)
+    "CHALLENGE_APPEARED",       # S3 상태 유지 (정보 이벤트)
+    "CHALLENGE_PASSED",         # S3 → last_non_security_state
+    "CHALLENGE_NOT_PRESENT",    # S3 → last_non_security_state
+    "CHALLENGE_FAILED",         # S3 상태 유지 또는 SX
     # Failure events
-    "SEAT_TAKEN",
-    "HOLD_FAILED",
-    "TXN_ROLLBACK_REQUIRED",
-    "PAYMENT_TIMEOUT",
+    "SECTION_EMPTY",        # S4 상태 유지 (재시도)
+    "SEAT_TAKEN",           # S5 상태 유지 또는 S4 롤백
+    "HOLD_FAILED",          # S5 상태 유지 또는 S4 롤백
+    "TXN_ROLLBACK_REQUIRED",# S6 → S5
+    "PAYMENT_TIMEOUT",      # S6 → SX 또는 S5
     # Terminal events
     "FATAL_ERROR",
     "POLICY_ABORT",
     "COOLDOWN_TRIGGERED",
+    "SESSION_EXPIRED",      # Any → SX (reset)
 })
