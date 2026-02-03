@@ -4,6 +4,13 @@ Attack PoC-0 - Pure State Machine Engine.
 This package contains the core state machine implementation for A0-1.
 """
 
+from traffic_master_ai.attack.a0_poc.event_registry import (
+    EVENT_VALID_STATES,
+    EventSource,
+    EventType,
+    get_valid_states,
+    is_valid_in_state,
+)
 from traffic_master_ai.attack.a0_poc.events import KNOWN_EVENT_TYPES, SemanticEvent
 from traffic_master_ai.attack.a0_poc.logger import DecisionLogger
 from traffic_master_ai.attack.a0_poc.orchestrator import run_events
@@ -25,6 +32,12 @@ __all__ = [
     # Events
     "SemanticEvent",
     "KNOWN_EVENT_TYPES",
+    # Event Registry (A0-2-T1)
+    "EventType",
+    "EventSource",
+    "EVENT_VALID_STATES",
+    "get_valid_states",
+    "is_valid_in_state",
     # Snapshots
     "StateSnapshot",
     "PolicySnapshot",
