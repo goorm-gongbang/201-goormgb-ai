@@ -73,3 +73,25 @@ Paths:
 Paths:
 - src/traffic_master_ai/defense/d0_poc/brain/__init__.py
 - src/traffic_master_ai/defense/d0_poc/brain/planner.py
+
+---
+
+### [GRGB-83] D0-2-T4 Actuator Implementation
+- Actuator.execute_plans() 구현:
+  - THROTTLE → DEF_THROTTLED 생성
+    - light: duration_ms=200
+    - strong: duration_ms=2000
+    - payload: {"duration_ms": int, "strength": string}
+  - BLOCK → DEF_BLOCKED 생성
+    - payload: {"reason": "tier_t3"}
+  - CHALLENGE → DEF_CHALLENGE_FORCED 생성
+    - payload: {"difficulty": string}
+  - SANDBOX → DEF_SANDBOXED 생성 (context.is_sandboxed == False일 때만)
+- Event 공통 속성:
+  - source = EventSource.DEFENSE
+  - session_id, ts_ms = trigger_event에서 상속
+  - event_id = uuid4 기반 생성
+
+Paths:
+- src/traffic_master_ai/defense/d0_poc/actions/__init__.py
+- src/traffic_master_ai/defense/d0_poc/actions/actuator.py
