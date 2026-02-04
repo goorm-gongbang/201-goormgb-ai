@@ -1,0 +1,38 @@
+name: PR branch policy (dev-only merge, dev->main release)
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited, ready_for_review]
+
+jobs:
+  validate-pr-branches:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR base/head branch policy
+        run: |
+          BASE="${{ github.event.pull_request.base.ref }}"
+          HEAD="${{ github.event.pull_request.head.ref }}"
+
+          echo "BASE=$BASE"
+          echo "HEAD=$HEAD"
+
+          # Allow any PR targeting dev (feat/fix/etc -> dev)
+          if [ "$BASE" = "dev" ]; then
+            echo "✅ Allowed: PR targets dev."
+            exit 0
+          fi
+
+          # Allow dev -> main only (release)
+          if [ "$BASE" = "main" ]; then
+            if [ "$HEAD" = "dev" ]; then
+              echo "✅ Allowed: dev -> main."
+              exit 0
+            fi
+            echo "❌ Blocked: Only dev -> main PRs are allowed."
+            echo "👉 Please retarget this PR to 'dev'."
+            exit 1
+          fi
+
+          # Block everything else (e.g., feat -> feat)
+          echo "❌ Blocked: PR base must be 'dev' (or 'main' only from 'dev')."
+          exit 1
