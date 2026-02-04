@@ -28,6 +28,12 @@ from traffic_master_ai.attack.a0_poc.validator import (
     ValidationError,
     ValidationResult,
 )
+from traffic_master_ai.attack.a0_poc.policy_loader import (
+    InvalidProfileSchemaError,
+    PolicyProfile,
+    PolicyProfileLoader,
+    ProfileNotFoundError,
+)
 
 __all__ = [
     # States
@@ -61,5 +67,10 @@ __all__ = [
     "run_events",
     # Logger
     "DecisionLogger",
+    # Policy Loader (A0-2-T3)
+    "PolicyProfile",
+    "PolicyProfileLoader",
+    "ProfileNotFoundError",
+    "InvalidProfileSchemaError",
 ]
 
