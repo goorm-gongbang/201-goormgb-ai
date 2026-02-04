@@ -15,4 +15,4 @@ from .risk_engine import RiskController
 
 __all__ = ["EvidenceState", "RiskController", "SignalAggregator"]
 
-__all__ = ["EvidenceState", "SignalAggregator"]
+__all__ = ["EvidenceState", "RiskController", "SignalAggregator"]
