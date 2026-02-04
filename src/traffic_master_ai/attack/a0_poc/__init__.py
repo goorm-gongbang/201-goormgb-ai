@@ -40,6 +40,7 @@ from traffic_master_ai.attack.a0_poc.failure import (
     FailureMatrix,
     FailurePolicy,
 )
+from traffic_master_ai.attack.a0_poc.roi import ROILogger, EvidenceLog
 
 __all__ = [
     # States
@@ -85,5 +86,7 @@ __all__ = [
     "FailureCode",
     "FailureMatrix",
     "FailurePolicy",
+    "ROILogger",
+    "EvidenceLog",
 ]
 
