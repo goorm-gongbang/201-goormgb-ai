@@ -23,6 +23,11 @@ from traffic_master_ai.attack.a0_poc.transition import (
     TransitionResult,
     transition,
 )
+from traffic_master_ai.attack.a0_poc.validator import (
+    EventValidator,
+    ValidationError,
+    ValidationResult,
+)
 
 __all__ = [
     # States
@@ -38,6 +43,10 @@ __all__ = [
     "EVENT_VALID_STATES",
     "get_valid_states",
     "is_valid_in_state",
+    # Validator (A0-2-T2)
+    "EventValidator",
+    "ValidationResult",
+    "ValidationError",
     # Snapshots
     "StateSnapshot",
     "PolicySnapshot",
