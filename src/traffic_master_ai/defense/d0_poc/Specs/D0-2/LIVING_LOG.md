@@ -54,3 +54,22 @@ Paths:
 Paths:
 - src/traffic_master_ai/defense/d0_poc/brain/__init__.py
 - src/traffic_master_ai/defense/d0_poc/brain/risk_engine.py
+
+---
+
+### [GRGB-82] D0-2-T3 Action Planner Implementation
+- PlannedAction dataclass 구현:
+  - `action_type: str` ("THROTTLE" | "BLOCK" | "CHALLENGE" | "SANDBOX" | "HONEY")
+  - `params: dict` (예: {"strength": "light"}, {"difficulty": "medium"})
+- ActionPlanner.plan_actions() 구현:
+  - Tier-Action Matrix 적용:
+    - T0: No Action
+    - T1: THROTTLE(light)
+    - T2: THROTTLE(strong) + CHALLENGE(medium)
+    - T3: BLOCK
+  - F-5 (S6 Protection): S6에서 신규 개입 금지, 단 T3이면 BLOCK 허용
+  - F-3 (S5 Streak): seat_taken_streak >= 7이면 THROTTLE(strong) 추가 또는 승격
+
+Paths:
+- src/traffic_master_ai/defense/d0_poc/brain/__init__.py
+- src/traffic_master_ai/defense/d0_poc/brain/planner.py
