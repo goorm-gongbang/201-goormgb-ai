@@ -81,3 +81,22 @@ Paths:
 - src/traffic_master_ai/defense/d0_poc/core/models.py
 - src/traffic_master_ai/defense/d0_poc/orchestrator/engine.py
 - src/traffic_master_ai/defense/d0_poc/Specs/D0-1/SPEC_SNAPSHOT.md
+
+---
+
+### [GRGB-76] D0-1-T5 Core Harness & Unit Testing
+- EngineHarness 클래스 구현:
+  - `run(events)` 메서드로 이벤트 시퀀스 실행
+  - Context mutations diff 방식 적용
+  - Decision Log 반환 (final_state, trace)
+- Event factory helpers 구현 (`make_event`, `make_events`)
+- Unit Test 4개 구현:
+  - Happy Path: 정상 플로우 완료 (DONE)
+  - Challenge Block: 3회 실패 시 BLOCKED
+  - Interrupt & Return: S4 → S3 인터럽트 후 복귀
+  - Token Mismatch: 즉시 BLOCKED
+
+Paths:
+- src/traffic_master_ai/defense/d0_poc/orchestrator/harness.py
+- tests/defense/__init__.py
+- tests/defense/test_core_engine.py
