@@ -34,6 +34,7 @@ from traffic_master_ai.attack.a0_poc.policy_loader import (
     PolicyProfileLoader,
     ProfileNotFoundError,
 )
+from traffic_master_ai.attack.a0_poc.runtime import BudgetManager, TimeboxManager
 
 __all__ = [
     # States
@@ -72,5 +73,8 @@ __all__ = [
     "PolicyProfileLoader",
     "ProfileNotFoundError",
     "InvalidProfileSchemaError",
+    # Runtime (A0-2-T4)
+    "BudgetManager",
+    "TimeboxManager",
 ]
 
