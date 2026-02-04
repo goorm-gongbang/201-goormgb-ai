@@ -38,3 +38,19 @@ Paths:
 Paths:
 - src/traffic_master_ai/defense/d0_poc/brain/__init__.py
 - src/traffic_master_ai/defense/d0_poc/brain/evidence.py
+
+---
+
+### [GRGB-81] D0-2-T2 Risk Controller Implementation
+- RiskController.decide_tier() 구현:
+  - R-1: SIGNAL_REPETITIVE_PATTERN 1개 → T1, 3개 이상 → T2
+  - R-2: challenge_fail_count >= 3 → T3 (Spec F-1)
+  - R-3: token_mismatch_detected → T3 즉시 (Spec F-4)
+  - R-4: T2+ 상태에서 S3 + STAGE_3_CHALLENGE_PASSED → T1 완화
+- Tier rank mapping 사용 (T0 < T1 < T2 < T3)
+- 하락은 R-4 조건 충족 시에만 허용
+- RISK_TIER_UPDATED 이벤트 생성 로직 구현
+
+Paths:
+- src/traffic_master_ai/defense/d0_poc/brain/__init__.py
+- src/traffic_master_ai/defense/d0_poc/brain/risk_engine.py
