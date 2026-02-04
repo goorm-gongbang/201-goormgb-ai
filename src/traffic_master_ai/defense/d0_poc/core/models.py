@@ -24,6 +24,7 @@ class Context:
     hold_fail_count: int = 0
     session_age: int = 0
     is_sandboxed: bool = False
+    retry_count: int = 0
 
 
 @dataclass(slots=True)

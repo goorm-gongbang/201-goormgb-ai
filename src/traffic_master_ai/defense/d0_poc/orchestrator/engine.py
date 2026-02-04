@@ -13,6 +13,7 @@ from ..core import (
 from ..policy.snapshot import PolicySnapshot
 from ..signals import (
     DEF_BLOCKED,
+    DEF_CHALLENGE_FORCED,
     DEF_THROTTLED,
     FLOW_ABORT,
     FLOW_RESET,
@@ -28,6 +29,7 @@ from ..signals import (
     STAGE_5_SEAT_TAKEN,
     STAGE_6_PAYMENT_ABORTED,
     STAGE_6_PAYMENT_COMPLETED,
+    TIME_TIMEOUT,
 )
 from ..signals.events import Event
 
@@ -88,6 +90,20 @@ def transition(
         if streak >= policy.seat_taken_streak_threshold:
             actions.append(DefenseAction(type=DEF_THROTTLED, payload={"state": "S5"}))
         next_state = FlowState.S5
+    elif event.type == DEF_CHALLENGE_FORCED:
+        # S3 Interrupt: force transition to S3 (Security Verification)
+        next_state = FlowState.S3
+        if state != FlowState.S3:
+            # Save the current state for ReturnTo logic (only if not already in S3)
+            set_mutation("last_non_security_state", state)
+    elif event.type == TIME_TIMEOUT:
+        # F-2: Timeout with retry logic
+        retry = inc("retry_count")
+        if retry >= policy.max_retry_per_state:
+            next_state = FlowState.SX
+            failure_code = FailureCode.F_TIMEOUT
+            terminal_reason = TerminalReason.ABORT
+        # else: stay in current state (next_state already initialized to state)
     elif event.type == DEF_BLOCKED:
         next_state = FlowState.SX
         failure_code = FailureCode.F_BLOCKED
@@ -104,6 +120,7 @@ def transition(
         set_mutation("last_non_security_state", None)
         set_mutation("is_sandboxed", False)
         set_mutation("session_age", 0)
+        set_mutation("retry_count", 0)
     elif event.type == STAGE_6_PAYMENT_ABORTED:
         next_state = FlowState.SX
         terminal_reason = TerminalReason.ABORT
@@ -119,7 +136,12 @@ def transition(
         elif state == FlowState.S2 and event.type == STAGE_2_QUEUE_PASSED:
             next_state = FlowState.S3
         elif state == FlowState.S3 and event.type == STAGE_3_CHALLENGE_PASSED:
-            next_state = FlowState.S4
+            # ReturnTo logic: return to the state before S3 interrupt
+            if context.last_non_security_state is not None:
+                next_state = context.last_non_security_state
+                set_mutation("last_non_security_state", None)
+            else:
+                next_state = FlowState.S4  # Default progression
         elif state == FlowState.S4 and event.type == STAGE_4_SECTION_SELECTED:
             next_state = FlowState.S5
         elif state == FlowState.S5 and event.type == STAGE_5_CONFIRM_CLICKED:
@@ -134,6 +156,10 @@ def transition(
             set_mutation("seat_taken_count", 0)
         if "hold_fail_count" not in mutations:
             set_mutation("hold_fail_count", 0)
+
+    # Reset retry_count when state changes (excluding timeout-triggered mutations)
+    if next_state != state and "retry_count" not in mutations:
+        set_mutation("retry_count", 0)
 
     return TransitionResult(
         next_state=next_state,
