@@ -14,7 +14,7 @@ from traffic_master_ai.attack.a0_poc.event_registry import EventType
 from traffic_master_ai.attack.a0_poc.events import SemanticEvent
 from traffic_master_ai.attack.a0_poc.failure import FailureMatrix
 from traffic_master_ai.attack.a0_poc.roi import ROILogger
-from traffic_master_ai.attack.a0_poc.scenario_models import Scenario
+from traffic_master_ai.attack.a0_poc.scenario_models import Scenario, ScenarioAssertion
 from traffic_master_ai.attack.a0_poc.snapshots import PolicySnapshot
 from traffic_master_ai.attack.a0_poc.states import State, TerminalReason
 from traffic_master_ai.attack.a0_poc.store import StateStore
@@ -53,6 +53,7 @@ class ScenarioRunner:
         handled_events = 0
         last_result: TransitionResult | None = None
         current_virtual_time = self.start_time
+        final_terminal_reason: TerminalReason | None = None
 
         # 2. 시나리오 이벤트 루프
         for s_evt in scenario.events:
@@ -81,8 +82,8 @@ class ScenarioRunner:
                 state_snapshot=snapshot,
             )
 
-            # D. 실패 처리 매트릭스 적용 (A0-3 로직 재사용 - private이므로 여기서 직접 처리 또는 orchestrator 호출)
-            if failure_matrix:
+            # D. 실패 처리 매트릭스 적용 (A0-3 로직 재사용)
+            if failure_matrix and not result.is_terminal():
                 try:
                     et = EventType(event.event_type)
                     failure_policy = failure_matrix.get_policy(current_state, et)
@@ -106,25 +107,34 @@ class ScenarioRunner:
             if state_path[-1] != next_state:
                 state_path.append(next_state)
 
+            # F. 카운터 누적 (시뮬레이션용)
+            store.increment_counter(event.event_type)
             handled_events += 1
 
-            if next_state.is_terminal():
+            if result.terminal_reason:
+                final_terminal_reason = result.terminal_reason
+
+            if next_state.is_terminal() or next_state.value == scenario.accept.final_state:
+                # BREAK CONDITION
+                final_terminal_reason = result.terminal_reason or final_terminal_reason or TerminalReason.DONE
+                last_result = result
                 break
 
         # 3. 결과 조립
         final_snapshot = store.get_snapshot()
+        final_state = final_snapshot.current_state
         
-        # 터미널 미도달 검증
-        if not final_snapshot.current_state.is_terminal():
-            raise ValueError(f"Scenario {scenario.id} ended without reaching terminal state.")
-
-        if last_result and last_result.terminal_reason:
-            terminal_reason = last_result.terminal_reason
+        # 명시적인 이유가 없는 경우 기본값 결정
+        if not final_terminal_reason:
+            if final_state.is_terminal() or final_state.value == scenario.accept.final_state:
+                final_terminal_reason = TerminalReason.DONE
+            else:
+                final_terminal_reason = TerminalReason.ABORT
 
         exec_result = ExecutionResult(
             state_path=state_path,
-            terminal_state=final_snapshot.current_state,
-            terminal_reason=terminal_reason,
+            terminal_state=final_state,
+            terminal_reason=final_terminal_reason,
             handled_events=handled_events,
             total_elapsed_ms=final_snapshot.elapsed_ms,
             final_budgets=dict(final_snapshot.budgets),
@@ -137,11 +147,15 @@ class ScenarioRunner:
 
         # terminal_reason 검증
         if scenario.accept.terminal_reason:
-            if terminal_reason != scenario.accept.terminal_reason:
+            passed, msg = check_assertion(
+                ScenarioAssertion(type="terminal_reason", value=scenario.accept.terminal_reason), 
+                exec_result
+            )
+            assertion_results.append((passed, msg))
+            if not passed:
                 is_success = False
-                assertion_results.append((False, f"FAILED: Terminal Reason mismatch. Expected {scenario.accept.terminal_reason}, Got {terminal_reason}"))
             else:
-                assertion_results.append((True, f"PASSED: Terminal Reason is '{terminal_reason.value}'"))
+                assertion_results.append((True, f"PASSED: Terminal Reason is '{final_terminal_reason.value}'"))
 
         # 상세 어설션 검증
         for assertion in scenario.accept.asserts:

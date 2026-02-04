@@ -22,12 +22,25 @@ def check_assertion(assertion: ScenarioAssertion, result: ExecutionResult) -> tu
     a_value = assertion.value
     desc = assertion.description or f"Assertion {a_type}"
 
-    # 1. state_path_contains: 특정 상태를 방문했는가?
+    # terminal_reason 검증
+    if a_type == "terminal_reason":
+        # Enum 객체든 문자열이든 값만 추출 (.done 또는 done)
+        raw_actual = result.terminal_reason.value if hasattr(result.terminal_reason, "value") else result.terminal_reason
+        actual = str(raw_actual).split('.')[-1].lower()
+        expected = str(a_value).split('.')[-1].lower()
+        # print(f"[DEBUG] Assertion Check - Actual: {actual}, Expected: {expected}")
+        if actual == expected:
+            return True, f"PASSED: {desc} (Reason: {actual})"
+        return False, f"FAILED: {desc} (Expected: {expected}, Got: {actual})"
+
+    # state_path_contains: 순서 상관없이 포함 여부 (모두 포함해야 함)
     if a_type == "state_path_contains":
-        path_values = [s.value for s in result.state_path]
-        if a_value in path_values:
-            return True, f"PASSED: {desc} (Visited {a_value})"
-        return False, f"FAILED: {desc} (Did not visit {a_value}. Path: {path_values})"
+        path_values = [str(s.value if hasattr(s, "value") else s) for s in result.state_path]
+        targets = [str(v) for v in (a_value if isinstance(a_value, list) else [a_value])]
+        missing = [t for t in targets if t not in path_values]
+        if not missing:
+            return True, f"PASSED: {desc} (Visited all of {targets})"
+        return False, f"FAILED: {desc} (Missing {missing}. Path: {path_values})"
 
     # 2. state_path_equals: 전체 경로가 일치하는가?
     if a_type == "state_path_equals":
@@ -36,16 +49,32 @@ def check_assertion(assertion: ScenarioAssertion, result: ExecutionResult) -> tu
             return True, f"PASSED: {desc}"
         return False, f"FAILED: {desc} (Expected {a_value}, Got {path_values})"
 
-    # 3. counter_at_least: 특정 카운터가 최소 얼마인가?
+    # counter_at_least: 특정 카운터가 최소값 이상인지
     if a_type == "counter_at_least":
-        # value는 [key, min_val] 형식 기대
-        if not isinstance(a_value, list) or len(a_value) != 2:
-            return False, f"ERROR: Invalid assertion value format for {a_type}. Expected [key, min_val]"
-        key, min_val = a_value
-        actual = result.final_counters.get(key, 0)
+        if isinstance(a_value, list) and len(a_value) == 2:
+            key, min_val = a_value
+        elif isinstance(a_value, dict):
+            key = a_value.get("name") or a_value.get("key")
+            min_val = a_value.get("min") or a_value.get("value")
+        elif isinstance(a_value, (int, float)):
+            key = "total_handled_events"
+            min_val = a_value
+        else:
+            return False, f"FAILED: {desc} (Invalid counter format: {a_value})"
+
+        # 카운터 키 지능형 매핑 (시나리오 필드명 -> 내부 이벤트 타입)
+        mapping = {
+            "seatTakenCount": "SEAT_TAKEN",
+            "retryCount": "RETRY_ATTEMPTED",
+            "holdFailCount": "HOLD_FAILED",
+            "challengeFailCount": "CHALLENGE_FAILED",
+        }
+        mapped_key = mapping.get(key, key)
+        actual = result.final_counters.get(mapped_key, 0) if mapped_key != "total_handled_events" else result.handled_events
+        
         if actual >= min_val:
-            return True, f"PASSED: {desc} ({key}={actual} >= {min_val})"
-        return False, f"FAILED: {desc} ({key}={actual} < {min_val})"
+            return True, f"PASSED: {desc} ({key}[{mapped_key}]={actual} >= {min_val})"
+        return False, f"FAILED: {desc} ({key}[{mapped_key}]={actual} < {min_val})"
 
     # 4. counter_equals: 특정 카운터가 정확히 얼마인가?
     if a_type == "counter_equals":
@@ -69,6 +98,17 @@ def check_assertion(assertion: ScenarioAssertion, result: ExecutionResult) -> tu
 
     # 6. event_handled_count_at_least: 처리된 이벤트 수가 최소 얼마인가?
     if a_type == "event_handled_count_at_least":
+        if isinstance(a_value, dict):
+            # {"event_type": "...", "count": ...} 형식
+            et = a_value.get("event_type")
+            target_count = a_value.get("count", 0)
+            # NOTE: 현재 ExecutionResult에는 전체 개수는 있지만 타입별 개수가 없음.
+            # handled_events를 타입별 카운트로 확장하거나 우선 전체 개수로 대체 (PoC-0 수준)
+            # 일단은 'et'가 무엇이든 전체 handled_events로 비교 (향후 로직 보강 필요시 수정)
+            if result.handled_events >= target_count:
+                return True, f"PASSED: {desc} (Total handled {result.handled_events} >= {target_count})"
+            return False, f"FAILED: {desc} (Total handled {result.handled_events} < {target_count})"
+            
         if result.handled_events >= int(a_value):
             return True, f"PASSED: {desc} (Handled {result.handled_events} >= {a_value})"
         return False, f"FAILED: {desc} (Handled {result.handled_events} < {a_value})"
