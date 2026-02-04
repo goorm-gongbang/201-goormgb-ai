@@ -48,6 +48,7 @@ from traffic_master_ai.attack.a0_poc.scenario_models import (
     ScenarioAcceptance,
 )
 from traffic_master_ai.attack.a0_poc.scenario_loader import ScenarioLoader
+from traffic_master_ai.attack.a0_poc.scenario_runner import ScenarioRunner
 
 __all__ = [
     # States
@@ -101,5 +102,6 @@ __all__ = [
     "ScenarioAssertion",
     "ScenarioAcceptance",
     "ScenarioLoader",
+    "ScenarioRunner",
 ]
 
