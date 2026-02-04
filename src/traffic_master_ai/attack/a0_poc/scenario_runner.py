@@ -23,6 +23,8 @@ from traffic_master_ai.attack.a0_poc.transition import (
     TransitionResult,
     transition,
 )
+from traffic_master_ai.attack.a0_poc.assertion_engine import check_assertion
+from traffic_master_ai.attack.a0_poc.scenario_report import ScenarioResult
 
 
 class ScenarioRunner:
@@ -38,7 +40,7 @@ class ScenarioRunner:
         policy: PolicySnapshot,
         failure_matrix: FailureMatrix | None = None,
         roi_logger: ROILogger | None = None,
-    ) -> ExecutionResult:
+    ) -> ScenarioResult:
         """
         시나리오를 실행하여 가상 시간이 반영된 ExecutionResult를 반환합니다.
         
@@ -116,11 +118,10 @@ class ScenarioRunner:
         if not final_snapshot.current_state.is_terminal():
             raise ValueError(f"Scenario {scenario.id} ended without reaching terminal state.")
 
-        terminal_reason = TerminalReason.DONE
         if last_result and last_result.terminal_reason:
             terminal_reason = last_result.terminal_reason
 
-        return ExecutionResult(
+        exec_result = ExecutionResult(
             state_path=state_path,
             terminal_state=final_snapshot.current_state,
             terminal_reason=terminal_reason,
@@ -128,6 +129,34 @@ class ScenarioRunner:
             total_elapsed_ms=final_snapshot.elapsed_ms,
             final_budgets=dict(final_snapshot.budgets),
             final_counters=dict(final_snapshot.counters),
+        )
+
+        # 4. 검증 판정 (Assertion Engine 호출)
+        assertion_results = []
+        is_success = True
+
+        # terminal_reason 검증
+        if scenario.accept.terminal_reason:
+            if terminal_reason != scenario.accept.terminal_reason:
+                is_success = False
+                assertion_results.append((False, f"FAILED: Terminal Reason mismatch. Expected {scenario.accept.terminal_reason}, Got {terminal_reason}"))
+            else:
+                assertion_results.append((True, f"PASSED: Terminal Reason is '{terminal_reason.value}'"))
+
+        # 상세 어설션 검증
+        for assertion in scenario.accept.asserts:
+            passed, msg = check_assertion(assertion, exec_result)
+            assertion_results.append((passed, msg))
+            if not passed:
+                is_success = False
+
+        return ScenarioResult(
+            scenario_id=scenario.id,
+            scenario_name=scenario.name,
+            is_success=is_success,
+            execution_result=exec_result,
+            assertion_results=assertion_results,
+            total_elapsed_ms=exec_result.total_elapsed_ms,
         )
 
     def _apply_failure_policy_sim(
