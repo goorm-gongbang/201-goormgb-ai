@@ -95,3 +95,25 @@ Paths:
 Paths:
 - src/traffic_master_ai/defense/d0_poc/actions/__init__.py
 - src/traffic_master_ai/defense/d0_poc/actions/actuator.py
+
+---
+
+### [GRGB-84] D0-2-T5 Policy Loader Implementation
+- Dataclasses 구현:
+  - `EscalationPolicy`: pattern_threshold, challenge_fail_limit
+  - `ThrottlePolicy`: t1_ms, t2_ms, streak_penalty_ms
+  - `SandboxPolicy`: max_age_sec
+  - `PolicyProfile`: name, escalation, throttle, sandbox
+- PolicyLoader.load_profile() 구현:
+  - JSON 파일에서 profile 로드
+  - 존재하지 않는 profile → ValueError
+  - JSON 파싱 오류 → ValueError
+  - 필수 key 누락 → ValueError
+- policies.json 샘플 파일 생성:
+  - default: 표준 설정
+  - strict: 엄격한 설정
+
+Paths:
+- src/traffic_master_ai/defense/d0_poc/policy/__init__.py
+- src/traffic_master_ai/defense/d0_poc/policy/loader.py
+- src/traffic_master_ai/defense/d0_poc/spec/policies.json
