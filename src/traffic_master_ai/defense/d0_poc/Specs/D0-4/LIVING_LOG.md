@@ -39,3 +39,21 @@ Paths:
 Paths:
 - src/traffic_master_ai/defense/d0_poc/observability/__init__.py
 - src/traffic_master_ai/defense/d0_poc/observability/schema.py
+
+---
+
+### [GRGB-101] D0-4-T2 Structured Logger & Middleware Implementation
+- DecisionLogger 클래스 구현 (`logger.py`):
+  - JSONL 포맷 출력 (1 line = 1 DecisionLogEntry)
+  - setup(): 디렉토리 생성, 파일 truncate (clear) 후 새로 생성
+  - log(): 에러 발생 시 print만 하고 예외 throw 안함 (fail-safe)
+  - close(): 리소스 정리
+  - Context manager 지원 (__enter__, __exit__)
+- Factory 함수 패턴:
+  - get_default_logger(): 기본 인스턴스 재사용
+  - reset_default_logger(): 테스트용 초기화
+- 검증 완료: 3개 엔트리 로깅, 모든 줄 JSON 파싱 성공
+
+Paths:
+- src/traffic_master_ai/defense/d0_poc/observability/logger.py
+- src/traffic_master_ai/defense/d0_poc/observability/__init__.py
