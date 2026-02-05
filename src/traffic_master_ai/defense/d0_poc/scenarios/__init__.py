@@ -11,5 +11,6 @@ __all__ = [
     "ScenarioRunner",
     "ScenarioStep",
     "ScenarioVerifier",
+    "StepResult",
 ]
 
