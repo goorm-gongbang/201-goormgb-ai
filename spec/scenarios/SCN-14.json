@@ -1,0 +1,21 @@
+{
+  "id": "SCN-14",
+  "name": "Payment Timeout Rollback Policy",
+  "initial_state": "S0",
+  "policy_profile": "txn_timeout_rollback",
+  "events": [
+    { "event_type": "FLOW_START", "source": "mock" },
+    { "event_type": "ENTRY_ENABLED", "source": "mock" },
+    { "event_type": "QUEUE_PASSED", "source": "mock" },
+    { "event_type": "SECTION_SELECTED", "source": "mock" },
+    { "event_type": "HOLD_ACQUIRED", "source": "mock" },
+    { "event_type": "PAYMENT_PAGE_ENTERED", "source": "mock" },
+    { "event_type": "PAYMENT_TIMEOUT", "source": "mock", "context": { "elapsed_ms": 120000 } }
+  ],
+  "accept": {
+    "final_state": "S5",
+    "asserts": [
+      { "type": "state_path_contains", "value": ["S6", "S5"] }
+    ]
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "id": "SCN-15",
+  "name": "Session Expired -> Terminal Reset",
+  "initial_state": "S0",
+  "policy_profile": "default",
+  "events": [
+    { "event_type": "FLOW_START", "source": "mock" },
+    { "event_type": "ENTRY_ENABLED", "source": "mock" },
+    { "event_type": "QUEUE_PASSED", "source": "mock" },
+    { "event_type": "SECTION_SELECTED", "source": "mock" },
+    { "event_type": "SESSION_EXPIRED", "source": "mock", "context": { "age_ms": 999999 } }
+  ],
+  "accept": {
+    "final_state": "SX",
+    "terminal_reason": "reset",
+    "asserts": [
+      { "type": "state_path_contains", "value": ["SX"] }
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "id": "SCN-09",
+  "name": "Seat Taken Threshold Rollback",
+  "initial_state": "S0",
+  "policy_profile": "seat_threshold_rollback",
+  "events": [
+    { "event_type": "FLOW_START", "source": "mock" },
+    { "event_type": "ENTRY_ENABLED", "source": "mock" },
+    { "event_type": "QUEUE_PASSED", "source": "mock" },
+    { "event_type": "SECTION_SELECTED", "source": "mock" },
+    { "event_type": "SEATMAP_READY", "source": "mock" },
+    { "event_type": "SEAT_TAKEN", "source": "mock", "context": { "seat_id": "X-01" } },
+    { "event_type": "SEAT_TAKEN", "source": "mock", "context": { "seat_id": "X-02" } },
+    { "event_type": "SEAT_TAKEN", "source": "mock", "context": { "seat_id": "X-03" } },
+    { "event_type": "SEAT_TAKEN", "source": "mock", "context": { "seat_id": "X-04" } }
+  ],
+  "accept": {
+    "final_state": "S4",
+    "asserts": [
+      { "type": "counter_at_least", "value": { "name": "seatTakenCount", "min": 4 } }
+    ]
+  }
+}
