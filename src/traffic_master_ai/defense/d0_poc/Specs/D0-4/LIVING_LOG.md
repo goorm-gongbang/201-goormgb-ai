@@ -113,3 +113,28 @@ Paths:
 Paths:
 - src/traffic_master_ai/defense/d0_poc/tools/__init__.py
 - src/traffic_master_ai/defense/d0_poc/tools/analyze_logs.py
+
+---
+
+### [GRGB-104] D0-4-T5 Web-based Admin Dashboard & E2E Verification
+- Streamlit 기반 "PoC-0 Cockpit" 구현 (`tools/dashboard.py`):
+  - Section 1: System Health Check
+    - [🚀 Run Full Diagnostics] 버튼
+    - 순차 실행: pytest → run_all.py → logs 검증
+    - st.status로 단계별 진행상황 업데이트
+    - 각 단계 결과 expander로 stdout/stderr 표시
+  - Section 2: Audit Log Explorer
+    - decision_audit.jsonl 읽어서 DataFrame 생성
+    - 컬럼: Timestamp, TraceID, Seq, Event Type, State, Tier, Actions, Reason
+    - TraceID/Tier 드롭다운 필터링
+    - Summary metrics: Total Entries, Unique Traces, T3 Escalations, Blocked Sessions
+    - Raw JSON viewer for selected trace
+- subprocess 실행: cwd=PROJECT_ROOT, capture_output=True, text=True
+- st.session_state로 실행 결과 유지
+- 오류 발생 시 앱 중단 없이 stderr 화면 표시
+- `run_dashboard.sh` 런처 스크립트 생성
+- 검증: Python syntax 검사 통과
+
+Paths:
+- src/traffic_master_ai/defense/d0_poc/tools/dashboard.py
+- src/traffic_master_ai/defense/d0_poc/tools/run_dashboard.sh
