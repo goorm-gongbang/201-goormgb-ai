@@ -1,0 +1,24 @@
+{
+  "id": "SCN-12",
+  "name": "Hold Failed Exhaust Rollback",
+  "initial_state": "S0",
+  "policy_profile": "hold_strict_rollback",
+  "events": [
+    { "event_type": "FLOW_START", "source": "mock" },
+    { "event_type": "ENTRY_ENABLED", "source": "mock" },
+    { "event_type": "QUEUE_PASSED", "source": "mock" },
+    { "event_type": "SECTION_SELECTED", "source": "mock" },
+    { "event_type": "SEAT_SELECTED", "source": "mock" },
+    { "event_type": "HOLD_FAILED", "source": "mock" },
+    { "event_type": "SEAT_SELECTED", "source": "mock" },
+    { "event_type": "HOLD_FAILED", "source": "mock" },
+    { "event_type": "SEAT_SELECTED", "source": "mock" },
+    { "event_type": "HOLD_FAILED", "source": "mock" }
+  ],
+  "accept": {
+    "final_state": "S4",
+    "asserts": [
+      { "type": "event_handled_count_at_least", "value": { "event_type": "HOLD_FAILED", "count": 3 } }
+    ]
+  }
+}

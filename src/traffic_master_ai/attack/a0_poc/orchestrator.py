@@ -10,6 +10,7 @@ Hard Rules:
 
 from traffic_master_ai.attack.a0_poc.events import SemanticEvent
 from traffic_master_ai.attack.a0_poc.snapshots import PolicySnapshot, StateSnapshot
+from traffic_master_ai.attack.a0_poc.event_registry import EventType
 from traffic_master_ai.attack.a0_poc.states import State, TerminalReason
 from traffic_master_ai.attack.a0_poc.store import StateStore
 from traffic_master_ai.attack.a0_poc.transition import (
@@ -17,12 +18,16 @@ from traffic_master_ai.attack.a0_poc.transition import (
     TransitionResult,
     transition,
 )
+from traffic_master_ai.attack.a0_poc.failure import FailureMatrix, FailurePolicy
+from traffic_master_ai.attack.a0_poc.roi import ROILogger
 
 
 def run_events(
     events: list[SemanticEvent],
     store: StateStore,
     policy: PolicySnapshot,
+    failure_matrix: FailureMatrix | None = None,
+    roi_logger: ROILogger | None = None,
 ) -> ExecutionResult:
     """
     이벤트 리스트를 순차적으로 처리하여 ExecutionResult를 반환한다.
@@ -68,6 +73,20 @@ def run_events(
             policy_snapshot=policy,
             state_snapshot=snapshot,
         )
+
+        # 실패 처리 매트릭스 적용 (A0-3-T3)
+        if failure_matrix:
+            # EventType enum으로 캐스팅하여 매트릭스 조회
+            try:
+                et = EventType(event.event_type)
+                failure_policy = failure_matrix.get_policy(current_state, et)
+            except ValueError:
+                failure_policy = None
+
+            if failure_policy:
+                # 1. 예산 차감 및 전이 결정
+                result = _apply_failure_policy(store, failure_policy, result, event, roi_logger)
+        
         last_result = result
 
         # 새 상태로 전이
@@ -115,4 +134,55 @@ def run_events(
         total_elapsed_ms=final_snapshot.elapsed_ms,
         final_budgets=dict(final_snapshot.budgets),
         final_counters=dict(final_snapshot.counters),
+    )
+
+
+def _apply_failure_policy(
+    store: StateStore,
+    policy: FailurePolicy,
+    original_result: TransitionResult,
+    event: SemanticEvent,
+    roi_logger: ROILogger | None,
+) -> TransitionResult:
+    """실패 정책을 적용하여 예산을 차감하고 다음 상태를 결정한다."""
+    snapshot = store.get_snapshot()
+    next_state = original_result.next_state
+    terminal_reason = original_result.terminal_reason
+    failure_code = policy.failure_code
+    
+    # 1. 예산 차감 로직
+    if policy.retry_budget_key:
+        current_budget = store.get_budget(policy.retry_budget_key)
+        
+        if current_budget > 0:
+            # 예산 남음 -> 차감 후 복구 경로로 이동
+            store.decrement_budget(policy.retry_budget_key)
+            if isinstance(policy.recover_path, State):
+                next_state = policy.recover_path
+        else:
+            # 예산 소진 -> 중단 조건(Stop Condition) 적용
+            if policy.stop_condition:
+                if "S4" in policy.stop_condition:
+                    next_state = State.S4_SECTION
+                elif "SX" in policy.stop_condition:
+                    next_state = State.SX_TERMINAL
+                    terminal_reason = TerminalReason.ABORT
+    
+    # 2. ROI 기록
+    if roi_logger:
+        roi_logger.log_failure(
+            state=snapshot.current_state,
+            event=event.event_type,
+            failure_code=failure_code,
+            remaining_budgets=store.get_snapshot().budgets,
+            stage_elapsed_ms=0, # TODO: Stage 타이머 통합 필요
+            total_elapsed_ms=snapshot.elapsed_ms,
+            recover_path=next_state.value,
+        )
+
+    return TransitionResult(
+        next_state=next_state,
+        terminal_reason=terminal_reason,
+        failure_code=failure_code.value,
+        notes=original_result.notes + [f"Failure Policy 적용: {failure_code.value}"],
     )
