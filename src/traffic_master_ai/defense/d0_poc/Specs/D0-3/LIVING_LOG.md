@@ -76,3 +76,24 @@ Paths:
 - src/traffic_master_ai/defense/d0_poc/scenarios/data_basic.py
 - src/traffic_master_ai/defense/d0_poc/scenarios/runner.py (수정)
 
+---
+
+### [GRGB-95] D0-3-T4 Advanced Threat Scenarios
+- 9개 심화 시나리오 구현 (`data_advanced.py`):
+  - SCN-07: Flow Control (RESET/ABORT 우선순위, 5 steps)
+  - SCN-08: Challenge Block (F-1 3회 실패 → T3 + Block, 6 steps)
+  - SCN-09: Token Mismatch (즉시 T3 + Block, 3 steps)
+  - SCN-10: Tier Escalation (T0→T1→T2, 4 steps)
+  - SCN-11: T2 Actions (THROTTLE + CHALLENGE 동시 검증, 5 steps)
+  - SCN-12: S5 Streak (7회 SEAT_TAKEN → THROTTLE 발동, 12 steps)
+  - SCN-13: T2 Persistence (T2 유지 + S3 challenge loop, 5 steps)
+  - SCN-14: T2 Challenge Loop (challenge pass 후 재진입, 5 steps)
+  - SCN-15: S6 Protection (F-5 개입 금지, 9 steps)
+- run_all_scenarios.py 스크립트: 전체 15개 시나리오 일괄 실행
+- 검증 완료: 9개 advanced + 6개 basic = 15개 시나리오 모두 통과
+
+Paths:
+- src/traffic_master_ai/defense/d0_poc/scenarios/data_advanced.py
+- src/traffic_master_ai/defense/d0_poc/scenarios/run_all_scenarios.py
+
+
