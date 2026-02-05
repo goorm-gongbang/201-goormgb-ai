@@ -5,16 +5,21 @@ Runner performs execution only; pass/fail judgment is in result data.
 """
 
 from dataclasses import replace
-from typing import List, Tuple
+from datetime import datetime
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 from ..actions import Actuator
 from ..brain import ActionPlanner, EvidenceState, RiskController, SignalAggregator
 from ..core import DefenseTier, FlowState
 from ..core.models import Context
+from ..observability.schema import DecisionLogEntry
 from ..orchestrator.engine import transition
 from ..policy import PolicyLoader
 from ..policy.snapshot import PolicySnapshot
 from .schema import Scenario, ScenarioStep, StepResult
+
+if TYPE_CHECKING:
+    from ..observability.logger import DecisionLogger
 
 
 class ScenarioRunner:
@@ -26,13 +31,21 @@ class ScenarioRunner:
     Does not throw exceptions for mismatches; results are recorded in StepResult.
     """
 
-    def __init__(self) -> None:
-        """Initialize runner with all required components."""
+    def __init__(self, logger: Optional["DecisionLogger"] = None) -> None:
+        """Initialize runner with all required components.
+
+        Args:
+            logger: Optional DecisionLogger for audit trail.
+                   If None, no logging is performed (backward compatible).
+        """
         # D0-2 Brain components
         self._aggregator = SignalAggregator()
         self._risk = RiskController()
         self._planner = ActionPlanner()
         self._actuator = Actuator()
+
+        # Optional logger for audit trail
+        self._logger = logger
 
         # Load default policy profile
         loader = PolicyLoader()
@@ -69,6 +82,15 @@ class ScenarioRunner:
             )
             results.append(result)
 
+            # Log the step result (after all results are computed)
+            self._log_step(
+                trace_id=scenario.id,
+                seq=seq + 1,  # 1-based for human readability
+                step=step,
+                result=result,
+                evidence=evidence,
+            )
+
             # Update state for next step
             flow_state = result.to_state
             tier = result.to_tier
@@ -76,6 +98,65 @@ class ScenarioRunner:
             # Evidence is returned from _execute_step
 
         return results
+
+    def _log_step(
+        self,
+        trace_id: str,
+        seq: int,
+        step: ScenarioStep,
+        result: StepResult,
+        evidence: EvidenceState,
+    ) -> None:
+        """Log a step result to the audit trail.
+
+        Fail-safe: Any logging error is caught and printed.
+        Logging must never interrupt defense logic.
+
+        Args:
+            trace_id: Scenario ID for correlation.
+            seq: Step sequence (1-based).
+            step: The step that was executed.
+            result: The result of step execution.
+            evidence: Current evidence state.
+        """
+        if self._logger is None:
+            return
+
+        try:
+            entry = DecisionLogEntry(
+                ts=datetime.now(),
+                trace_id=trace_id,
+                seq=seq,
+                event=DecisionLogEntry.create_event_dict(
+                    event_type=step.input_event.type,
+                    event_id=step.input_event.event_id,
+                    source=step.input_event.source.value,
+                    payload_summary=step.input_event.payload if step.input_event.payload else None,
+                ),
+                state_transition=DecisionLogEntry.create_state_transition(
+                    from_state=result.from_state.value,
+                    to_state=result.to_state.value,
+                ),
+                tier_transition=DecisionLogEntry.create_tier_transition(
+                    from_tier=result.from_tier.value,
+                    to_tier=result.to_tier.value,
+                ),
+                evidence_snapshot=DecisionLogEntry.create_evidence_snapshot(
+                    last_signal_ts=getattr(evidence, "last_signal_ts", None),
+                    challenge_fail_count=getattr(evidence, "challenge_fail_count", 0),
+                    seat_taken_streak=getattr(evidence, "seat_taken_streak", 0),
+                    token_mismatch_detected=getattr(evidence, "token_mismatch_detected", False),
+                    signal_history=list(evidence.signal_history) if hasattr(evidence, "signal_history") else [],
+                ),
+                decision=DecisionLogEntry.create_decision(
+                    planned_actions=result.planned_actions,
+                    terminal_reason=result.terminal_reason.value if result.terminal_reason else None,
+                    failure_code=result.failure_code.value if result.failure_code else None,
+                ),
+            )
+            self._logger.log(entry)
+        except Exception as e:
+            print(f"[ScenarioRunner] logging failed: {e}")
 
     def _execute_step(
         self,
