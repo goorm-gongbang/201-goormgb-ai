@@ -57,3 +57,33 @@ Paths:
 Paths:
 - src/traffic_master_ai/defense/d0_poc/observability/logger.py
 - src/traffic_master_ai/defense/d0_poc/observability/__init__.py
+
+---
+
+### [GRGB-102] D0-4-T3 Integration with Scenario Runner
+- ScenarioRunner 수정 (`runner.py`):
+  - `__init__`: `logger: DecisionLogger | None = None` 파라미터 추가
+  - Backward compatible: logger가 None이면 기존 동작 유지
+  - `_log_step()`: 각 Step 종료 후 DecisionLogEntry 생성 및 로깅
+  - 로깅 순서: Event 주입 → Evidence 업데이트 → RiskEngine → ActionPlanner → Actuator → **모든 결과 완료 후** 로깅
+  - try/except 감싸기: 로깅 오류는 print만 하고 예외 throw 안함
+- DecisionLogEntry 생성 규칙:
+  - trace_id = scenario.id (E2E 추적)
+  - seq = step index (1-based)
+  - event = 입력 이벤트 요약
+  - state_transition = (from_state → to_state)
+  - tier_transition = (from_tier → to_tier)
+  - evidence_snapshot = 현재 EvidenceState 요약
+  - decision = planned_actions + terminal_reason/failure_code
+- run_all.py 수정:
+  - DecisionLogger 초기화 (`setup()` 호출)
+  - ScenarioRunner 생성 시 logger 주입
+  - 모든 시나리오 실행 후 `logger.close()` 호출
+- 검증 완료:
+  - 15개 시나리오 전체 PASS
+  - logs/decision_audit.jsonl 생성 (89 Step 로그)
+  - 모든 줄 JSON 파싱 성공
+
+Paths:
+- src/traffic_master_ai/defense/d0_poc/scenarios/runner.py
+- src/traffic_master_ai/defense/d0_poc/scenarios/run_all.py

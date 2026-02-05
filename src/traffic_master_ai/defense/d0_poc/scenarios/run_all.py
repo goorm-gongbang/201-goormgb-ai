@@ -11,6 +11,7 @@ import sys
 from dataclasses import dataclass
 from typing import List, Tuple
 
+from ..observability import DecisionLogger
 from .data_advanced import get_all_advanced_scenarios
 from .data_basic import get_all_basic_scenarios
 from .runner import ScenarioRunner
@@ -145,6 +146,12 @@ def main() -> int:
     Returns:
         0 if all scenarios pass, 1 if any fail.
     """
+    # Initialize logger for audit trail
+    logger = DecisionLogger()
+    logger.setup()
+
+    # Initialize components with logger
+    runner = ScenarioRunner(logger=logger)
     # Initialize components
     runner = ScenarioRunner()
     verifier = ScenarioVerifier()
@@ -173,6 +180,9 @@ def main() -> int:
     print("\nRunning Advanced Scenarios (SCN-07 ~ SCN-15):")
     advanced_results = run_scenario_batch(advanced_scenarios, runner, verifier)
 
+    # Close logger after all scenarios
+    logger.close()
+
     # Combine results
     all_results = basic_results + advanced_results
 
@@ -186,9 +196,11 @@ def main() -> int:
         print(f"\n⚠️  {failed_count} scenario(s) FAILED. Exit code: 1")
         return 1
     else:
+        print(f"\n📝 Audit log written to: {logger.file_path}")
         print("\n🎉 All scenarios PASSED! Exit code: 0")
         return 0
 
 
 if __name__ == "__main__":
     sys.exit(main())
+
