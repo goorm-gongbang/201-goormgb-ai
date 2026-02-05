@@ -5,6 +5,7 @@ Runner performs execution only; pass/fail judgment is in result data.
 """
 
 from dataclasses import replace
+from typing import List, Tuple
 from typing import List
 
 from ..actions import Actuator
@@ -59,6 +60,7 @@ class ScenarioRunner:
         results: List[StepResult] = []
 
         for seq, step in enumerate(scenario.steps):
+            result, evidence = self._execute_step(
             result = self._execute_step(
                 seq=seq,
                 step=step,
@@ -72,6 +74,8 @@ class ScenarioRunner:
             # Update state for next step
             flow_state = result.to_state
             tier = result.to_tier
+            # Context is updated in-place via _apply_mutations
+            # Evidence is returned from _execute_step
             # Context and evidence are updated in-place within _execute_step
             # (via _apply_mutations and aggregator.process_event)
 
@@ -85,6 +89,8 @@ class ScenarioRunner:
         tier: DefenseTier,
         context: Context,
         evidence: EvidenceState,
+    ) -> Tuple[StepResult, EvidenceState]:
+        """Execute a single step and return the result with updated evidence.
     ) -> StepResult:
         """Execute a single step and return the result.
 
@@ -97,6 +103,7 @@ class ScenarioRunner:
             evidence: Current evidence state.
 
         Returns:
+            Tuple of (StepResult, updated EvidenceState).
             StepResult with execution details.
         """
         from_state = flow_state
@@ -152,6 +159,7 @@ class ScenarioRunner:
             actual_actions=planned_actions,
         )
 
+        step_result = StepResult(
         return StepResult(
             seq=seq,
             description=step.description,
@@ -169,6 +177,7 @@ class ScenarioRunner:
             expected_actions=step.expected_actions,
             mismatches=mismatches,
         )
+        return step_result, evidence
 
     def _apply_mutations(
         self, context: Context, mutations: dict
