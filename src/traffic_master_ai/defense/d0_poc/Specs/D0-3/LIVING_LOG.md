@@ -36,3 +36,22 @@ Paths:
 - src/traffic_master_ai/defense/d0_poc/scenarios/__init__.py
 - src/traffic_master_ai/defense/d0_poc/scenarios/schema.py
 - src/traffic_master_ai/defense/d0_poc/scenarios/runner.py
+
+---
+
+### [GRGB-93] D0-3-T2 Assertion Logic & Debug Reporter
+- 신규 dataclass 정의 (`verifier.py`):
+  - `AssertionResult`: passed, step_seq, mismatches, diff_message
+  - `ScenarioReport`: 시나리오 전체 결과 요약 (passed_steps, failed_steps)
+- ScenarioVerifier 구현:
+  - `verify_step()`: State/Tier 정확 일치 검증, Action subset 검증
+  - `verify_scenario()`: 전체 시나리오 검증 → ScenarioReport 반환
+  - `generate_report()`: CLI용 Pass/Fail 요약 테이블 출력
+- Action 정규화: BLOCK → DEF_BLOCKED, THROTTLE → DEF_THROTTLED 등
+- Reason 추출: failure_code, terminal_reason, emitted_event_types 순서로 우선 적용
+- 검증 완료: 의도적 불일치(Expected S6, Actual S5) 및 Action 누락 케이스 테스트 통과
+
+Paths:
+- src/traffic_master_ai/defense/d0_poc/scenarios/__init__.py
+- src/traffic_master_ai/defense/d0_poc/scenarios/verifier.py
+- tests/defense/test_verifier.py
