@@ -117,3 +117,18 @@ Paths:
 - src/traffic_master_ai/defense/d0_poc/policy/__init__.py
 - src/traffic_master_ai/defense/d0_poc/policy/loader.py
 - src/traffic_master_ai/defense/d0_poc/spec/policies.json
+
+---
+
+### [GRGB-85] D0-2-T6 Brain Unit Tests Implementation
+- 테스트 파일: tests/defense/test_brain_logic.py
+- 테스트 시나리오:
+  - Case 1: Tier Escalation (Pattern) - SIGNAL_REPETITIVE_PATTERN 1회→T1, 3회→T2
+  - Case 2: Immediate Block (Token Mismatch) - SIGNAL_TOKEN_MISMATCH → T3 + BLOCK + DEF_BLOCKED
+  - Case 3: Challenge Loop (F-1) - STAGE_3_CHALLENGE_FAILED 3회 → T3 + BLOCK + DEF_BLOCKED
+  - Case 4: S5 Streak (F-3) - STAGE_5_SEAT_TAKEN 7회 → T0 유지 + THROTTLE strong
+  - Case 5: S6 Protection (F-5) - S6에서 T2까지 → 개입 없음, T3이면 BLOCK 허용
+- Full Pipeline Integration 테스트 포함
+
+Paths:
+- tests/defense/test_brain_logic.py
