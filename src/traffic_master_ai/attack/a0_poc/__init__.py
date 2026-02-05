@@ -35,6 +35,12 @@ from traffic_master_ai.attack.a0_poc.policy_loader import (
     ProfileNotFoundError,
 )
 from traffic_master_ai.attack.a0_poc.runtime import BudgetManager, TimeboxManager
+from traffic_master_ai.attack.a0_poc.failure import (
+    FailureCode,
+    FailureMatrix,
+    FailurePolicy,
+)
+from traffic_master_ai.attack.a0_poc.roi import ROILogger, EvidenceLog
 
 __all__ = [
     # States
@@ -76,5 +82,11 @@ __all__ = [
     # Runtime (A0-2-T4)
     "BudgetManager",
     "TimeboxManager",
+    # Failure & ROI (A0-3)
+    "FailureCode",
+    "FailureMatrix",
+    "FailurePolicy",
+    "ROILogger",
+    "EvidenceLog",
 ]
 
