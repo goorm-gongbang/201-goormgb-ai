@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "poc0-scenario.schema.json",
+  "title": "PoC-0 Acceptance Scenario",
+  "type": "object",
+  "required": ["id", "name", "initial_state", "policy_profile", "events", "accept"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^SCN-[0-9]{2}$" },
+    "name": { "type": "string", "minLength": 3 },
+    "description": { "type": "string" },
+    "initial_state": {
+      "type": "string",
+      "enum": ["S0", "S1", "S2", "S3", "S4", "S5", "S6", "SX"]
+    },
+    "policy_profile": { "type": "string", "minLength": 1 },
+    "events": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/event" }
+    },
+    "accept": { "$ref": "#/$defs/acceptance" },
+    "meta": {
+      "type": "object",
+      "properties": {
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "version": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "event": {
+      "type": "object",
+      "required": ["event_type"],
+      "properties": {
+        "event_type": { "type": "string", "minLength": 3 },
+        "source": { "type": "string", "enum": ["mock", "timer", "defense", "ui", "api"] },
+        "stage": { "type": "string", "enum": ["S0", "S1", "S2", "S3", "S4", "S5", "S6", "unknown"] },
+        "delay_ms": { "type": "integer", "minimum": 0, "default": 0 },
+        "context": { "type": "object", "additionalProperties": true }
+      },
+      "additionalProperties": false
+    },
+    "acceptance": {
+      "type": "object",
+      "required": ["final_state", "asserts"],
+      "properties": {
+        "final_state": { "type": "string", "enum": ["S0", "S1", "S2", "S3", "S4", "S5", "S6", "SX"] },
+        "terminal_reason": { "type": "string", "enum": ["done", "abort", "cooldown", "reset"] },
+        "asserts": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/assertion" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "assertion": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "state_path_contains",
+            "state_path_equals",
+            "counter_at_least",
+            "counter_equals",
+            "budget_remaining_at_most",
+            "event_handled_count_at_least",
+            "returned_to_last_non_security_state",
+            "log_lines_at_least",
+            "no_invalid_events"
+          ]
+        },
+        "value": {},
+        "description": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

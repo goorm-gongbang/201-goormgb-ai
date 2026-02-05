@@ -7,6 +7,8 @@ Runner performs execution only; pass/fail judgment is in result data.
 from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import List, Tuple
+from typing import List
 
 from ..actions import Actuator
 from ..brain import ActionPlanner, EvidenceState, RiskController, SignalAggregator
@@ -38,6 +40,8 @@ class ScenarioRunner:
             logger: Optional DecisionLogger for audit trail.
                    If None, no logging is performed (backward compatible).
         """
+    def __init__(self) -> None:
+        """Initialize runner with all required components."""
         # D0-2 Brain components
         self._aggregator = SignalAggregator()
         self._risk = RiskController()
@@ -73,6 +77,7 @@ class ScenarioRunner:
 
         for seq, step in enumerate(scenario.steps):
             result, evidence = self._execute_step(
+            result = self._execute_step(
                 seq=seq,
                 step=step,
                 flow_state=flow_state,
@@ -158,6 +163,11 @@ class ScenarioRunner:
         except Exception as e:
             print(f"[ScenarioRunner] logging failed: {e}")
 
+            # Context and evidence are updated in-place within _execute_step
+            # (via _apply_mutations and aggregator.process_event)
+
+        return results
+
     def _execute_step(
         self,
         seq: int,
@@ -168,6 +178,8 @@ class ScenarioRunner:
         evidence: EvidenceState,
     ) -> Tuple[StepResult, EvidenceState]:
         """Execute a single step and return the result with updated evidence.
+    ) -> StepResult:
+        """Execute a single step and return the result.
 
         Args:
             seq: Step sequence number.
@@ -179,6 +191,7 @@ class ScenarioRunner:
 
         Returns:
             Tuple of (StepResult, updated EvidenceState).
+            StepResult with execution details.
         """
         from_state = flow_state
         from_tier = tier
@@ -234,6 +247,7 @@ class ScenarioRunner:
         )
 
         step_result = StepResult(
+        return StepResult(
             seq=seq,
             description=step.description,
             input_event_type=input_event.type,
