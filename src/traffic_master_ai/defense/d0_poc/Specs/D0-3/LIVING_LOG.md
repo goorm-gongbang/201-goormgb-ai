@@ -55,3 +55,24 @@ Paths:
 - src/traffic_master_ai/defense/d0_poc/scenarios/__init__.py
 - src/traffic_master_ai/defense/d0_poc/scenarios/verifier.py
 - tests/defense/test_verifier.py
+
+---
+
+### [GRGB-94] D0-3-T3 Standard Scenarios Implementation
+- Scenario Factory 구현 (`data_basic.py`):
+  - `EventFactory`: 자동 ID/timestamp 증가하는 Event 생성 헬퍼
+  - `step()`: ScenarioStep 생성 shorthand 함수
+- 6개 시나리오 구현:
+  - SCN-01: Happy Path (S0→SX 완료, 7 steps)
+  - SCN-02: Challenge Pass (T1 escalation + challenge pass, 5 steps)
+  - SCN-03: S3 Interrupt (DEF_CHALLENGE_FORCED + return-to, 5 steps)
+  - SCN-04: Timeout Retry (TIME_TIMEOUT + recovery, 5 steps)
+  - SCN-05: Seat Taken (S5 streak 유지, 9 steps)
+  - SCN-06: T2 Escalation (THROTTLE+CHALLENGE→S3, 4 steps)
+- runner.py 버그 수정: `_execute_step`에서 evidence 반환 추가 (상태 누적 문제 해결)
+- 검증 완료: 6개 시나리오 모두 Runner + Verifier 통과
+
+Paths:
+- src/traffic_master_ai/defense/d0_poc/scenarios/data_basic.py
+- src/traffic_master_ai/defense/d0_poc/scenarios/runner.py (수정)
+

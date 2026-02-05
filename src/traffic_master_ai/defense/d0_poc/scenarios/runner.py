@@ -5,7 +5,7 @@ Runner performs execution only; pass/fail judgment is in result data.
 """
 
 from dataclasses import replace
-from typing import List
+from typing import List, Tuple
 
 from ..actions import Actuator
 from ..brain import ActionPlanner, EvidenceState, RiskController, SignalAggregator
@@ -59,7 +59,7 @@ class ScenarioRunner:
         results: List[StepResult] = []
 
         for seq, step in enumerate(scenario.steps):
-            result = self._execute_step(
+            result, evidence = self._execute_step(
                 seq=seq,
                 step=step,
                 flow_state=flow_state,
@@ -72,8 +72,8 @@ class ScenarioRunner:
             # Update state for next step
             flow_state = result.to_state
             tier = result.to_tier
-            # Context and evidence are updated in-place within _execute_step
-            # (via _apply_mutations and aggregator.process_event)
+            # Context is updated in-place via _apply_mutations
+            # Evidence is returned from _execute_step
 
         return results
 
@@ -85,8 +85,8 @@ class ScenarioRunner:
         tier: DefenseTier,
         context: Context,
         evidence: EvidenceState,
-    ) -> StepResult:
-        """Execute a single step and return the result.
+    ) -> Tuple[StepResult, EvidenceState]:
+        """Execute a single step and return the result with updated evidence.
 
         Args:
             seq: Step sequence number.
@@ -97,7 +97,7 @@ class ScenarioRunner:
             evidence: Current evidence state.
 
         Returns:
-            StepResult with execution details.
+            Tuple of (StepResult, updated EvidenceState).
         """
         from_state = flow_state
         from_tier = tier
@@ -152,7 +152,7 @@ class ScenarioRunner:
             actual_actions=planned_actions,
         )
 
-        return StepResult(
+        step_result = StepResult(
             seq=seq,
             description=step.description,
             input_event_type=input_event.type,
@@ -169,6 +169,7 @@ class ScenarioRunner:
             expected_actions=step.expected_actions,
             mismatches=mismatches,
         )
+        return step_result, evidence
 
     def _apply_mutations(
         self, context: Context, mutations: dict
