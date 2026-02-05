@@ -87,3 +87,29 @@ Paths:
 Paths:
 - src/traffic_master_ai/defense/d0_poc/scenarios/runner.py
 - src/traffic_master_ai/defense/d0_poc/scenarios/run_all.py
+
+---
+
+### [GRGB-103] D0-4-T4 Log Analyzer & CLI Replay Reporter
+- CLI 도구 구현 (`tools/analyze_logs.py`):
+  - 기능 1: Summary Report (기본 동작)
+    - trace_id(Scenario ID) 기준 그룹핑
+    - 출력 컬럼: Scenario ID, Steps, Final State, Final Tier, Terminal Reason
+    - SX 상태 강조 표시 (ANSI color)
+  - 기능 2: Detail Replay (`--id SCN-XX`)
+    - Step 타임라인: seq, event.type, state from→to, tier from→to, actions, terminal
+    - BLOCK 액션 및 SX 상태 강조 표시
+  - 옵션:
+    - `--log-path`: 로그 파일 경로 오버라이드
+    - `--no-color`: ANSI color 비활성화
+  - 에러 처리: 사용자 친화적 메시지 출력 (stacktrace 노출 안함)
+- 표준 라이브러리만 사용: json, argparse, pathlib
+- 검증 완료:
+  - 요약표 출력 (15 scenarios, 89 steps)
+  - SCN-08 상세 로그 출력 (6 steps, BLOCK 강조)
+  - --no-color 옵션 정상 작동
+  - 유효하지 않은 trace_id 시 에러 메시지 + 가용 목록 출력
+
+Paths:
+- src/traffic_master_ai/defense/d0_poc/tools/__init__.py
+- src/traffic_master_ai/defense/d0_poc/tools/analyze_logs.py
