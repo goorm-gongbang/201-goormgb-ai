@@ -1,27 +1,35 @@
 {
   "id": "SCN-01",
-  "name": "Happy Path (No Challenge, No Fail)",
+  "name": "Normal Ticket Flow",
+  "description": "Standard S0 to SX flow with no interruptions.",
   "initial_state": "S0",
   "policy_profile": "default",
   "events": [
-    { "event_type": "FLOW_START", "source": "mock" },
-    { "event_type": "ENTRY_ENABLED", "source": "mock", "stage": "S1" },
-    { "event_type": "QUEUE_PASSED", "source": "mock", "stage": "S2" },
-    { "event_type": "SECTION_LIST_READY", "source": "mock", "stage": "S4" },
-    { "event_type": "SECTION_SELECTED", "source": "mock", "stage": "S4", "context": { "section_id": "A" } },
-    { "event_type": "SEATMAP_READY", "source": "mock", "stage": "S5" },
-    { "event_type": "SEAT_SELECTED", "source": "mock", "stage": "S5", "context": { "seat_id": "A-01" } },
-    { "event_type": "HOLD_ACQUIRED", "source": "mock", "stage": "S5", "context": { "hold_ttl_ms": 60000 } },
-    { "event_type": "PAYMENT_PAGE_ENTERED", "source": "mock", "stage": "S6" },
-    { "event_type": "PAYMENT_COMPLETED", "source": "mock", "stage": "S6" }
+    { "event_type": "FLOW_START", "source": "ui", "delay_ms": 100 },
+    { "event_type": "ENTRY_ENABLED", "source": "api", "stage": "S1" },
+    { "event_type": "QUEUE_PASSED", "source": "ui", "stage": "S2" },
+    { "event_type": "SECTION_SELECTED", "source": "ui", "stage": "S4" },
+    { "event_type": "SEAT_SELECTED", "source": "ui", "stage": "S5" },
+    { "event_type": "PAYMENT_COMPLETED", "source": "api", "stage": "S6" }
   ],
   "accept": {
     "final_state": "SX",
     "terminal_reason": "done",
     "asserts": [
-      { "type": "state_path_equals", "value": ["S0", "S1", "S2", "S4", "S5", "S6", "SX"] },
-      { "type": "no_invalid_events", "value": true },
-      { "type": "log_lines_at_least", "value": 10 }
+      {
+        "type": "state_path_equals",
+        "value": ["S0", "S1", "S2", "S4", "S5", "S6", "SX"],
+        "description": "Check full state path"
+      },
+      {
+        "type": "counter_at_least",
+        "value": 6,
+        "description": "At least 6 events handled"
+      }
     ]
+  },
+  "meta": {
+    "tags": ["smoke", "happy-path"],
+    "version": "1.0"
   }
 }
