@@ -38,3 +38,97 @@ Paths:
 Paths:
 - src/traffic_master_ai/defense/d0_poc/brain/__init__.py
 - src/traffic_master_ai/defense/d0_poc/brain/evidence.py
+
+---
+
+### [GRGB-81] D0-2-T2 Risk Controller Implementation
+- RiskController.decide_tier() 구현:
+  - R-1: SIGNAL_REPETITIVE_PATTERN 1개 → T1, 3개 이상 → T2
+  - R-2: challenge_fail_count >= 3 → T3 (Spec F-1)
+  - R-3: token_mismatch_detected → T3 즉시 (Spec F-4)
+  - R-4: T2+ 상태에서 S3 + STAGE_3_CHALLENGE_PASSED → T1 완화
+- Tier rank mapping 사용 (T0 < T1 < T2 < T3)
+- 하락은 R-4 조건 충족 시에만 허용
+- RISK_TIER_UPDATED 이벤트 생성 로직 구현
+
+Paths:
+- src/traffic_master_ai/defense/d0_poc/brain/__init__.py
+- src/traffic_master_ai/defense/d0_poc/brain/risk_engine.py
+
+---
+
+### [GRGB-82] D0-2-T3 Action Planner Implementation
+- PlannedAction dataclass 구현:
+  - `action_type: str` ("THROTTLE" | "BLOCK" | "CHALLENGE" | "SANDBOX" | "HONEY")
+  - `params: dict` (예: {"strength": "light"}, {"difficulty": "medium"})
+- ActionPlanner.plan_actions() 구현:
+  - Tier-Action Matrix 적용:
+    - T0: No Action
+    - T1: THROTTLE(light)
+    - T2: THROTTLE(strong) + CHALLENGE(medium)
+    - T3: BLOCK
+  - F-5 (S6 Protection): S6에서 신규 개입 금지, 단 T3이면 BLOCK 허용
+  - F-3 (S5 Streak): seat_taken_streak >= 7이면 THROTTLE(strong) 추가 또는 승격
+
+Paths:
+- src/traffic_master_ai/defense/d0_poc/brain/__init__.py
+- src/traffic_master_ai/defense/d0_poc/brain/planner.py
+
+---
+
+### [GRGB-83] D0-2-T4 Actuator Implementation
+- Actuator.execute_plans() 구현:
+  - THROTTLE → DEF_THROTTLED 생성
+    - light: duration_ms=200
+    - strong: duration_ms=2000
+    - payload: {"duration_ms": int, "strength": string}
+  - BLOCK → DEF_BLOCKED 생성
+    - payload: {"reason": "tier_t3"}
+  - CHALLENGE → DEF_CHALLENGE_FORCED 생성
+    - payload: {"difficulty": string}
+  - SANDBOX → DEF_SANDBOXED 생성 (context.is_sandboxed == False일 때만)
+- Event 공통 속성:
+  - source = EventSource.DEFENSE
+  - session_id, ts_ms = trigger_event에서 상속
+  - event_id = uuid4 기반 생성
+
+Paths:
+- src/traffic_master_ai/defense/d0_poc/actions/__init__.py
+- src/traffic_master_ai/defense/d0_poc/actions/actuator.py
+
+---
+
+### [GRGB-84] D0-2-T5 Policy Loader Implementation
+- Dataclasses 구현:
+  - `EscalationPolicy`: pattern_threshold, challenge_fail_limit
+  - `ThrottlePolicy`: t1_ms, t2_ms, streak_penalty_ms
+  - `SandboxPolicy`: max_age_sec
+  - `PolicyProfile`: name, escalation, throttle, sandbox
+- PolicyLoader.load_profile() 구현:
+  - JSON 파일에서 profile 로드
+  - 존재하지 않는 profile → ValueError
+  - JSON 파싱 오류 → ValueError
+  - 필수 key 누락 → ValueError
+- policies.json 샘플 파일 생성:
+  - default: 표준 설정
+  - strict: 엄격한 설정
+
+Paths:
+- src/traffic_master_ai/defense/d0_poc/policy/__init__.py
+- src/traffic_master_ai/defense/d0_poc/policy/loader.py
+- src/traffic_master_ai/defense/d0_poc/spec/policies.json
+
+---
+
+### [GRGB-85] D0-2-T6 Brain Unit Tests Implementation
+- 테스트 파일: tests/defense/test_brain_logic.py
+- 테스트 시나리오:
+  - Case 1: Tier Escalation (Pattern) - SIGNAL_REPETITIVE_PATTERN 1회→T1, 3회→T2
+  - Case 2: Immediate Block (Token Mismatch) - SIGNAL_TOKEN_MISMATCH → T3 + BLOCK + DEF_BLOCKED
+  - Case 3: Challenge Loop (F-1) - STAGE_3_CHALLENGE_FAILED 3회 → T3 + BLOCK + DEF_BLOCKED
+  - Case 4: S5 Streak (F-3) - STAGE_5_SEAT_TAKEN 7회 → T0 유지 + THROTTLE strong
+  - Case 5: S6 Protection (F-5) - S6에서 T2까지 → 개입 없음, T3이면 BLOCK 허용
+- Full Pipeline Integration 테스트 포함
+
+Paths:
+- tests/defense/test_brain_logic.py

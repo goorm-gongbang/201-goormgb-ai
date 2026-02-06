@@ -1,0 +1,32 @@
+{
+    "profiles": {
+        "default": {
+            "escalation": {
+                "pattern_threshold": 3,
+                "challenge_fail_limit": 3
+            },
+            "throttle": {
+                "t1_ms": 200,
+                "t2_ms": 500,
+                "streak_penalty_ms": 1000
+            },
+            "sandbox": {
+                "max_age_sec": 300
+            }
+        },
+        "strict": {
+            "escalation": {
+                "pattern_threshold": 2,
+                "challenge_fail_limit": 2
+            },
+            "throttle": {
+                "t1_ms": 400,
+                "t2_ms": 1200,
+                "streak_penalty_ms": 2000
+            },
+            "sandbox": {
+                "max_age_sec": 600
+            }
+        }
+    }
+}
