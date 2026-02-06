@@ -3,6 +3,7 @@
 > 목적: LLM·실브라우저 없이 **이벤트 주입 기반**으로  
 > 방어 오케스트레이션의 상태 전이, 위험 등급, 개입 로직이  
 > **일관되게 동작하는지** 검증한다.
+> **poc-0-defense.md는 PoC-0 baseline이며, STORY의 SPEC_SNAPSHOT과 충돌하면 SPEC_SNAPSHOT을 우선한다.**
 
 ---
 
@@ -48,6 +49,8 @@ T0, T1, T2, T3
 
 > PoC-0에서는 S3가 항상 존재하므로  
 > 강제 개입은 `current_flow_state = S3`로 단순 덮어쓴다.
+-	“PoC-0 v1.1+: S3는 return_to(마지막 비보안 상태)로 복귀 가능”
+-	“last_non_security_state가 없으면 S4로 fallback”
 
 ---
 
@@ -91,8 +94,12 @@ T0, T1, T2, T3
   "session_id": "string",
   "payload": {}
 }
+```
+
 
 ## 2.2 Event Types (PoC-0 최소 세트)
+
+“PoC-0에서는 최소 세트만 mandatory. 확장 이벤트는 story 스냅샷에서 추가 정의될 수 있으며, 추가 시 registry/validator도 함께 업데이트한다.”
 
 ### Flow
 - FLOW_START
@@ -175,6 +182,7 @@ T0, T1, T2, T3
   - 동일 상태 재시도
 - 초과 시:
   - FLOW_ABORT → SX
+- PoC-0에서는 TIME_COOLDOWN_EXPIRED는 엔진이 예약만 하고 실제 주입은 테스트/하니스가 수행해도 된다(슬립 없음).
 
 ---
 
@@ -191,6 +199,7 @@ T0, T1, T2, T3
   - tier = T3
   - emit DEF_BLOCKED
   - flow_state = SX
+- PoC-0에서는 Orchestrator(또는 transition 엔진)가 F-4를 집행하며, RiskEngine은 tier 변경 이벤트를 만들 수 있으나 최종 Block 집행은 Orchestrator→Actuator 경로로 수행한다.
 
 ---
 
