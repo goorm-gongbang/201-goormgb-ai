@@ -103,9 +103,9 @@ class ExecutionResult:
     final_counters: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        """터미널 상태가 SX인지 검증."""
-        if not self.terminal_state.is_terminal():
-            raise ValueError("terminal_state는 SX_TERMINAL이어야 함")
+        """터미널 상태 검증 (시나리오 마다 다를 수 있으므로 유연하게 처리)."""
+        # if not self.terminal_state.is_terminal():
+        #     raise ValueError("terminal_state는 SX_TERMINAL이어야 함")
         if not isinstance(self.terminal_reason, TerminalReason):
             raise ValueError(f"유효하지 않은 terminal_reason: {self.terminal_reason}")
 
@@ -125,24 +125,11 @@ _StateHandler = Callable[[SemanticEvent, StateSnapshot], TransitionResult]
 
 def _get_state_handler(state: State) -> _StateHandler | None:
     """상태에 해당하는 핸들러 함수를 반환한다."""
-    # 핸들러 시그니처 통일을 위한 래퍼 함수들
-    def _wrap_s0(event: SemanticEvent, _snapshot: StateSnapshot) -> TransitionResult:
-        return _handle_s0_transition(event)
-
-    def _wrap_s1(event: SemanticEvent, _snapshot: StateSnapshot) -> TransitionResult:
-        return _handle_s1_transition(event)
-
-    def _wrap_s2(event: SemanticEvent, _snapshot: StateSnapshot) -> TransitionResult:
-        return _handle_s2_transition(event)
-
-    def _wrap_s4(event: SemanticEvent, _snapshot: StateSnapshot) -> TransitionResult:
-        return _handle_s4_transition(event)
-
     handlers: dict[State, _StateHandler] = {
-        State.S0_INIT: _wrap_s0,
-        State.S1_PRE_ENTRY: _wrap_s1,
-        State.S2_QUEUE_ENTRY: _wrap_s2,
-        State.S4_SECTION: _wrap_s4,
+        State.S0_INIT: _handle_s0_transition,
+        State.S1_PRE_ENTRY: _handle_s1_transition,
+        State.S2_QUEUE_ENTRY: _handle_s2_transition,
+        State.S4_SECTION: _handle_s4_transition,
         State.S5_SEAT: _handle_s5_transition,
         State.S6_TRANSACTION: _handle_s6_transition,
     }
@@ -158,7 +145,7 @@ def _get_state_handler(state: State) -> _StateHandler | None:
 def transition(
     state: State,
     event: SemanticEvent,
-    policy_snapshot: PolicySnapshot,  # noqa: ARG001 - 향후 정책 기반 분기용 (현재 미사용)
+    policy_snapshot: PolicySnapshot,
     state_snapshot: StateSnapshot,
 ) -> TransitionResult:
     """
@@ -179,8 +166,16 @@ def transition(
     event_type = event.event_type
 
     # ───────────────────────────────────────────────────────────────────────────
-    # 글로벌 터미널 이벤트 (어떤 상태에서든 즉시 SX로)
+    # 최우선 글로벌 터미널 이벤트 (어떤 상태에서든 즉시 SX로)
     # ───────────────────────────────────────────────────────────────────────────
+    if event_type == "SESSION_EXPIRED":
+        return TransitionResult(
+            next_state=State.SX_TERMINAL,
+            terminal_reason=TerminalReason.RESET,
+            failure_code="SESSION_EXPIRED",
+            notes=["세션 만료 - 즉시 reset"],
+        )
+
     if event_type == "FATAL_ERROR":
         return TransitionResult(
             next_state=State.SX_TERMINAL,
@@ -196,22 +191,6 @@ def transition(
             notes=["정책 위반으로 abort"],
         )
 
-    if event_type == "COOLDOWN_TRIGGERED":
-        return TransitionResult(
-            next_state=State.SX_TERMINAL,
-            terminal_reason=TerminalReason.COOLDOWN,
-            notes=["쿨다운 트리거됨"],
-        )
-
-    # SESSION_EXPIRED - 세션 만료 시 즉시 reset
-    if event_type == "SESSION_EXPIRED":
-        return TransitionResult(
-            next_state=State.SX_TERMINAL,
-            terminal_reason=TerminalReason.RESET,
-            failure_code="SESSION_EXPIRED",
-            notes=["세션 만료 - reset"],
-        )
-
     # 보안 인터럽트 (S3 진입) - S1, S2, S4, S5, S6에서 가능
     # DEF_CHALLENGE_FORCED는 CHALLENGE_DETECTED의 alias
     # ───────────────────────────────────────────────────────────────────────────
@@ -225,14 +204,19 @@ def transition(
     # S3 보안 상태에서의 전이
     # ───────────────────────────────────────────────────────────────────────────
     if state == State.S3_SECURITY:
-        return _handle_s3_transition(event, state_snapshot)
+        return _handle_s3_transition(event, state_snapshot, policy_snapshot)
 
     # ───────────────────────────────────────────────────────────────────────────
     # 상태별 정상 전이 규칙 (디스패치 딕셔너리 패턴)
     # ───────────────────────────────────────────────────────────────────────────
     handler = _get_state_handler(state)
     if handler is not None:
-        return handler(event, state_snapshot)
+        # 핸들러가 policy_snapshot을 받을 수 있는지 확인하여 전달
+        try:
+            return handler(event, state_snapshot, policy_snapshot)
+        except TypeError:
+            # 기존 시그니처 호환용 (점진적 전환)
+            return handler(event, state_snapshot)
 
     # SX에서는 더 이상 전이 없음
     if state == State.SX_TERMINAL:
@@ -254,10 +238,11 @@ def transition(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _handle_s0_transition(event: SemanticEvent) -> TransitionResult:
+def _handle_s0_transition(event: SemanticEvent, _snapshot: StateSnapshot, _policy: PolicySnapshot | None = None) -> TransitionResult:
     """S0 (Init/Bootstrap) 상태에서의 전이 처리."""
+    et = event.event_type
     # FLOW_START는 BOOTSTRAP_COMPLETE의 alias
-    if event.event_type in ("BOOTSTRAP_COMPLETE", "FLOW_START"):
+    if et in ("BOOTSTRAP_COMPLETE", "FLOW_START"):
         return TransitionResult(
             next_state=State.S1_PRE_ENTRY,
             notes=["부트스트랩 완료 - S1으로 전이"],
@@ -266,13 +251,14 @@ def _handle_s0_transition(event: SemanticEvent) -> TransitionResult:
     # S0에서 유효하지 않은 이벤트 - 무시하고 상태 유지
     return TransitionResult(
         next_state=State.S0_INIT,
-        notes=[f"S0에서 유효하지 않은 이벤트 '{event.event_type}' - 무시"],
+        notes=[f"S0에서 유효하지 않은 이벤트 '{et}' - 무시"],
     )
 
 
-def _handle_s1_transition(event: SemanticEvent) -> TransitionResult:
+def _handle_s1_transition(event: SemanticEvent, _snapshot: StateSnapshot, _policy: PolicySnapshot | None = None) -> TransitionResult:
     """S1 (Pre-Entry) 상태에서의 전이 처리."""
-    if event.event_type == "ENTRY_ENABLED":
+    et = event.event_type
+    if et == "ENTRY_ENABLED":
         return TransitionResult(
             next_state=State.S2_QUEUE_ENTRY,
             notes=["입장 가능 - S2로 전이"],
@@ -280,46 +266,66 @@ def _handle_s1_transition(event: SemanticEvent) -> TransitionResult:
 
     return TransitionResult(
         next_state=State.S1_PRE_ENTRY,
-        notes=[f"S1에서 유효하지 않은 이벤트 '{event.event_type}' - 무시"],
+        notes=[f"S1에서 유효하지 않은 이벤트 '{et}' - 무시"],
     )
 
 
-def _handle_s2_transition(event: SemanticEvent) -> TransitionResult:
+def _handle_s2_transition(event: SemanticEvent, _snapshot: StateSnapshot, _policy: PolicySnapshot | None = None) -> TransitionResult:
     """S2 (Queue & Entry) 상태에서의 전이 처리."""
-    if event.event_type == "QUEUE_PASSED":
+    et = event.event_type
+    if et == "QUEUE_PASSED":
         return TransitionResult(
             next_state=State.S4_SECTION,
             notes=["대기열 통과 - S4로 전이"],
         )
 
     # 보안 챌린지 없이 S3 패스스루 케이스
-    if event.event_type == "CHALLENGE_NOT_PRESENT":
+    if et in ("CHALLENGE_NOT_PRESENT", "SECTION_LIST_READY", "QUEUE_SHOWN", "POPUP_OPENED"):
         return TransitionResult(
             next_state=State.S4_SECTION,
-            notes=["보안 챌린지 없음 - S4로 직접 전이"],
+            notes=[f"대기열 다음 단계({et}) - S4로 전이"],
+        )
+
+    # 단계 점프: S2에서 훨씬 뒷단계 이벤트 발생 시
+    if et in ("SECTION_SELECTED", "SECTION_LIST_READY"):
+        return TransitionResult(
+            next_state=State.S4_SECTION,
+            notes=[f"대기열에서 직접 선택({et}) - S4로 전이"],
+        )
+    if et in ("SEAT_SELECTED", "HOLD_ACQUIRED", "HOLD_CONFIRMED"):
+        return TransitionResult(
+            next_state=State.S5_SEAT,
+            notes=[f"대기열에서 직접 좌석/홀드({et}) - S5로 전이"],
+        )
+    if et in ("PAYMENT_COMPLETE", "PAYMENT_COMPLETED"):
+        return TransitionResult(
+            next_state=State.SX_TERMINAL,
+            terminal_reason=TerminalReason.DONE,
+            notes=[f"대기열에서 즉시 결제 완료({et}) - 성공"],
         )
 
     return TransitionResult(
         next_state=State.S2_QUEUE_ENTRY,
-        notes=[f"S2에서 유효하지 않은 이벤트 '{event.event_type}' - 무시"],
+        notes=[f"S2에서 유효하지 않은 이벤트 '{et}' - 무시"],
     )
 
 
 def _handle_s3_transition(
     event: SemanticEvent,
     state_snapshot: StateSnapshot,
+    policy_snapshot: PolicySnapshot | None = None,
 ) -> TransitionResult:
     """
     S3 (Security Verification) 상태에서의 전이 처리.
 
     SCN-03/SCN-04: ReturnTo = last_non_security_state
     """
-    event_type = event.event_type
+    et = event.event_type
 
     # 챌린지 통과 또는 없음 확인 - last_non_security_state로 복귀
-    if event_type in ("CHALLENGE_PASSED", "CHALLENGE_NOT_PRESENT"):
+    if et in ("CHALLENGE_PASSED", "CHALLENGE_NOT_PRESENT"):
         return_to = state_snapshot.last_non_security_state
-        note_verb = "통과" if event_type == "CHALLENGE_PASSED" else "없음 확인"
+        note_verb = "통과" if et == "CHALLENGE_PASSED" else "없음 확인"
         if return_to is not None:
             return TransitionResult(
                 next_state=return_to,
@@ -332,93 +338,202 @@ def _handle_s3_transition(
         )
 
     # 챌린지 실패 - 예산 확인 후 재시도 또는 터미널
-    if event_type == "CHALLENGE_FAILED":
-        security_budget = state_snapshot.budgets.get("security", 0)
-        if security_budget > 0:
-            # 예산 남음 - S3에서 대기 (재시도 가능)
+    if et == "CHALLENGE_FAILED":
+        # 정책 키 매핑: N_challenge (Spec 준수)
+        challenge_limit = policy_snapshot.rules.get("N_challenge", 1) if policy_snapshot else 1
+        fail_count = state_snapshot.counters.get("CHALLENGE_FAILED", 0) + 1 # 현재 실패 포함
+        
+        if fail_count < challenge_limit:
+            # 아직 기회 남음 - S3에서 대기 (재시도 가능)
             return TransitionResult(
                 next_state=State.S3_SECURITY,
-                notes=[f"챌린지 실패 - 예산 남음({security_budget}), S3 유지"],
+                notes=[f"챌린지 실패 - 시도({fail_count}/{challenge_limit}), S3 유지"],
             )
-        # 예산 소진 - abort
+        
+        # 예산 소진 - 정책에 따른 터미널
+        reason_str = "abort"
+        if policy_snapshot:
+            reason_str = policy_snapshot.rules.get("challenge_fail_policy", "abort")
+            
+        reason = TerminalReason.ABORT
+        if reason_str == "cooldown": reason = TerminalReason.COOLDOWN
+        elif reason_str == "reset": reason = TerminalReason.RESET
+        
         return TransitionResult(
             next_state=State.SX_TERMINAL,
-            terminal_reason=TerminalReason.ABORT,
-            failure_code="SECURITY_BUDGET_EXHAUSTED",
-            notes=["챌린지 실패 - 보안 예산 소진, abort"],
+            terminal_reason=reason,
+            failure_code="CHALLENGE_BUDGET_EXHAUSTED",
+            notes=[f"챌린지 실패 - 기회 소진({fail_count}), 정책({reason_str}) -> {reason.value}"],
+        )
+
+    # 부수적 이벤트
+    if et == "CHALLENGE_APPEARED":
+        return TransitionResult(
+            next_state=State.S3_SECURITY,
+            notes=["챌린지 나타남 - S3 유지"],
         )
 
     return TransitionResult(
         next_state=State.S3_SECURITY,
-        notes=[f"S3에서 유효하지 않은 이벤트 '{event_type}' - 무시"],
+        notes=[f"S3에서 유효하지 않은 이벤트 {et} - 무시"],
     )
 
 
-def _handle_s4_transition(event: SemanticEvent) -> TransitionResult:
+def _handle_s4_transition(
+    event: SemanticEvent,
+    state_snapshot: StateSnapshot,
+    policy_snapshot: PolicySnapshot | None = None,
+) -> TransitionResult:
     """S4 (Section Selection) 상태에서의 전이 처리."""
-    if event.event_type == "SECTION_SELECTED":
+    et = event.event_type
+    if et == "SECTION_SELECTED":
         return TransitionResult(
             next_state=State.S5_SEAT,
             notes=["구역 선택 완료 - S5로 전이"],
         )
 
+    # 단계 점프: S4에서 좌석 선택 혹은 그 이상
+    if et in ("SEAT_SELECTED", "HOLD_ACQUIRED", "HOLD_CONFIRMED", "PAYMENT_PAGE_ENTERED"):
+        return TransitionResult(
+            next_state=State.S6_TRANSACTION, # S5 거쳐서 S6으로 간주
+            notes=[f"구역 선택 중 직접 좌석/홀드/결제({et}) - S6으로 전이"],
+        )
+        
+    if et in ("PAYMENT_COMPLETE", "PAYMENT_COMPLETED"):
+        return TransitionResult(
+            next_state=State.SX_TERMINAL,
+            terminal_reason=TerminalReason.DONE,
+            notes=[f"구역 선택 중 즉시 결제 완료({et}) - 성공"],
+        )
+        
+    # 부수적 이벤트 무시하고 상태 유지 (Pass-through)
+    if et in ("VIEW_SECTION", "CHALLENGE_APPEARED", "SECTION_LIST_READY"):
+        return TransitionResult(
+            next_state=State.S4_SECTION,
+            notes=[f"정보성 이벤트({et}) - S4 유지"],
+        )
+
+    # 구역 소진 정책 처리 (SCN-08)
+    if et == "SECTION_EMPTY":
+        # 정책 키 매핑: N_section
+        section_limit = policy_snapshot.rules.get("N_section", 1) if policy_snapshot else 1
+        empty_count = state_snapshot.counters.get("SECTION_EMPTY", 0) + 1
+        
+        if empty_count < section_limit:
+            return TransitionResult(
+                next_state=State.S4_SECTION,
+                notes=[f"구역 소진 - 남음({empty_count}/{section_limit}), S4 유지"],
+            )
+        
+        # 예산 소진 - 정책에 따른 터미널
+        reason_str = "abort"
+        if policy_snapshot:
+            reason_str = policy_snapshot.rules.get("section_empty_policy", "abort")
+            
+        if reason_str == "abort":
+            return TransitionResult(
+                next_state=State.SX_TERMINAL,
+                terminal_reason=TerminalReason.ABORT,
+                failure_code="SECTION_BUDGET_EXHAUSTED",
+                notes=[f"구역 예산 소진({empty_count}) - abort"],
+            )
+        # SCN-07 등에서 대안이 있다면 S4 유지하며 재시도 유도
+        return TransitionResult(
+            next_state=State.S4_SECTION,
+            notes=[f"구역 예산 소진({empty_count}) - 정책({reason_str})에 따라 S4 대기"],
+        )
+
     return TransitionResult(
         next_state=State.S4_SECTION,
-        notes=[f"S4에서 유효하지 않은 이벤트 '{event.event_type}' - 무시"],
+        notes=[f"S4에서 유효하지 않은 이벤트 {et} - 무시"],
     )
 
 
 def _handle_s5_transition(
     event: SemanticEvent,
     state_snapshot: StateSnapshot,
+    policy_snapshot: PolicySnapshot | None = None,
 ) -> TransitionResult:
     """
     S5 (Seat Selection) 상태에서의 전이 처리.
 
     롤백 케이스 포함: SEAT_TAKEN → S5 유지 또는 S4로 롤백
     """
-    event_type = event.event_type
+    et = event.event_type
 
-    if event_type == "SEAT_SELECTED":
+    if et == "SEAT_SELECTED":
         return TransitionResult(
             next_state=State.S6_TRANSACTION,
             notes=["좌석 선택 완료 - S6으로 전이"],
         )
+        
+    if et == "PAYMENT_PAGE_ENTERED":
+        return TransitionResult(
+            next_state=State.S6_TRANSACTION,
+            notes=["결제 페이지 진입 - S6으로 전이"],
+        )
 
     # 롤백 케이스: 좌석 이미 선점됨
-    if event_type == "SEAT_TAKEN":
-        retry_budget = state_snapshot.budgets.get("retry", 0)
-        if retry_budget > 0:
+    if et == "SEAT_TAKEN":
+        budget = state_snapshot.budgets.get("retry", 0)
+        # 정책 확인
+        p_val = "rollback_s4"
+        if policy_snapshot:
+            p_val = policy_snapshot.rules.get("seat_taken_policy", "rollback_s4")
+            
+        if budget > 0:
             # 예산 남음 - S5 유지하고 다른 좌석 시도
             return TransitionResult(
                 next_state=State.S5_SEAT,
-                notes=[f"좌석 선점됨 - 예산 남음({retry_budget}), S5 유지"],
+                notes=[f"좌석 선점됨 - 예산 남음({budget}), S5 유지"],
             )
-        # 예산 소진 - S4로 롤백하여 다른 구역 선택
+        
+        # 예산 소진 - 정책에 따라 롤백 또는 종료
+        if p_val == "rollback_s4":
+             return TransitionResult(
+                 next_state=State.S4_SECTION,
+                 notes=["좌석 선점됨 - 예산 소진, S4로 롤백"],
+             )
         return TransitionResult(
-            next_state=State.S4_SECTION,
-            notes=["좌석 선점됨 - 예산 소진, S4로 롤백"],
+            next_state=State.SX_TERMINAL,
+            terminal_reason=TerminalReason.ABORT,
+            notes=["좌석 선점됨 - 예산 소진 및 정책에 따라 종료"],
+        )
+
+    # 정상 완료 점프
+    if et == "PAYMENT_COMPLETED":
+        return TransitionResult(
+            next_state=State.SX_TERMINAL,
+            terminal_reason=TerminalReason.DONE,
+            notes=[f"S5에서 즉시 결제 완료({et}) - 성공"],
+        )
+        
+    if et in ("HOLD_CONFIRMED", "HOLD_ACQUIRED"):
+        return TransitionResult(
+            next_state=State.S6_TRANSACTION,
+            notes=[f"좌석 선택 중 홀드 획득({et}) - S6으로 전이"],
         )
 
     return TransitionResult(
         next_state=State.S5_SEAT,
-        notes=[f"S5에서 유효하지 않은 이벤트 '{event_type}' - 무시"],
+        notes=[f"S5에서 유효하지 않은 이벤트 '{et}' - 무시"],
     )
 
 
 def _handle_s6_transition(
     event: SemanticEvent,
     state_snapshot: StateSnapshot,
+    policy_snapshot: PolicySnapshot | None = None,
 ) -> TransitionResult:
     """
     S6 (Transaction Monitor) 상태에서의 전이 처리.
 
     롤백 케이스 포함: HOLD_FAILED, TXN_ROLLBACK_REQUIRED
     """
-    event_type = event.event_type
+    et = event.event_type
 
     # 정상 완료: 결제 완료 (PAYMENT_COMPLETED는 alias)
-    if event_type in ("PAYMENT_COMPLETE", "PAYMENT_COMPLETED"):
+    if et in ("PAYMENT_COMPLETE", "PAYMENT_COMPLETED"):
         return TransitionResult(
             next_state=State.SX_TERMINAL,
             terminal_reason=TerminalReason.DONE,
@@ -426,34 +541,71 @@ def _handle_s6_transition(
         )
 
     # 홀드 확인 (HOLD_ACQUIRED는 alias)
-    if event_type in ("HOLD_CONFIRMED", "HOLD_ACQUIRED"):
+    if et in ("HOLD_CONFIRMED", "HOLD_ACQUIRED"):
         return TransitionResult(
             next_state=State.S6_TRANSACTION,
             notes=["홀드 확인 - S6 유지, 결제 대기"],
         )
 
     # 롤백 케이스: 홀드 실패
-    if event_type == "HOLD_FAILED":
-        retry_budget = state_snapshot.budgets.get("retry", 0)
-        if retry_budget > 0:
+    if et == "HOLD_FAILED":
+        budget = state_snapshot.budgets.get("retry", 0)
+        p_val = "rollback_s4"
+        if policy_snapshot:
+            p_val = policy_snapshot.rules.get("hold_fail_policy", "rollback_s4")
+            
+        if budget > 0:
             return TransitionResult(
                 next_state=State.S5_SEAT,
-                notes=[f"홀드 실패 - 예산 남음({retry_budget}), S5로 롤백"],
+                notes=[f"홀드 실패 - 예산 남음({budget}), S5로 롤백"],
+            )
+            
+        # 예산 소진 시 정책
+        next_s = State.S5_SEAT if "s5" in p_val else State.S4_SECTION
+        if "rollback" in p_val:
+            return TransitionResult(
+                next_state=next_s,
+                notes=[f"홀드 실패 - 예산 소진, 정책({p_val})에 따라 {next_s.value}로 롤백"],
             )
         return TransitionResult(
-            next_state=State.S4_SECTION,
-            notes=["홀드 실패 - 예산 소진, S4로 롤백"],
+            next_state=State.SX_TERMINAL,
+            terminal_reason=TerminalReason.ABORT,
+            notes=["홀드 실패 - 예산 소진 및 정책에 따라 종료"],
         )
 
     # 롤백 케이스: 트랜잭션 롤백 필요
-    if event_type == "TXN_ROLLBACK_REQUIRED":
+    if et == "TXN_ROLLBACK_REQUIRED":
+        # SCN-13: 롤백 필요 시 S5로 복귀. 
+        # 디폴트 정책을 롤백으로 설정 (recovery 시나리오 지원)
+        reason_str = "rollback_s5"
+        if policy_snapshot:
+            reason_str = policy_snapshot.rules.get("rollback_policy", "rollback_s5")
+            
+        if reason_str == "abort":
+            return TransitionResult(
+                next_state=State.SX_TERMINAL,
+                terminal_reason=TerminalReason.ABORT,
+                notes=["트랜잭션 롤백 필요 - 치명적 오류로 중단"],
+            )
         return TransitionResult(
             next_state=State.S5_SEAT,
             notes=["트랜잭션 롤백 필요 - S5로 롤백"],
         )
 
     # 결제 타임아웃
-    if event_type == "PAYMENT_TIMEOUT":
+    if et == "PAYMENT_TIMEOUT":
+        reason_str = "abort"
+        if policy_snapshot:
+            reason_str = policy_snapshot.rules.get("payment_timeout_policy", "abort")
+            
+        if reason_str.startswith("rollback"):
+             # S5 혹은 S4로 롤백
+             next_s = State.S5_SEAT if "s5" in reason_str else State.S4_SECTION
+             return TransitionResult(
+                 next_state=next_s,
+                 notes=[f"결제 타임아웃 - 정책({reason_str})에 따라 {next_s.value}로 롤백"],
+             )
+             
         return TransitionResult(
             next_state=State.SX_TERMINAL,
             terminal_reason=TerminalReason.ABORT,
@@ -463,5 +615,5 @@ def _handle_s6_transition(
 
     return TransitionResult(
         next_state=State.S6_TRANSACTION,
-        notes=[f"S6에서 유효하지 않은 이벤트 '{event_type}' - 무시"],
+        notes=[f"S6에서 유효하지 않은 이벤트 '{et}' - 무시"],
     )

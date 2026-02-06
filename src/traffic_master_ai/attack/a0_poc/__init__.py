@@ -41,6 +41,16 @@ from traffic_master_ai.attack.a0_poc.failure import (
     FailurePolicy,
 )
 from traffic_master_ai.attack.a0_poc.roi import ROILogger, EvidenceLog
+from traffic_master_ai.attack.a0_poc.scenario_models import (
+    Scenario,
+    ScenarioEvent,
+    ScenarioAssertion,
+    ScenarioAcceptance,
+)
+from traffic_master_ai.attack.a0_poc.scenario_loader import ScenarioLoader
+from traffic_master_ai.attack.a0_poc.scenario_runner import ScenarioRunner
+from traffic_master_ai.attack.a0_poc.assertion_engine import check_assertion
+from traffic_master_ai.attack.a0_poc.scenario_report import ScenarioResult, ScenarioReport
 
 __all__ = [
     # States
@@ -88,5 +98,14 @@ __all__ = [
     "FailurePolicy",
     "ROILogger",
     "EvidenceLog",
+    # Scenario (A0-4)
+    "Scenario",
+    "ScenarioEvent",
+    "ScenarioAssertion",
+    "ScenarioAcceptance",
+    "ScenarioLoader",
+    "ScenarioRunner",
+    "check_assertion",
+    "ScenarioResult",
+    "ScenarioReport",
 ]
-

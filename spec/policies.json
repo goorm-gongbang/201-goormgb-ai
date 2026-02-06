@@ -2,68 +2,42 @@
   "default": {
     "N_challenge": 2,
     "N_section": 4,
-    "N_seat": 6,
-    "N_hold": 3,
-    "seat_taken_threshold": 4,
-    "max_retries": 3,
-    "S1_timeout_ms": 30000,
-    "S2_timeout_ms": 60000,
-    "S3_timeout_ms": 30000,
-    "S4_timeout_ms": 30000,
-    "S5_timeout_ms": 45000,
-    "S6_timeout_ms": 120000,
+    "N_seat": 3,
+    "N_hold": 1,
+    "N_txn_rb": 1,
+    "seat_taken_threshold": 3,
+    "max_retries": 5,
+    "S0_timeout_ms": 30000,
+    "S1_timeout_ms": 60000,
+    "S2_timeout_ms": 120000,
+    "S3_timeout_ms": 60000,
+    "S4_timeout_ms": 60000,
+    "S5_timeout_ms": 60000,
+    "S6_timeout_ms": 60000,
     "global_timeout_ms": 300000,
     "payment_timeout_policy": "abort"
   },
   "challenge_strict": {
     "N_challenge": 1,
-    "N_section": 4,
-    "N_seat": 6,
-    "N_hold": 3,
-    "seat_taken_threshold": 4,
-    "max_retries": 2,
-    "S3_timeout_ms": 15000,
-    "payment_timeout_policy": "abort"
-  },
-  "txn_timeout_rollback": {
-    "N_challenge": 2,
-    "N_section": 4,
-    "N_seat": 6,
-    "N_hold": 3,
-    "seat_taken_threshold": 4,
-    "max_retries": 3,
-    "S6_timeout_ms": 60000,
-    "payment_timeout_policy": "rollback_to_S5"
+    "S3_timeout_ms": 10000,
+    "challenge_fail_policy": "cooldown"
   },
   "section_strict": {
-    "N_challenge": 2,
     "N_section": 2,
-    "N_seat": 6,
-    "N_hold": 3,
-    "seat_taken_threshold": 4,
-    "max_retries": 2,
-    "S4_timeout_ms": 15000,
-    "payment_timeout_policy": "abort"
+    "S4_timeout_ms": 10000,
+    "section_empty_policy": "abort"
   },
   "seat_threshold_rollback": {
-    "N_challenge": 2,
-    "N_section": 4,
-    "N_seat": 10,
-    "N_hold": 5,
-    "seat_taken_threshold": 8,
-    "max_retries": 3,
-    "S5_timeout_ms": 60000,
-    "payment_timeout_policy": "abort",
-    "seat_rollback_policy": "rollback_to_S4"
+    "N_seat": 5,
+    "seat_taken_threshold": 2,
+    "seat_taken_policy": "rollback_s4"
   },
   "hold_strict_rollback": {
-    "N_challenge": 2,
-    "N_section": 4,
-    "N_seat": 6,
     "N_hold": 1,
-    "seat_taken_threshold": 4,
-    "max_retries": 2,
-    "payment_timeout_policy": "abort",
-    "hold_failure_policy": "rollback_to_S4"
+    "hold_fail_policy": "rollback_s4"
+  },
+  "txn_timeout_rollback": {
+    "S6_timeout_ms": 5000,
+    "payment_timeout_policy": "rollback_s5"
   }
 }

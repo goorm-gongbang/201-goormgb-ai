@@ -101,6 +101,7 @@ _BUDGET_KEYS = frozenset({
     "N_section", 
     "N_seat",
     "N_hold",
+    "N_txn_rb",
     "seat_taken_threshold",
     "max_retries",
 })
