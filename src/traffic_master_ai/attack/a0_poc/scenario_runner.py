@@ -15,6 +15,7 @@ from traffic_master_ai.attack.a0_poc.events import SemanticEvent
 from traffic_master_ai.attack.a0_poc.failure import FailureMatrix
 from traffic_master_ai.attack.a0_poc.roi import ROILogger
 from traffic_master_ai.attack.a0_poc.scenario_models import Scenario, ScenarioAssertion
+from traffic_master_ai.attack.a0_poc.scenario_models import Scenario
 from traffic_master_ai.attack.a0_poc.snapshots import PolicySnapshot
 from traffic_master_ai.attack.a0_poc.states import State, TerminalReason
 from traffic_master_ai.attack.a0_poc.store import StateStore
@@ -41,6 +42,7 @@ class ScenarioRunner:
         failure_matrix: FailureMatrix | None = None,
         roi_logger: ROILogger | None = None,
     ) -> ScenarioResult:
+    ) -> ExecutionResult:
         """
         시나리오를 실행하여 가상 시간이 반영된 ExecutionResult를 반환합니다.
         
@@ -84,6 +86,8 @@ class ScenarioRunner:
 
             # D. 실패 처리 매트릭스 적용 (A0-3 로직 재사용)
             if failure_matrix and not result.is_terminal():
+            # D. 실패 처리 매트릭스 적용 (A0-3 로직 재사용 - private이므로 여기서 직접 처리 또는 orchestrator 호출)
+            if failure_matrix:
                 try:
                     et = EventType(event.event_type)
                     failure_policy = failure_matrix.get_policy(current_state, et)
@@ -118,6 +122,9 @@ class ScenarioRunner:
                 # BREAK CONDITION
                 final_terminal_reason = result.terminal_reason or final_terminal_reason or TerminalReason.DONE
                 last_result = result
+            handled_events += 1
+
+            if next_state.is_terminal():
                 break
 
         # 3. 결과 조립
@@ -135,6 +142,19 @@ class ScenarioRunner:
             state_path=state_path,
             terminal_state=final_state,
             terminal_reason=final_terminal_reason,
+        
+        # 터미널 미도달 검증
+        if not final_snapshot.current_state.is_terminal():
+            raise ValueError(f"Scenario {scenario.id} ended without reaching terminal state.")
+
+        terminal_reason = TerminalReason.DONE
+        if last_result and last_result.terminal_reason:
+            terminal_reason = last_result.terminal_reason
+
+        return ExecutionResult(
+            state_path=state_path,
+            terminal_state=final_snapshot.current_state,
+            terminal_reason=terminal_reason,
             handled_events=handled_events,
             total_elapsed_ms=final_snapshot.elapsed_ms,
             final_budgets=dict(final_snapshot.budgets),
