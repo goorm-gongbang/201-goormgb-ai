@@ -152,8 +152,6 @@ def main() -> int:
 
     # Initialize components with logger
     runner = ScenarioRunner(logger=logger)
-    # Initialize components
-    runner = ScenarioRunner()
     verifier = ScenarioVerifier()
 
     # Load all scenarios
