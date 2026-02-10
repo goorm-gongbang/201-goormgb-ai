@@ -11,7 +11,7 @@ class TestStateStoreInitialization:
     def test_default_initialization(self) -> None:
         """Create StateStore with defaults."""
         store = StateStore()
-        assert store.current_state == State.S0_INIT
+        assert store.current_state == State.S0
         assert store.last_non_security_state is None
         assert store.elapsed_ms == 0
         assert store.get_budget("any") == 0
@@ -19,8 +19,8 @@ class TestStateStoreInitialization:
 
     def test_custom_initial_state(self) -> None:
         """Create StateStore with custom initial state."""
-        store = StateStore(initial_state=State.S2_QUEUE_ENTRY)
-        assert store.current_state == State.S2_QUEUE_ENTRY
+        store = StateStore(initial_state=State.S2)
+        assert store.current_state == State.S2
 
     def test_initial_budgets(self) -> None:
         """Create StateStore with initial budgets."""
@@ -40,16 +40,16 @@ class TestStateStoreStateManagement:
     def test_set_state(self) -> None:
         """Set and get current state."""
         store = StateStore()
-        store.set_state(State.S1_PRE_ENTRY)
-        assert store.current_state == State.S1_PRE_ENTRY
+        store.set_state(State.S1)
+        assert store.current_state == State.S1
 
     def test_last_non_security_state(self) -> None:
         """Set and get last non-security state."""
         store = StateStore()
         assert store.last_non_security_state is None
         
-        store.set_last_non_security_state(State.S2_QUEUE_ENTRY)
-        assert store.last_non_security_state == State.S2_QUEUE_ENTRY
+        store.set_last_non_security_state(State.S2)
+        assert store.last_non_security_state == State.S2
         
         store.set_last_non_security_state(None)
         assert store.last_non_security_state is None
@@ -204,27 +204,27 @@ class TestStateStoreSnapshotOperations:
     def test_get_snapshot_returns_copy(self) -> None:
         """get_snapshot returns a copy, not reference."""
         store = StateStore(
-            initial_state=State.S1_PRE_ENTRY,
+            initial_state=State.S1,
             budgets={"retry": 3},
         )
         
         snapshot = store.get_snapshot()
         
         # Verify values
-        assert snapshot.current_state == State.S1_PRE_ENTRY
+        assert snapshot.current_state == State.S1
         assert snapshot.budgets["retry"] == 3
         
         # Modify snapshot should NOT affect store
-        snapshot.current_state = State.S5_SEAT
+        snapshot.current_state = State.S5
         snapshot.budgets["retry"] = 0
         
-        assert store.current_state == State.S1_PRE_ENTRY
+        assert store.current_state == State.S1
         assert store.get_budget("retry") == 3
 
     def test_copy_store(self) -> None:
         """Copy StateStore creates independent copy."""
         store = StateStore(
-            initial_state=State.S2_QUEUE_ENTRY,
+            initial_state=State.S2,
             budgets={"retry": 3},
             counters={"attempts": 5},
         )
@@ -233,23 +233,23 @@ class TestStateStoreSnapshotOperations:
         copy = store.copy()
         
         # Verify copy has same values
-        assert copy.current_state == State.S2_QUEUE_ENTRY
+        assert copy.current_state == State.S2
         assert copy.get_budget("retry") == 3
         assert copy.get_counter("attempts") == 5
         assert copy.elapsed_ms == 500
         
         # Modify copy should NOT affect original
-        copy.set_state(State.S5_SEAT)
+        copy.set_state(State.S5)
         copy.decrement_budget("retry")
         
-        assert store.current_state == State.S2_QUEUE_ENTRY
+        assert store.current_state == State.S2
         assert store.get_budget("retry") == 3
 
     def test_from_snapshot(self) -> None:
         """Create StateStore from existing snapshot."""
         snapshot = StateSnapshot(
-            current_state=State.S4_SECTION,
-            last_non_security_state=State.S2_QUEUE_ENTRY,
+            current_state=State.S4,
+            last_non_security_state=State.S2,
             budgets={"retry": 2},
             counters={"selections": 3},
             elapsed_ms=1500,
@@ -257,15 +257,15 @@ class TestStateStoreSnapshotOperations:
         
         store = StateStore.from_snapshot(snapshot)
         
-        assert store.current_state == State.S4_SECTION
-        assert store.last_non_security_state == State.S2_QUEUE_ENTRY
+        assert store.current_state == State.S4
+        assert store.last_non_security_state == State.S2
         assert store.get_budget("retry") == 2
         assert store.get_counter("selections") == 3
         assert store.elapsed_ms == 1500
         
         # Original snapshot should be unaffected
-        store.set_state(State.S5_SEAT)
-        assert snapshot.current_state == State.S4_SECTION
+        store.set_state(State.S5)
+        assert snapshot.current_state == State.S4
 
 
 class TestStateStoreRepr:

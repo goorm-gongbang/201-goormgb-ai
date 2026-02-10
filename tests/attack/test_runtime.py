@@ -91,9 +91,9 @@ class TestTimeboxManager:
         """스테이지별 타임박스 조회 확인."""
         manager = TimeboxManager(sample_profile)
         
-        assert manager.get_stage_timebox(State.S1_PRE_ENTRY) == 30000
-        assert manager.get_stage_timebox(State.S2_QUEUE_ENTRY) == 120000
-        assert manager.get_stage_timebox(State.S4_SECTION) == 0  # 미설정 시
+        assert manager.get_stage_timebox(State.S1) == 30000
+        assert manager.get_stage_timebox(State.S2) == 120000
+        assert manager.get_stage_timebox(State.S4) == 0  # 미설정 시
 
     def test_global_timebox(self, sample_profile: PolicyProfile) -> None:
         """글로벌 타임박스 조회 확인."""
@@ -103,7 +103,7 @@ class TestTimeboxManager:
     def test_unknown_state_returns_zero(self, sample_profile: PolicyProfile) -> None:
         """정의되지 않은 상태 요청 시 0 반환."""
         manager = TimeboxManager(sample_profile)
-        assert manager.get_stage_timebox(State.SX_TERMINAL) == 0
+        assert manager.get_stage_timebox(State.SX) == 0
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -121,7 +121,7 @@ class TestRuntimeIntegration:
 
         # A0-1 StateStore 생성 및 연동
         store = StateStore(
-            initial_state=State.S0_INIT,
+            initial_state=State.S0,
             budgets=initial_budgets,
         )
 

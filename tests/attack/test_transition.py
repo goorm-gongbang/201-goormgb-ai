@@ -33,7 +33,7 @@ def default_policy() -> PolicySnapshot:
 def default_snapshot() -> StateSnapshot:
     """기본 상태 스냅샷."""
     return StateSnapshot(
-        current_state=State.S0_INIT,
+        current_state=State.S0,
         last_non_security_state=None,
         budgets={"retry": 3, "security": 2},
         counters={},
@@ -55,10 +55,10 @@ class TestNormalTransitions:
         default_snapshot: StateSnapshot,
     ) -> None:
         """S0 → S1: BOOTSTRAP_COMPLETE."""
-        event = SemanticEvent(event_type="BOOTSTRAP_COMPLETE")
-        result = transition(State.S0_INIT, event, default_policy, default_snapshot)
+        event = SemanticEvent(type="BOOTSTRAP_COMPLETE")
+        result = transition(State.S0, event, default_policy, default_snapshot)
 
-        assert result.next_state == State.S1_PRE_ENTRY
+        assert result.next_state == State.S1
         assert not result.is_terminal()
 
     def test_s1_to_s2_entry_enabled(
@@ -67,10 +67,10 @@ class TestNormalTransitions:
         default_snapshot: StateSnapshot,
     ) -> None:
         """S1 → S2: ENTRY_ENABLED."""
-        event = SemanticEvent(event_type="ENTRY_ENABLED")
-        result = transition(State.S1_PRE_ENTRY, event, default_policy, default_snapshot)
+        event = SemanticEvent(type="ENTRY_ENABLED")
+        result = transition(State.S1, event, default_policy, default_snapshot)
 
-        assert result.next_state == State.S2_QUEUE_ENTRY
+        assert result.next_state == State.S2
 
     def test_s2_to_s4_queue_passed(
         self,
@@ -78,10 +78,10 @@ class TestNormalTransitions:
         default_snapshot: StateSnapshot,
     ) -> None:
         """S2 → S4: QUEUE_PASSED."""
-        event = SemanticEvent(event_type="QUEUE_PASSED")
-        result = transition(State.S2_QUEUE_ENTRY, event, default_policy, default_snapshot)
+        event = SemanticEvent(type="QUEUE_PASSED")
+        result = transition(State.S2, event, default_policy, default_snapshot)
 
-        assert result.next_state == State.S4_SECTION
+        assert result.next_state == State.S4
 
     def test_s4_to_s5_section_selected(
         self,
@@ -89,10 +89,10 @@ class TestNormalTransitions:
         default_snapshot: StateSnapshot,
     ) -> None:
         """S4 → S5: SECTION_SELECTED."""
-        event = SemanticEvent(event_type="SECTION_SELECTED")
-        result = transition(State.S4_SECTION, event, default_policy, default_snapshot)
+        event = SemanticEvent(type="SECTION_SELECTED")
+        result = transition(State.S4, event, default_policy, default_snapshot)
 
-        assert result.next_state == State.S5_SEAT
+        assert result.next_state == State.S5
 
     def test_s5_to_s6_seat_selected(
         self,
@@ -100,10 +100,10 @@ class TestNormalTransitions:
         default_snapshot: StateSnapshot,
     ) -> None:
         """S5 → S6: SEAT_SELECTED."""
-        event = SemanticEvent(event_type="SEAT_SELECTED")
-        result = transition(State.S5_SEAT, event, default_policy, default_snapshot)
+        event = SemanticEvent(type="SEAT_SELECTED")
+        result = transition(State.S5, event, default_policy, default_snapshot)
 
-        assert result.next_state == State.S6_TRANSACTION
+        assert result.next_state == State.S6
 
     def test_s6_to_sx_payment_complete(
         self,
@@ -111,10 +111,10 @@ class TestNormalTransitions:
         default_snapshot: StateSnapshot,
     ) -> None:
         """S6 → SX: PAYMENT_COMPLETE (티켓팅 성공)."""
-        event = SemanticEvent(event_type="PAYMENT_COMPLETE")
-        result = transition(State.S6_TRANSACTION, event, default_policy, default_snapshot)
+        event = SemanticEvent(type="PAYMENT_COMPLETE")
+        result = transition(State.S6, event, default_policy, default_snapshot)
 
-        assert result.next_state == State.SX_TERMINAL
+        assert result.next_state == State.SX
         assert result.terminal_reason == TerminalReason.DONE
         assert result.is_terminal()
 
@@ -133,10 +133,10 @@ class TestSecurityInterrupt:
         default_snapshot: StateSnapshot,
     ) -> None:
         """SCN-03: S2에서 CHALLENGE_DETECTED → S3 인터럽트."""
-        event = SemanticEvent(event_type="CHALLENGE_DETECTED")
-        result = transition(State.S2_QUEUE_ENTRY, event, default_policy, default_snapshot)
+        event = SemanticEvent(type="CHALLENGE_DETECTED")
+        result = transition(State.S2, event, default_policy, default_snapshot)
 
-        assert result.next_state == State.S3_SECURITY
+        assert result.next_state == State.S3
 
     def test_scn03_security_interrupt_from_s5(
         self,
@@ -144,10 +144,10 @@ class TestSecurityInterrupt:
         default_snapshot: StateSnapshot,
     ) -> None:
         """SCN-03: S5에서 CHALLENGE_DETECTED → S3 인터럽트."""
-        event = SemanticEvent(event_type="CHALLENGE_DETECTED")
-        result = transition(State.S5_SEAT, event, default_policy, default_snapshot)
+        event = SemanticEvent(type="CHALLENGE_DETECTED")
+        result = transition(State.S5, event, default_policy, default_snapshot)
 
-        assert result.next_state == State.S3_SECURITY
+        assert result.next_state == State.S3
 
     def test_scn04_return_to_last_non_security_state(
         self,
@@ -155,16 +155,16 @@ class TestSecurityInterrupt:
     ) -> None:
         """SCN-04: S3에서 CHALLENGE_PASSED → last_non_security_state로 복귀."""
         snapshot = StateSnapshot(
-            current_state=State.S3_SECURITY,
-            last_non_security_state=State.S5_SEAT,  # S5에서 인터럽트됨
+            current_state=State.S3,
+            last_non_security_state=State.S5,  # S5에서 인터럽트됨
             budgets={"security": 2},
             counters={},
             elapsed_ms=0,
         )
-        event = SemanticEvent(event_type="CHALLENGE_PASSED")
-        result = transition(State.S3_SECURITY, event, default_policy, snapshot)
+        event = SemanticEvent(type="CHALLENGE_PASSED")
+        result = transition(State.S3, event, default_policy, snapshot)
 
-        assert result.next_state == State.S5_SEAT
+        assert result.next_state == State.S5
 
     def test_scn04_return_to_s2(
         self,
@@ -172,16 +172,16 @@ class TestSecurityInterrupt:
     ) -> None:
         """SCN-04: S3에서 CHALLENGE_PASSED → S2로 복귀."""
         snapshot = StateSnapshot(
-            current_state=State.S3_SECURITY,
-            last_non_security_state=State.S2_QUEUE_ENTRY,
+            current_state=State.S3,
+            last_non_security_state=State.S2,
             budgets={"security": 2},
             counters={},
             elapsed_ms=0,
         )
-        event = SemanticEvent(event_type="CHALLENGE_PASSED")
-        result = transition(State.S3_SECURITY, event, default_policy, snapshot)
+        event = SemanticEvent(type="CHALLENGE_PASSED")
+        result = transition(State.S3, event, default_policy, snapshot)
 
-        assert result.next_state == State.S2_QUEUE_ENTRY
+        assert result.next_state == State.S2
 
     def test_security_challenge_failed_with_budget(
         self,
@@ -189,16 +189,16 @@ class TestSecurityInterrupt:
     ) -> None:
         """보안 챌린지 실패 - 예산 남음 → S3 유지."""
         snapshot = StateSnapshot(
-            current_state=State.S3_SECURITY,
-            last_non_security_state=State.S2_QUEUE_ENTRY,
+            current_state=State.S3,
+            last_non_security_state=State.S2,
             budgets={"security": 2},
             counters={},
             elapsed_ms=0,
         )
-        event = SemanticEvent(event_type="CHALLENGE_FAILED")
-        result = transition(State.S3_SECURITY, event, default_policy, snapshot)
+        event = SemanticEvent(type="CHALLENGE_FAILED")
+        result = transition(State.S3, event, default_policy, snapshot)
 
-        assert result.next_state == State.S3_SECURITY
+        assert result.next_state == State.S3
         assert not result.is_terminal()
 
     def test_security_challenge_failed_budget_exhausted(
@@ -207,16 +207,16 @@ class TestSecurityInterrupt:
     ) -> None:
         """보안 챌린지 실패 - 예산 소진 → abort."""
         snapshot = StateSnapshot(
-            current_state=State.S3_SECURITY,
-            last_non_security_state=State.S2_QUEUE_ENTRY,
+            current_state=State.S3,
+            last_non_security_state=State.S2,
             budgets={"security": 0},  # 예산 소진
             counters={},
             elapsed_ms=0,
         )
-        event = SemanticEvent(event_type="CHALLENGE_FAILED")
-        result = transition(State.S3_SECURITY, event, default_policy, snapshot)
+        event = SemanticEvent(type="CHALLENGE_FAILED")
+        result = transition(State.S3, event, default_policy, snapshot)
 
-        assert result.next_state == State.SX_TERMINAL
+        assert result.next_state == State.SX
         assert result.terminal_reason == TerminalReason.ABORT
         assert result.failure_code == "SECURITY_BUDGET_EXHAUSTED"
 
@@ -235,16 +235,16 @@ class TestRollbackCases:
     ) -> None:
         """S5: SEAT_TAKEN + 예산 남음 → S5 유지."""
         snapshot = StateSnapshot(
-            current_state=State.S5_SEAT,
-            last_non_security_state=State.S4_SECTION,
+            current_state=State.S5,
+            last_non_security_state=State.S4,
             budgets={"retry": 3},
             counters={},
             elapsed_ms=0,
         )
-        event = SemanticEvent(event_type="SEAT_TAKEN")
-        result = transition(State.S5_SEAT, event, default_policy, snapshot)
+        event = SemanticEvent(type="SEAT_TAKEN")
+        result = transition(State.S5, event, default_policy, snapshot)
 
-        assert result.next_state == State.S5_SEAT
+        assert result.next_state == State.S5
 
     def test_s5_seat_taken_budget_exhausted_rollback(
         self,
@@ -252,16 +252,16 @@ class TestRollbackCases:
     ) -> None:
         """S5: SEAT_TAKEN + 예산 소진 → S4로 롤백."""
         snapshot = StateSnapshot(
-            current_state=State.S5_SEAT,
-            last_non_security_state=State.S4_SECTION,
+            current_state=State.S5,
+            last_non_security_state=State.S4,
             budgets={"retry": 0},  # 예산 소진
             counters={},
             elapsed_ms=0,
         )
-        event = SemanticEvent(event_type="SEAT_TAKEN")
-        result = transition(State.S5_SEAT, event, default_policy, snapshot)
+        event = SemanticEvent(type="SEAT_TAKEN")
+        result = transition(State.S5, event, default_policy, snapshot)
 
-        assert result.next_state == State.S4_SECTION
+        assert result.next_state == State.S4
 
     def test_s6_hold_failed_with_budget_rollback_to_s5(
         self,
@@ -269,16 +269,16 @@ class TestRollbackCases:
     ) -> None:
         """S6: HOLD_FAILED + 예산 남음 → S5로 롤백."""
         snapshot = StateSnapshot(
-            current_state=State.S6_TRANSACTION,
-            last_non_security_state=State.S5_SEAT,
+            current_state=State.S6,
+            last_non_security_state=State.S5,
             budgets={"retry": 2},
             counters={},
             elapsed_ms=0,
         )
-        event = SemanticEvent(event_type="HOLD_FAILED")
-        result = transition(State.S6_TRANSACTION, event, default_policy, snapshot)
+        event = SemanticEvent(type="HOLD_FAILED")
+        result = transition(State.S6, event, default_policy, snapshot)
 
-        assert result.next_state == State.S5_SEAT
+        assert result.next_state == State.S5
 
     def test_s6_hold_failed_budget_exhausted_rollback_to_s4(
         self,
@@ -286,16 +286,16 @@ class TestRollbackCases:
     ) -> None:
         """S6: HOLD_FAILED + 예산 소진 → S4로 롤백."""
         snapshot = StateSnapshot(
-            current_state=State.S6_TRANSACTION,
-            last_non_security_state=State.S5_SEAT,
+            current_state=State.S6,
+            last_non_security_state=State.S5,
             budgets={"retry": 0},
             counters={},
             elapsed_ms=0,
         )
-        event = SemanticEvent(event_type="HOLD_FAILED")
-        result = transition(State.S6_TRANSACTION, event, default_policy, snapshot)
+        event = SemanticEvent(type="HOLD_FAILED")
+        result = transition(State.S6, event, default_policy, snapshot)
 
-        assert result.next_state == State.S4_SECTION
+        assert result.next_state == State.S4
 
     def test_s6_txn_rollback_required(
         self,
@@ -303,10 +303,10 @@ class TestRollbackCases:
         default_snapshot: StateSnapshot,
     ) -> None:
         """S6: TXN_ROLLBACK_REQUIRED → S5로 롤백."""
-        event = SemanticEvent(event_type="TXN_ROLLBACK_REQUIRED")
-        result = transition(State.S6_TRANSACTION, event, default_policy, default_snapshot)
+        event = SemanticEvent(type="TXN_ROLLBACK_REQUIRED")
+        result = transition(State.S6, event, default_policy, default_snapshot)
 
-        assert result.next_state == State.S5_SEAT
+        assert result.next_state == State.S5
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -323,11 +323,11 @@ class TestTerminalTransitions:
         default_snapshot: StateSnapshot,
     ) -> None:
         """어떤 상태에서든 FATAL_ERROR → SX (abort)."""
-        event = SemanticEvent(event_type="FATAL_ERROR", failure_code="NETWORK_ERROR")
+        event = SemanticEvent(type="FATAL_ERROR", failure_code="NETWORK_ERROR")
 
-        for state in [State.S0_INIT, State.S2_QUEUE_ENTRY, State.S5_SEAT]:
+        for state in [State.S0, State.S2, State.S5]:
             result = transition(state, event, default_policy, default_snapshot)
-            assert result.next_state == State.SX_TERMINAL
+            assert result.next_state == State.SX
             assert result.terminal_reason == TerminalReason.ABORT
 
     def test_policy_abort(
@@ -336,10 +336,10 @@ class TestTerminalTransitions:
         default_snapshot: StateSnapshot,
     ) -> None:
         """POLICY_ABORT → SX (abort)."""
-        event = SemanticEvent(event_type="POLICY_ABORT")
-        result = transition(State.S4_SECTION, event, default_policy, default_snapshot)
+        event = SemanticEvent(type="POLICY_ABORT")
+        result = transition(State.S4, event, default_policy, default_snapshot)
 
-        assert result.next_state == State.SX_TERMINAL
+        assert result.next_state == State.SX
         assert result.terminal_reason == TerminalReason.ABORT
 
     def test_cooldown_triggered(
@@ -348,10 +348,10 @@ class TestTerminalTransitions:
         default_snapshot: StateSnapshot,
     ) -> None:
         """COOLDOWN_TRIGGERED → SX (cooldown)."""
-        event = SemanticEvent(event_type="COOLDOWN_TRIGGERED")
-        result = transition(State.S2_QUEUE_ENTRY, event, default_policy, default_snapshot)
+        event = SemanticEvent(type="COOLDOWN_TRIGGERED")
+        result = transition(State.S2, event, default_policy, default_snapshot)
 
-        assert result.next_state == State.SX_TERMINAL
+        assert result.next_state == State.SX
         assert result.terminal_reason == TerminalReason.COOLDOWN
 
     def test_payment_timeout(
@@ -360,10 +360,10 @@ class TestTerminalTransitions:
         default_snapshot: StateSnapshot,
     ) -> None:
         """S6: PAYMENT_TIMEOUT → SX (abort)."""
-        event = SemanticEvent(event_type="PAYMENT_TIMEOUT")
-        result = transition(State.S6_TRANSACTION, event, default_policy, default_snapshot)
+        event = SemanticEvent(type="PAYMENT_TIMEOUT")
+        result = transition(State.S6, event, default_policy, default_snapshot)
 
-        assert result.next_state == State.SX_TERMINAL
+        assert result.next_state == State.SX
         assert result.terminal_reason == TerminalReason.ABORT
         assert result.failure_code == "PAYMENT_TIMEOUT"
 
@@ -382,10 +382,10 @@ class TestInvalidEventHandling:
         default_snapshot: StateSnapshot,
     ) -> None:
         """S0에서 유효하지 않은 이벤트 → 무시하고 S0 유지."""
-        event = SemanticEvent(event_type="QUEUE_PASSED")  # S0에서 유효하지 않음
-        result = transition(State.S0_INIT, event, default_policy, default_snapshot)
+        event = SemanticEvent(type="QUEUE_PASSED")  # S0에서 유효하지 않음
+        result = transition(State.S0, event, default_policy, default_snapshot)
 
-        assert result.next_state == State.S0_INIT
+        assert result.next_state == State.S0
         assert "무시" in result.notes[0]
 
     def test_invalid_event_in_s4_ignored(
@@ -394,8 +394,8 @@ class TestInvalidEventHandling:
         default_snapshot: StateSnapshot,
     ) -> None:
         """S4에서 유효하지 않은 이벤트 → 무시하고 S4 유지."""
-        event = SemanticEvent(event_type="PAYMENT_COMPLETE")  # S4에서 유효하지 않음
-        result = transition(State.S4_SECTION, event, default_policy, default_snapshot)
+        event = SemanticEvent(type="PAYMENT_COMPLETE")  # S4에서 유효하지 않음
+        result = transition(State.S4, event, default_policy, default_snapshot)
 
-        assert result.next_state == State.S4_SECTION
+        assert result.next_state == State.S4
         assert "무시" in result.notes[0]

@@ -31,12 +31,12 @@ class TestScenarioRunner:
             "initial_state": "S0",
             "policy_profile": "default",
             "events": [
-                { "event_type": "FLOW_START", "source": "ui", "delay_ms": 100 },
-                { "event_type": "ENTRY_ENABLED", "source": "api", "stage": "S1", "delay_ms": 200 },
-                { "event_type": "QUEUE_PASSED", "source": "ui", "stage": "S2", "delay_ms": 300 },
-                { "event_type": "SECTION_SELECTED", "source": "ui", "stage": "S4", "delay_ms": 100 },
-                { "event_type": "SEAT_SELECTED", "source": "ui", "stage": "S5", "delay_ms": 50 },
-                { "event_type": "PAYMENT_COMPLETED", "source": "api", "stage": "S6", "delay_ms": 500 }
+                { "type": "FLOW_START", "source": "ui", "delay_ms": 100 },
+                { "type": "ENTRY_ENABLED", "source": "api", "stage": "S1", "delay_ms": 200 },
+                { "type": "QUEUE_PASSED", "source": "ui", "stage": "S2", "delay_ms": 300 },
+                { "type": "SECTION_SELECTED", "source": "ui", "stage": "S4", "delay_ms": 100 },
+                { "type": "SEAT_SELECTED", "source": "ui", "stage": "S5", "delay_ms": 50 },
+                { "type": "PAYMENT_COMPLETED", "source": "api", "stage": "S6", "delay_ms": 500 }
             ],
             "accept": {
                 "final_state": "SX",
@@ -49,7 +49,7 @@ class TestScenarioRunner:
         result = runner.run(scn, store, basic_policy)
 
         # 2. 결과 검증
-        assert result.terminal_state == State.SX_TERMINAL
+        assert result.terminal_state == State.SX
         assert result.terminal_reason == TerminalReason.DONE
         assert result.handled_events == 6
         
@@ -57,8 +57,8 @@ class TestScenarioRunner:
         assert result.total_elapsed_ms == 1250
         
         # 상태 경로 검증
-        expected_path = [State.S0_INIT, State.S1_PRE_ENTRY, State.S2_QUEUE_ENTRY, 
-                         State.S4_SECTION, State.S5_SEAT, State.S6_TRANSACTION, State.SX_TERMINAL]
+        expected_path = [State.S0, State.S1, State.S2, 
+                         State.S4, State.S5, State.S6, State.SX]
         assert result.state_path == expected_path
 
     def test_run_shorter_than_events_reaches_terminal(self, runner: ScenarioRunner, basic_policy: PolicySnapshot) -> None:
@@ -69,9 +69,9 @@ class TestScenarioRunner:
             "initial_state": "S0",
             "policy_profile": "default",
             "events": [
-                { "event_type": "FLOW_START", "source": "ui", "delay_ms": 10 },
-                { "event_type": "FATAL_ERROR", "source": "api", "delay_ms": 10 }, # 즉시 SX_TERMINAL (Abort)
-                { "event_type": "ENTRY_ENABLED", "source": "api", "delay_ms": 10 } # 처리되지 않아야 함
+                { "type": "FLOW_START", "source": "ui", "delay_ms": 10 },
+                { "type": "FATAL_ERROR", "source": "api", "delay_ms": 10 }, # 즉시 SX (Abort)
+                { "type": "ENTRY_ENABLED", "source": "api", "delay_ms": 10 } # 처리되지 않아야 함
             ],
             "accept": {
                 "final_state": "SX",
@@ -83,7 +83,7 @@ class TestScenarioRunner:
         store = StateStore()
         result = runner.run(scn, store, basic_policy)
 
-        assert result.terminal_state == State.SX_TERMINAL
+        assert result.terminal_state == State.SX
         assert result.terminal_reason == TerminalReason.ABORT
         assert result.handled_events == 2 # FATAL_ERROR까지만 처리
         assert result.total_elapsed_ms == 20

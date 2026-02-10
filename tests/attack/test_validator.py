@@ -60,14 +60,14 @@ class TestValidateSchema:
 
     def test_valid_event_type(self) -> None:
         """유효한 event_type 검증."""
-        event = SemanticEvent(event_type="FLOW_START")
+        event = SemanticEvent(type="FLOW_START")
         result = self.validator.validate_schema(event)
         assert result.is_valid is True
         assert result.errors == []
 
     def test_unknown_event_type(self) -> None:
         """알 수 없는 event_type 검증."""
-        event = SemanticEvent(event_type="UNKNOWN_EVENT")
+        event = SemanticEvent(type="UNKNOWN_EVENT")
         result = self.validator.validate_schema(event)
         assert result.is_valid is False
         assert "unknown event_type" in result.errors[0]
@@ -75,8 +75,8 @@ class TestValidateSchema:
     def test_valid_source_in_context(self) -> None:
         """유효한 source 검증."""
         event = SemanticEvent(
-            event_type="FLOW_START",
-            context={"source": "ui"},
+            type="FLOW_START",
+            payload={"source": "ui"},
         )
         result = self.validator.validate_schema(event)
         assert result.is_valid is True
@@ -84,8 +84,8 @@ class TestValidateSchema:
     def test_invalid_source_in_context(self) -> None:
         """유효하지 않은 source 검증."""
         event = SemanticEvent(
-            event_type="FLOW_START",
-            context={"source": "invalid_source"},
+            type="FLOW_START",
+            payload={"source": "invalid_source"},
         )
         result = self.validator.validate_schema(event)
         assert result.is_valid is False
@@ -94,8 +94,8 @@ class TestValidateSchema:
     def test_valid_stage(self) -> None:
         """유효한 stage 검증."""
         event = SemanticEvent(
-            event_type="FLOW_START",
-            stage=State.S0_INIT,
+            type="FLOW_START",
+            stage=State.S0,
         )
         result = self.validator.validate_schema(event)
         assert result.is_valid is True
@@ -105,8 +105,8 @@ class TestValidateSchema:
         valid_sources = ["ui", "api", "timer", "defense", "mock"]
         for source in valid_sources:
             event = SemanticEvent(
-                event_type="FLOW_START",
-                context={"source": source},
+                type="FLOW_START",
+                payload={"source": source},
             )
             result = self.validator.validate_schema(event)
             assert result.is_valid is True, f"source '{source}' should be valid"
@@ -126,38 +126,38 @@ class TestValidateStateValidity:
 
     def test_flow_start_valid_in_s0(self) -> None:
         """FLOW_START는 S0에서만 유효."""
-        event = SemanticEvent(event_type="FLOW_START")
-        result = self.validator.validate_state_validity(event, State.S0_INIT)
+        event = SemanticEvent(type="FLOW_START")
+        result = self.validator.validate_state_validity(event, State.S0)
         assert result.is_valid is True
 
     def test_flow_start_invalid_in_s1(self) -> None:
         """FLOW_START는 S1에서 유효하지 않음."""
-        event = SemanticEvent(event_type="FLOW_START")
-        result = self.validator.validate_state_validity(event, State.S1_PRE_ENTRY)
+        event = SemanticEvent(type="FLOW_START")
+        result = self.validator.validate_state_validity(event, State.S1)
         assert result.is_valid is False
         assert "not valid in state" in result.errors[0]
 
     def test_entry_enabled_valid_in_s1(self) -> None:
         """ENTRY_ENABLED는 S1에서 유효."""
-        event = SemanticEvent(event_type="ENTRY_ENABLED")
-        result = self.validator.validate_state_validity(event, State.S1_PRE_ENTRY)
+        event = SemanticEvent(type="ENTRY_ENABLED")
+        result = self.validator.validate_state_validity(event, State.S1)
         assert result.is_valid is True
 
     def test_queue_passed_valid_in_s2(self) -> None:
         """QUEUE_PASSED는 S2에서 유효."""
-        event = SemanticEvent(event_type="QUEUE_PASSED")
-        result = self.validator.validate_state_validity(event, State.S2_QUEUE_ENTRY)
+        event = SemanticEvent(type="QUEUE_PASSED")
+        result = self.validator.validate_state_validity(event, State.S2)
         assert result.is_valid is True
 
     def test_defense_event_valid_in_multiple_states(self) -> None:
         """Defense 이벤트는 여러 상태에서 유효."""
-        event = SemanticEvent(event_type="DEF_CHALLENGE_FORCED")
+        event = SemanticEvent(type="DEF_CHALLENGE_FORCED")
         valid_states = [
-            State.S1_PRE_ENTRY,
-            State.S2_QUEUE_ENTRY,
-            State.S4_SECTION,
-            State.S5_SEAT,
-            State.S6_TRANSACTION,
+            State.S1,
+            State.S2,
+            State.S4,
+            State.S5,
+            State.S6,
         ]
         for state in valid_states:
             result = self.validator.validate_state_validity(event, state)
@@ -165,8 +165,8 @@ class TestValidateStateValidity:
 
     def test_unknown_event_type_fails(self) -> None:
         """알 수 없는 event_type은 실패."""
-        event = SemanticEvent(event_type="UNKNOWN_EVENT")
-        result = self.validator.validate_state_validity(event, State.S0_INIT)
+        event = SemanticEvent(type="UNKNOWN_EVENT")
+        result = self.validator.validate_state_validity(event, State.S0)
         assert result.is_valid is False
         assert "unknown event_type" in result.errors[0]
 
@@ -185,43 +185,43 @@ class TestValidateIntegrated:
 
     def test_valid_event_passes(self) -> None:
         """유효한 이벤트 통과."""
-        event = SemanticEvent(event_type="FLOW_START")
-        result = self.validator.validate(event, State.S0_INIT)
+        event = SemanticEvent(type="FLOW_START")
+        result = self.validator.validate(event, State.S0)
         assert result.is_valid is True
 
     def test_invalid_schema_fails(self) -> None:
         """잘못된 스키마 실패."""
         event = SemanticEvent(
-            event_type="FLOW_START",
-            context={"source": "invalid"},
+            type="FLOW_START",
+            payload={"source": "invalid"},
         )
-        result = self.validator.validate(event, State.S0_INIT)
+        result = self.validator.validate(event, State.S0)
         assert result.is_valid is False
 
     def test_invalid_state_validity_fails(self) -> None:
         """잘못된 상태 유효성 실패."""
-        event = SemanticEvent(event_type="FLOW_START")
-        result = self.validator.validate(event, State.S1_PRE_ENTRY)
+        event = SemanticEvent(type="FLOW_START")
+        result = self.validator.validate(event, State.S1)
         assert result.is_valid is False
 
     def test_default_policy_no_exception(self) -> None:
         """기본 정책: 실패 시 예외 없음 (log + ignore)."""
-        event = SemanticEvent(event_type="UNKNOWN_EVENT")
+        event = SemanticEvent(type="UNKNOWN_EVENT")
         # 예외 발생하지 않음
-        result = self.validator.validate(event, State.S0_INIT)
+        result = self.validator.validate(event, State.S0)
         assert result.is_valid is False
 
     def test_strict_mode_raises_exception(self) -> None:
         """strict 모드: 실패 시 ValidationError 발생."""
-        event = SemanticEvent(event_type="UNKNOWN_EVENT")
+        event = SemanticEvent(type="UNKNOWN_EVENT")
         with pytest.raises(ValidationError) as exc_info:
-            self.validator.validate(event, State.S0_INIT, strict=True)
+            self.validator.validate(event, State.S0, strict=True)
         assert len(exc_info.value.errors) > 0
 
     def test_strict_mode_valid_event_no_exception(self) -> None:
         """strict 모드: 유효한 이벤트는 예외 없음."""
-        event = SemanticEvent(event_type="FLOW_START")
-        result = self.validator.validate(event, State.S0_INIT, strict=True)
+        event = SemanticEvent(type="FLOW_START")
+        result = self.validator.validate(event, State.S0, strict=True)
         assert result.is_valid is True
 
 

@@ -39,9 +39,9 @@ class TestScenarioLoader:
         scenario = loader.load_one(scn_path)
 
         assert scenario.id == "SCN-01"
-        assert scenario.initial_state == State.S0_INIT
+        assert scenario.initial_state == State.S0
         assert len(scenario.events) == 1
-        assert scenario.accept.final_state == State.SX_TERMINAL
+        assert scenario.accept.final_state == State.SX
 
     def test_load_all_filters_invalid_files(self, scenario_dir: Path) -> None:
         """load_all이 유효한 SCN-*.json 파일만 수집하는지 확인."""

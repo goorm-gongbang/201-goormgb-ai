@@ -191,6 +191,13 @@ def transition(
             notes=["정책 위반으로 abort"],
         )
 
+    if event_type == "COOLDOWN_TRIGGERED":
+        return TransitionResult(
+            next_state=State.SX,
+            terminal_reason=TerminalReason.COOLDOWN,
+            notes=["쿨다운 발동 - 일시 정지"],
+        )
+
     # 보안 인터럽트 (S3 진입) - S1, S2, S4, S5, S6에서 가능
     # DEF_CHALLENGE_FORCED는 CHALLENGE_DETECTED의 alias
     # ───────────────────────────────────────────────────────────────────────────

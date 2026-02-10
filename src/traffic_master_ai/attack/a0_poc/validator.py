@@ -123,10 +123,10 @@ class EventValidator:
         errors: list[str] = []
 
         # event_type 검증
-        if not event.type.value:
+        if not event.type.value if hasattr(event.type, 'value') else event.type:
             errors.append("event_type is required")
-        elif not self._is_valid_event_type(event.type.value):
-            errors.append(f"unknown event_type: {event.type.value}")
+        elif not self._is_valid_event_type(event.type.value if hasattr(event.type, 'value') else event.type):
+            errors.append(f"unknown event_type: {event.type.value if hasattr(event.type, 'value') else event.type}")
 
         # source 검증 (context에 source 필드가 있다면)
         source = event.payload.get("source")
@@ -138,8 +138,8 @@ class EventValidator:
             errors.append(f"invalid stage: {event.stage}")
 
         if errors:
-            return ValidationResult.failure(errors, event.type.value)
-        return ValidationResult.success(event.type.value)
+            return ValidationResult.failure(errors, event.type.value if hasattr(event.type, 'value') else event.type)
+        return ValidationResult.success(event.type.value if hasattr(event.type, 'value') else event.type)
 
     def validate_state_validity(
         self,
@@ -161,23 +161,23 @@ class EventValidator:
 
         # EventType enum으로 변환 시도
         try:
-            event_type_enum = EventType(event.type.value)
+            event_type_enum = EventType(event.type.value if hasattr(event.type, 'value') else event.type)
         except ValueError:
             # 알 수 없는 event_type - schema validation에서 처리
-            errors.append(f"unknown event_type for state-validity: {event.type.value}")
-            return ValidationResult.failure(errors, event.type.value)
+            errors.append(f"unknown event_type for state-validity: {event.type.value if hasattr(event.type, 'value') else event.type}")
+            return ValidationResult.failure(errors, event.type.value if hasattr(event.type, 'value') else event.type)
 
         # State-validity 검증
         if not is_valid_in_state(event_type_enum, current_state):
             valid_states = EVENT_VALID_STATES.get(event_type_enum, frozenset())
             valid_state_names = [s.value for s in valid_states]
             errors.append(
-                f"event '{event.type.value}' is not valid in state {current_state.value}. "
+                f"event '{event.type.value if hasattr(event.type, 'value') else event.type}' is not valid in state {current_state.value}. "
                 f"Valid states: {valid_state_names}"
             )
-            return ValidationResult.failure(errors, event.type.value)
+            return ValidationResult.failure(errors, event.type.value if hasattr(event.type, 'value') else event.type)
 
-        return ValidationResult.success(event.type.value)
+        return ValidationResult.success(event.type.value if hasattr(event.type, 'value') else event.type)
 
     def validate(
         self,
@@ -217,7 +217,7 @@ class EventValidator:
             # 로깅 (log + ignore 정책)
             logger.warning(
                 "Event validation failed: event_type=%s, state=%s, errors=%s",
-                event.type.value,
+                event.type.value if hasattr(event.type, 'value') else event.type,
                 current_state.value,
                 all_errors,
             )
@@ -226,6 +226,6 @@ class EventValidator:
             if strict:
                 raise ValidationError(all_errors)
 
-            return ValidationResult.failure(all_errors, event.type.value)
+            return ValidationResult.failure(all_errors, event.type.value if hasattr(event.type, 'value') else event.type)
 
-        return ValidationResult.success(event.type.value)
+        return ValidationResult.success(event.type.value if hasattr(event.type, 'value') else event.type)

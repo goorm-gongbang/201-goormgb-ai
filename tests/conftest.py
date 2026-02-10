@@ -35,7 +35,7 @@ def default_policy() -> PolicySnapshot:
 def sample_event() -> SemanticEvent:
     """Create a sample semantic event."""
     return SemanticEvent(
-        event_type="ENTRY_ENABLED",
+        type="ENTRY_ENABLED",
         stage=State.S1,
-        context={"source": "test"},
+        payload={"source": "test"},
     )
