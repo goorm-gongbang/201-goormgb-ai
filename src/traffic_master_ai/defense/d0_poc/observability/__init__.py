@@ -12,5 +12,4 @@ __all__ = [
     "get_default_logger",
     "log_entry_from_step_result",
     "reset_default_logger",
-    "log_entry_from_step_result",
 ]
