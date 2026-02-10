@@ -15,6 +15,7 @@ from traffic_master_ai.attack.a0_poc import (
     SemanticEvent,
     State,
     StateStore,
+    TerminalReason,
 )
 from traffic_master_ai.attack.a0_poc.orchestrator import run_events
 
@@ -32,7 +33,7 @@ class TestFailureHandlingIntegration:
             "security": 1,  # 기존 transition.py에서 참조하는 키
             "retry": 5,     # 기존 transition.py에서 참조하는 키
         }
-        return StateStore(initial_state=State.S0_INIT, budgets=budgets)
+        return StateStore(initial_state=State.S0, budgets=budgets)
 
     @pytest.fixture
     def policy(self) -> PolicySnapshot:
@@ -51,15 +52,15 @@ class TestFailureHandlingIntegration:
     ) -> None:
         """이선좌(SEAT_TAKEN) 발생 시 Matrix 규칙에 따라 예산 차감 및 전이 확인."""
         events = [
-            SemanticEvent(event_type=EventType.FLOW_START),
-            SemanticEvent(event_type=EventType.ENTRY_ENABLED),
-            SemanticEvent(event_type=EventType.QUEUE_PASSED),
-            SemanticEvent(event_type=EventType.SECTION_SELECTED),
+            SemanticEvent(type=EventType.FLOW_START),
+            SemanticEvent(type=EventType.ENTRY_ENABLED),
+            SemanticEvent(type=EventType.QUEUE_PASSED),
+            SemanticEvent(type=EventType.SECTION_SELECTED),
             # S5 진입 후 이선좌 발생
-            SemanticEvent(event_type=EventType.SEAT_TAKEN),
+            SemanticEvent(type=EventType.SEAT_TAKEN),
             # 다시 성공
-            SemanticEvent(event_type=EventType.SEAT_SELECTED),
-            SemanticEvent(event_type=EventType.PAYMENT_COMPLETED),
+            SemanticEvent(type=EventType.SEAT_SELECTED),
+            SemanticEvent(type=EventType.PAYMENT_COMPLETED),
         ]
 
         # Orchestrator 실행 (새로운 인자 matrix, roi_logger 추가 예정)
@@ -71,7 +72,7 @@ class TestFailureHandlingIntegration:
             roi_logger=roi_logger,
         )
 
-        assert result.terminal_state == State.SX_TERMINAL
+        assert result.terminal_state == State.SX
         # N_seat 예산이 2 -> 1로 차감되었는지 확인 (Matrix 규칙: retry_budget_key="N_seat")
         assert result.final_budgets["N_seat"] == 1
         # ROI 요약에 attempts가 기록되었는지 확인
@@ -87,17 +88,17 @@ class TestFailureHandlingIntegration:
         store.set_budget("N_seat", 1)
         
         events = [
-            SemanticEvent(event_type=EventType.FLOW_START),
-            SemanticEvent(event_type=EventType.ENTRY_ENABLED),
-            SemanticEvent(event_type=EventType.QUEUE_PASSED),
-            SemanticEvent(event_type=EventType.SECTION_SELECTED),
+            SemanticEvent(type=EventType.FLOW_START),
+            SemanticEvent(type=EventType.ENTRY_ENABLED),
+            SemanticEvent(type=EventType.QUEUE_PASSED),
+            SemanticEvent(type=EventType.SECTION_SELECTED),
             # S5 진입
-            SemanticEvent(event_type=EventType.SEAT_TAKEN), # 1 -> 0 (S5 유지)
-            SemanticEvent(event_type=EventType.SEAT_TAKEN), # 0 (소진) -> S4 롤백
+            SemanticEvent(type=EventType.SEAT_TAKEN), # 1 -> 0 (S5 유지)
+            SemanticEvent(type=EventType.SEAT_TAKEN), # 0 (소진) -> S4 롤백
             # S4에서 다시 구역 선택 시도 (이벤트 리스트 소진 방지를 위해 SX까지 진행)
-            SemanticEvent(event_type=EventType.SECTION_SELECTED),
-            SemanticEvent(event_type=EventType.SEAT_SELECTED),
-            SemanticEvent(event_type=EventType.PAYMENT_COMPLETED),
+            SemanticEvent(type=EventType.SECTION_SELECTED),
+            SemanticEvent(type=EventType.SEAT_SELECTED),
+            SemanticEvent(type=EventType.PAYMENT_COMPLETED),
         ]
 
         result = run_events(events, store, policy, failure_matrix, roi_logger)
@@ -113,19 +114,21 @@ class TestFailureHandlingIntegration:
         store.set_budget("N_challenge", 1)
         
         events = [
-            SemanticEvent(event_type=EventType.FLOW_START),
-            SemanticEvent(event_type=EventType.ENTRY_ENABLED),
-            SemanticEvent(event_type=EventType.QUEUE_PASSED),
+            SemanticEvent(type=EventType.FLOW_START),
+            SemanticEvent(type=EventType.ENTRY_ENABLED),
+            SemanticEvent(type=EventType.QUEUE_PASSED),
             # S4에서 인터럽트 발생 시뮬레이션
-            SemanticEvent(event_type=EventType.DEF_CHALLENGE_FORCED),
-            SemanticEvent(event_type=EventType.CHALLENGE_FAILED), # 1 -> 0 (S3 유지)
-            SemanticEvent(event_type=EventType.CHALLENGE_FAILED), # 0 -> SX(Abort)
+            SemanticEvent(type=EventType.DEF_CHALLENGE_FORCED),
+            SemanticEvent(type=EventType.CHALLENGE_FAILED), # 1 -> 0 (S3 유지)
+            SemanticEvent(type=EventType.CHALLENGE_FAILED), # 0 -> SX(Abort)
         ]
 
         result = run_events(events, store, policy, failure_matrix, roi_logger)
         
-        assert result.terminal_state == State.SX_TERMINAL
-        assert result.final_budgets["N_challenge"] == 0
+        # 검증: 예산 소진으로 인한 Abort 확인
+        assert result.terminal_state == State.SX
+        assert result.terminal_reason == TerminalReason.ABORT
+        assert result.failure_code == "F_CHALLENGE_FAILED"
         # TerminalReason이 Matrix나 stop_condition에 따라 설정되어야 함
         # SCN-06 등은 cooldown이나 abort를 요구함.
         summary = roi_logger.get_roi_summary()

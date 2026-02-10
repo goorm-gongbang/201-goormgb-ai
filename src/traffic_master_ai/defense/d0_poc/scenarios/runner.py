@@ -54,7 +54,7 @@ class ScenarioRunner:
         # Create PolicySnapshot for Core transition
         self._policy_snapshot = PolicySnapshot()
 
-    def run_scenario(self, scenario: Scenario) -> List[StepResult]:
+    async def run_scenario(self, scenario: Scenario) -> List[StepResult]:
         """Execute a complete scenario and return step results.
 
         Args:

@@ -7,6 +7,7 @@ Usage:
     PYTHONPATH=./src python3 src/traffic_master_ai/defense/d0_poc/scenarios/run_all.py
 """
 
+import asyncio
 import sys
 from dataclasses import dataclass
 from typing import List, Tuple
@@ -31,7 +32,7 @@ class ScenarioResult:
     failure_details: List[Tuple[int, List[str]]]  # (step_seq, mismatches)
 
 
-def run_scenario_batch(
+async def run_scenario_batch(
     scenarios: List[Scenario],
     runner: ScenarioRunner,
     verifier: ScenarioVerifier,
@@ -54,7 +55,7 @@ def run_scenario_batch(
         if verbose:
             print(f"  Running {scenario.id}... ", end="", flush=True)
 
-        step_results = runner.run_scenario(scenario)
+        step_results = await runner.run_scenario(scenario)
         report = verifier.verify_scenario(step_results, scenario.id, scenario.title)
 
         # Collect failure details
@@ -140,7 +141,7 @@ def print_failure_details(results: List[ScenarioResult]) -> None:
                 print(f"     - {mismatch}")
 
 
-def main() -> int:
+async def main() -> int:
     """Main entry point for batch verification.
 
     Returns:
@@ -172,11 +173,11 @@ def main() -> int:
 
     # Run basic scenarios
     print("Running Basic Scenarios (SCN-01 ~ SCN-06):")
-    basic_results = run_scenario_batch(basic_scenarios, runner, verifier)
+    basic_results = await run_scenario_batch(basic_scenarios, runner, verifier)
 
     # Run advanced scenarios
     print("\nRunning Advanced Scenarios (SCN-07 ~ SCN-15):")
-    advanced_results = run_scenario_batch(advanced_scenarios, runner, verifier)
+    advanced_results = await run_scenario_batch(advanced_scenarios, runner, verifier)
 
     # Close logger after all scenarios
     logger.close()
@@ -200,5 +201,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(asyncio.run(main()))
 

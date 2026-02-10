@@ -35,7 +35,7 @@ def default_policy() -> PolicySnapshot:
 def sample_snapshot() -> StateSnapshot:
     """샘플 상태 스냅샷."""
     return StateSnapshot(
-        current_state=State.S1_PRE_ENTRY,
+        current_state=State.S1,
         last_non_security_state=None,
         budgets={"retry": 3, "security": 2},
         counters={"attempts": 1},
@@ -46,14 +46,14 @@ def sample_snapshot() -> StateSnapshot:
 @pytest.fixture
 def sample_event() -> SemanticEvent:
     """샘플 이벤트."""
-    return SemanticEvent(event_type="ENTRY_ENABLED")
+    return SemanticEvent(type="ENTRY_ENABLED")
 
 
 @pytest.fixture
 def sample_result() -> TransitionResult:
     """샘플 전이 결과."""
     return TransitionResult(
-        next_state=State.S2_QUEUE_ENTRY,
+        next_state=State.S2,
         notes=["입장 가능 - S2로 전이"],
     )
 
@@ -85,7 +85,7 @@ class TestDecisionLoggerBasic:
     ) -> None:
         """record()가 DecisionLog를 생성하는지 확인."""
         log = logger.record(
-            current_state=State.S1_PRE_ENTRY,
+            current_state=State.S1,
             event=sample_event,
             result=sample_result,
             policy=default_policy,
@@ -95,8 +95,9 @@ class TestDecisionLoggerBasic:
         assert isinstance(log, DecisionLog)
         assert log.decision_id == "test-decision-001"
         assert log.timestamp_ms == 1706500000000
-        assert log.current_state == State.S1_PRE_ENTRY
-        assert log.next_state == State.S2_QUEUE_ENTRY
+        assert log.current_state == State.S1
+        assert log.event.type == "ENTRY_ENABLED" # Changed from event_type to type
+        assert log.next_state == State.S2
         assert log.policy_profile == "aggressive"
         assert log.budgets == {"retry": 3, "security": 2}
         assert log.counters == {"attempts": 1}
@@ -112,8 +113,8 @@ class TestDecisionLoggerBasic:
         sample_result: TransitionResult,
     ) -> None:
         """get_logs()가 모든 기록을 반환하는지 확인."""
-        logger.record(State.S1_PRE_ENTRY, sample_event, sample_result, default_policy, sample_snapshot)
-        logger.record(State.S2_QUEUE_ENTRY, sample_event, sample_result, default_policy, sample_snapshot)
+        logger.record(State.S1, sample_event, sample_result, default_policy, sample_snapshot)
+        logger.record(State.S2, sample_event, sample_result, default_policy, sample_snapshot)
 
         logs = logger.get_logs()
         assert len(logs) == 2
@@ -129,10 +130,10 @@ class TestDecisionLoggerBasic:
         """count()가 정확한 로그 수를 반환하는지 확인."""
         assert logger.count() == 0
 
-        logger.record(State.S1_PRE_ENTRY, sample_event, sample_result, default_policy, sample_snapshot)
+        logger.record(State.S1, sample_event, sample_result, default_policy, sample_snapshot)
         assert logger.count() == 1
 
-        logger.record(State.S2_QUEUE_ENTRY, sample_event, sample_result, default_policy, sample_snapshot)
+        logger.record(State.S2, sample_event, sample_result, default_policy, sample_snapshot)
         assert logger.count() == 2
 
     def test_clear_removes_all_logs(
@@ -144,8 +145,8 @@ class TestDecisionLoggerBasic:
         sample_result: TransitionResult,
     ) -> None:
         """clear()가 모든 로그를 제거하는지 확인."""
-        logger.record(State.S1_PRE_ENTRY, sample_event, sample_result, default_policy, sample_snapshot)
-        logger.record(State.S2_QUEUE_ENTRY, sample_event, sample_result, default_policy, sample_snapshot)
+        logger.record(State.S1, sample_event, sample_result, default_policy, sample_snapshot)
+        logger.record(State.S2, sample_event, sample_result, default_policy, sample_snapshot)
 
         logger.clear()
 
@@ -170,7 +171,7 @@ class TestJsonlConversion:
         sample_result: TransitionResult,
     ) -> None:
         """to_jsonl()이 유효한 JSONL 문자열을 반환하는지 확인."""
-        logger.record(State.S1_PRE_ENTRY, sample_event, sample_result, default_policy, sample_snapshot)
+        logger.record(State.S1, sample_event, sample_result, default_policy, sample_snapshot)
 
         jsonl = logger.to_jsonl()
 
@@ -191,9 +192,9 @@ class TestJsonlConversion:
         sample_result: TransitionResult,
     ) -> None:
         """1 line = 1 decision 구조 확인."""
-        logger.record(State.S1_PRE_ENTRY, sample_event, sample_result, default_policy, sample_snapshot)
-        logger.record(State.S2_QUEUE_ENTRY, sample_event, sample_result, default_policy, sample_snapshot)
-        logger.record(State.S4_SECTION, sample_event, sample_result, default_policy, sample_snapshot)
+        logger.record(State.S1, sample_event, sample_result, default_policy, sample_snapshot)
+        logger.record(State.S2, sample_event, sample_result, default_policy, sample_snapshot)
+        logger.record(State.S4, sample_event, sample_result, default_policy, sample_snapshot)
 
         jsonl = logger.to_jsonl()
         lines = [line for line in jsonl.split("\n") if line.strip()]
@@ -225,7 +226,7 @@ class TestDecisionLogFields:
         sample_result: TransitionResult,
     ) -> None:
         """SPEC에 정의된 모든 필드가 존재하는지 확인."""
-        logger.record(State.S1_PRE_ENTRY, sample_event, sample_result, default_policy, sample_snapshot)
+        logger.record(State.S1, sample_event, sample_result, default_policy, sample_snapshot)
 
         jsonl = logger.to_jsonl()
         parsed = json.loads(jsonl)
@@ -255,22 +256,22 @@ class TestDecisionLogFields:
     ) -> None:
         """event 필드의 하위 필드가 존재하는지 확인."""
         event = SemanticEvent(
-            event_type="CHALLENGE_FAILED",
-            stage=State.S3_SECURITY,
+            type="CHALLENGE_FAILED",
+            stage=State.S3,
             failure_code="CAPTCHA_TIMEOUT",
-            context={"attempt": 2},
+            payload={"attempt": 2},
         )
 
-        logger.record(State.S3_SECURITY, event, sample_result, default_policy, sample_snapshot)
+        logger.record(State.S3, event, sample_result, default_policy, sample_snapshot)
 
         jsonl = logger.to_jsonl()
         parsed = json.loads(jsonl)
 
         event_data = parsed["event"]
-        assert event_data["event_type"] == "CHALLENGE_FAILED"
+        assert event_data["type"] == "CHALLENGE_FAILED"
         assert event_data["stage"] == "S3"
         assert event_data["failure_code"] == "CAPTCHA_TIMEOUT"
-        assert event_data["context"] == {"attempt": 2}
+        assert event_data["payload"] == {"attempt": 2}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -297,16 +298,16 @@ class TestScenarioExecution:
 
         # 6개 이벤트 시뮬레이션
         events_and_transitions = [
-            (State.S0_INIT, "BOOTSTRAP_COMPLETE", State.S1_PRE_ENTRY),
-            (State.S1_PRE_ENTRY, "ENTRY_ENABLED", State.S2_QUEUE_ENTRY),
-            (State.S2_QUEUE_ENTRY, "QUEUE_PASSED", State.S4_SECTION),
-            (State.S4_SECTION, "SECTION_SELECTED", State.S5_SEAT),
-            (State.S5_SEAT, "SEAT_SELECTED", State.S6_TRANSACTION),
-            (State.S6_TRANSACTION, "PAYMENT_COMPLETE", State.SX_TERMINAL),
+            (State.S0, "BOOTSTRAP_COMPLETE", State.S1),
+            (State.S1, "ENTRY_ENABLED", State.S2),
+            (State.S2, "QUEUE_PASSED", State.S4),
+            (State.S4, "SECTION_SELECTED", State.S5),
+            (State.S5, "SEAT_SELECTED", State.S6),
+            (State.S6, "PAYMENT_COMPLETE", State.SX),
         ]
 
         for current, event_type, next_state in events_and_transitions:
-            event = SemanticEvent(event_type=event_type)
+            event = SemanticEvent(type=event_type)
             snapshot = StateSnapshot(
                 current_state=current,
                 last_non_security_state=None,
@@ -315,7 +316,7 @@ class TestScenarioExecution:
                 elapsed_ms=0,
             )
 
-            if next_state == State.SX_TERMINAL:
+            if next_state == State.SX:
                 result = TransitionResult(
                     next_state=next_state,
                     terminal_reason=TerminalReason.DONE,

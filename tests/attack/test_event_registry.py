@@ -24,19 +24,20 @@ class TestEventType:
     """EventType enum 테스트."""
 
     def test_event_type_count(self) -> None:
-        """EventType enum이 33개 값을 가지는지 확인."""
-        assert len(EventType) == 33
+        """EventType enum이 45개 값을 가지는지 확인."""
+        assert len(EventType) == 45
 
     def test_flow_system_events(self) -> None:
         """A. Flow/System 이벤트 (5개)."""
         flow_events = [
             EventType.FLOW_START,
+            EventType.BOOTSTRAP_COMPLETE,
             EventType.FLOW_ABORT,
             EventType.TIMEOUT,
             EventType.SESSION_EXPIRED,
             EventType.RETRY_BUDGET_EXCEEDED,
         ]
-        assert len(flow_events) == 5
+        assert len(flow_events) == 6
         for event in flow_events:
             assert event.value == event.name
 
@@ -119,21 +120,21 @@ class TestEventSource:
     """EventSource enum 테스트."""
 
     def test_event_source_count(self) -> None:
-        """EventSource enum이 5개 값을 가지는지 확인."""
-        assert len(EventSource) == 5
+        """EventSource enum이 8개 값을 가지는지 확인."""
+        assert len(EventSource) == 8
 
     def test_event_source_values(self) -> None:
         """EventSource 값 확인."""
-        assert EventSource.UI.value == "ui"
-        assert EventSource.API.value == "api"
-        assert EventSource.TIMER.value == "timer"
-        assert EventSource.DEFENSE.value == "defense"
-        assert EventSource.MOCK.value == "mock"
+        assert EventSource.UI.value == "UI"
+        assert EventSource.API.value == "API"
+        assert EventSource.TIMER.value == "TIMER"
+        assert EventSource.DEFENSE.value == "DEFENSE"
+        assert EventSource.MOCK.value == "MOCK"
 
     def test_eventsource_is_str_enum(self) -> None:
         """EventSource는 str Enum이어야 함."""
         assert isinstance(EventSource.UI, str)
-        assert EventSource.MOCK == "mock"
+        assert EventSource.MOCK == "MOCK"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -152,17 +153,17 @@ class TestEventValidStates:
     def test_flow_start_only_in_s0(self) -> None:
         """FLOW_START는 S0에서만 유효."""
         valid_states = EVENT_VALID_STATES[EventType.FLOW_START]
-        assert valid_states == frozenset({State.S0_INIT})
+        assert valid_states == frozenset({State.S0})
 
     def test_entry_enabled_only_in_s1(self) -> None:
         """ENTRY_ENABLED는 S1에서만 유효."""
         valid_states = EVENT_VALID_STATES[EventType.ENTRY_ENABLED]
-        assert valid_states == frozenset({State.S1_PRE_ENTRY})
+        assert valid_states == frozenset({State.S1})
 
     def test_queue_passed_only_in_s2(self) -> None:
         """QUEUE_PASSED는 S2에서만 유효."""
         valid_states = EVENT_VALID_STATES[EventType.QUEUE_PASSED]
-        assert valid_states == frozenset({State.S2_QUEUE_ENTRY})
+        assert valid_states == frozenset({State.S2})
 
     def test_challenge_events_only_in_s3(self) -> None:
         """Security 이벤트는 S3에서만 유효."""
@@ -174,7 +175,7 @@ class TestEventValidStates:
         ]
         for event_type in security_events:
             valid_states = EVENT_VALID_STATES[event_type]
-            assert valid_states == frozenset({State.S3_SECURITY})
+            assert valid_states == frozenset({State.S3})
 
     def test_section_events_only_in_s4(self) -> None:
         """Section 이벤트는 S4에서만 유효."""
@@ -185,7 +186,7 @@ class TestEventValidStates:
         ]
         for event_type in section_events:
             valid_states = EVENT_VALID_STATES[event_type]
-            assert valid_states == frozenset({State.S4_SECTION})
+            assert valid_states == frozenset({State.S4})
 
     def test_defense_events_in_interruptible_states(self) -> None:
         """Defense 이벤트는 S3 인터럽트 가능한 상태에서 유효."""
@@ -196,11 +197,11 @@ class TestEventValidStates:
             EventType.DEF_HONEY_SHAPED,
         ]
         expected = frozenset({
-            State.S1_PRE_ENTRY,
-            State.S2_QUEUE_ENTRY,
-            State.S4_SECTION,
-            State.S5_SEAT,
-            State.S6_TRANSACTION,
+            State.S1,
+            State.S2,
+            State.S4,
+            State.S5,
+            State.S6,
         })
         for event_type in defense_events:
             assert EVENT_VALID_STATES[event_type] == expected
@@ -217,16 +218,16 @@ class TestHelperFunctions:
     def test_get_valid_states(self) -> None:
         """get_valid_states 함수 테스트."""
         states = get_valid_states(EventType.FLOW_START)
-        assert states == frozenset({State.S0_INIT})
+        assert states == frozenset({State.S0})
 
     def test_is_valid_in_state_true(self) -> None:
         """is_valid_in_state - 유효한 경우."""
-        assert is_valid_in_state(EventType.FLOW_START, State.S0_INIT)
-        assert is_valid_in_state(EventType.ENTRY_ENABLED, State.S1_PRE_ENTRY)
-        assert is_valid_in_state(EventType.QUEUE_PASSED, State.S2_QUEUE_ENTRY)
+        assert is_valid_in_state(EventType.FLOW_START, State.S0)
+        assert is_valid_in_state(EventType.ENTRY_ENABLED, State.S1)
+        assert is_valid_in_state(EventType.QUEUE_PASSED, State.S2)
 
     def test_is_valid_in_state_false(self) -> None:
         """is_valid_in_state - 유효하지 않은 경우."""
-        assert not is_valid_in_state(EventType.FLOW_START, State.S1_PRE_ENTRY)
-        assert not is_valid_in_state(EventType.ENTRY_ENABLED, State.S0_INIT)
-        assert not is_valid_in_state(EventType.QUEUE_PASSED, State.SX_TERMINAL)
+        assert not is_valid_in_state(EventType.FLOW_START, State.S1)
+        assert not is_valid_in_state(EventType.ENTRY_ENABLED, State.S0)
+        assert not is_valid_in_state(EventType.QUEUE_PASSED, State.SX)

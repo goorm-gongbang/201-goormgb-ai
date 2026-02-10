@@ -86,8 +86,9 @@ class EventValidator:
     
     Example:
         >>> validator = EventValidator()
-        >>> event = SemanticEvent(event_type="FLOW_START")
-        >>> result = validator.validate(event, State.S0_INIT)
+        >>> from traffic_master_ai.common.models.events import EventType
+        >>> event = SemanticEvent(type=EventType.FLOW_START)
+        >>> result = validator.validate(event, State.S0)
         >>> result.is_valid
         True
     """
@@ -122,13 +123,14 @@ class EventValidator:
         errors: list[str] = []
 
         # event_type 검증
-        if not event.event_type:
+        et_val = event.type.value if hasattr(event.type, 'value') else event.type
+        if not et_val:
             errors.append("event_type is required")
-        elif not self._is_valid_event_type(event.event_type):
-            errors.append(f"unknown event_type: {event.event_type}")
+        elif not self._is_valid_event_type(et_val):
+            errors.append(f"unknown event_type: {et_val}")
 
         # source 검증 (context에 source 필드가 있다면)
-        source = event.context.get("source")
+        source = event.payload.get("source")
         if source is not None and not self._is_valid_source(source):
             errors.append(f"invalid source: {source}")
 
@@ -137,8 +139,8 @@ class EventValidator:
             errors.append(f"invalid stage: {event.stage}")
 
         if errors:
-            return ValidationResult.failure(errors, event.event_type)
-        return ValidationResult.success(event.event_type)
+            return ValidationResult.failure(errors, et_val)
+        return ValidationResult.success(et_val)
 
     def validate_state_validity(
         self,
@@ -157,26 +159,27 @@ class EventValidator:
             ValidationResult
         """
         errors: list[str] = []
+        et_val = event.type.value if hasattr(event.type, 'value') else event.type
 
         # EventType enum으로 변환 시도
         try:
-            event_type_enum = EventType(event.event_type)
+            event_type_enum = EventType(et_val)
         except ValueError:
             # 알 수 없는 event_type - schema validation에서 처리
-            errors.append(f"unknown event_type for state-validity: {event.event_type}")
-            return ValidationResult.failure(errors, event.event_type)
+            errors.append(f"unknown event_type for state-validity: {et_val}")
+            return ValidationResult.failure(errors, et_val)
 
         # State-validity 검증
         if not is_valid_in_state(event_type_enum, current_state):
             valid_states = EVENT_VALID_STATES.get(event_type_enum, frozenset())
             valid_state_names = [s.value for s in valid_states]
             errors.append(
-                f"event '{event.event_type}' is not valid in state {current_state.value}. "
+                f"event '{et_val}' is not valid in state {current_state.value}. "
                 f"Valid states: {valid_state_names}"
             )
-            return ValidationResult.failure(errors, event.event_type)
+            return ValidationResult.failure(errors, et_val)
 
-        return ValidationResult.success(event.event_type)
+        return ValidationResult.success(et_val)
 
     def validate(
         self,
@@ -212,11 +215,12 @@ class EventValidator:
                 all_errors.extend(state_result.errors)
 
         # 결과 처리
+        et_val = event.type.value if hasattr(event.type, 'value') else event.type
         if all_errors:
             # 로깅 (log + ignore 정책)
             logger.warning(
                 "Event validation failed: event_type=%s, state=%s, errors=%s",
-                event.event_type,
+                et_val,
                 current_state.value,
                 all_errors,
             )
@@ -225,6 +229,6 @@ class EventValidator:
             if strict:
                 raise ValidationError(all_errors)
 
-            return ValidationResult.failure(all_errors, event.event_type)
+            return ValidationResult.failure(all_errors, et_val)
 
-        return ValidationResult.success(event.event_type)
+        return ValidationResult.success(et_val)

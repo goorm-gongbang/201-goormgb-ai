@@ -4,21 +4,21 @@
   "initial_state": "S0",
   "policy_profile": "default",
   "events": [
-    { "event_type": "FLOW_START", "source": "mock" },
-    { "event_type": "ENTRY_ENABLED", "source": "mock" },
-    { "event_type": "QUEUE_PASSED", "source": "mock" },
-    { "event_type": "SECTION_SELECTED", "source": "mock" },
-    { "event_type": "SEATMAP_READY", "source": "mock" },
-    { "event_type": "SEAT_TAKEN", "source": "mock" },
-    { "event_type": "SEAT_SELECTED", "source": "mock" },
-    { "event_type": "HOLD_ACQUIRED", "source": "mock" },
-    { "event_type": "PAYMENT_COMPLETED", "source": "mock" }
+    { "type": "FLOW_START", "source": "mock" },
+    { "type": "ENTRY_ENABLED", "source": "mock" },
+    { "type": "QUEUE_PASSED", "source": "mock" },
+    { "type": "SECTION_SELECTED", "source": "mock" },
+    { "type": "SEATMAP_READY", "source": "mock" },
+    { "type": "SEAT_TAKEN", "source": "mock" },
+    { "type": "SEAT_SELECTED", "source": "mock" },
+    { "type": "HOLD_ACQUIRED", "source": "mock" },
+    { "type": "PAYMENT_COMPLETED", "source": "mock" }
   ],
   "accept": {
     "final_state": "SX",
-    "terminal_reason": "done",
+    "terminal_reason": "DONE",
     "asserts": [
-      { "type": "event_handled_count_at_least", "value": { "event_type": "SEAT_TAKEN", "count": 1 } }
+      { "type": "event_handled_count_at_least", "value": { "type": "SEAT_TAKEN", "count": 1 } }
     ]
   }
 }

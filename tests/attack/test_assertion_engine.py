@@ -13,8 +13,8 @@ from traffic_master_ai.attack.a0_poc import (
 @pytest.fixture
 def mock_result() -> ExecutionResult:
     return ExecutionResult(
-        state_path=[State.S0_INIT, State.S1_PRE_ENTRY, State.S2_QUEUE_ENTRY, State.S4_SECTION, State.SX_TERMINAL],
-        terminal_state=State.SX_TERMINAL,
+        state_path=[State.S0, State.S1, State.S2, State.S4, State.SX],
+        terminal_state=State.SX,
         terminal_reason=TerminalReason.DONE,
         handled_events=4,
         total_elapsed_ms=1000,
@@ -28,13 +28,13 @@ def test_state_path_contains(mock_result: ExecutionResult) -> None:
     assertion = ScenarioAssertion(type="state_path_contains", value="S1")
     passed, msg = check_assertion(assertion, mock_result)
     assert passed is True
-    assert "Visited S1" in msg
+    assert "Visited all of" in msg
 
     # Fail 케이스
     assertion = ScenarioAssertion(type="state_path_contains", value="S5")
     passed, msg = check_assertion(assertion, mock_result)
     assert passed is False
-    assert "Did not visit S5" in msg
+    assert "Missing ['S5']" in msg
 
 
 def test_state_path_equals(mock_result: ExecutionResult) -> None:
@@ -91,8 +91,8 @@ def test_event_handled_count(mock_result: ExecutionResult) -> None:
 def test_security_recovery_assertion() -> None:
     # Pass: S3 -> S2 (Recovery)
     res = ExecutionResult(
-        state_path=[State.S2_QUEUE_ENTRY, State.S3_SECURITY, State.S2_QUEUE_ENTRY, State.SX_TERMINAL],
-        terminal_state=State.SX_TERMINAL,
+        state_path=[State.S2, State.S3, State.S2, State.SX],
+        terminal_state=State.SX,
         terminal_reason=TerminalReason.DONE,
         handled_events=3,
         total_elapsed_ms=500
@@ -103,8 +103,8 @@ def test_security_recovery_assertion() -> None:
 
     # Fail: S3 -> SX (No Recovery)
     res = ExecutionResult(
-        state_path=[State.S2_QUEUE_ENTRY, State.S3_SECURITY, State.SX_TERMINAL],
-        terminal_state=State.SX_TERMINAL,
+        state_path=[State.S2, State.S3, State.SX],
+        terminal_state=State.SX,
         terminal_reason=TerminalReason.ABORT,
         handled_events=2,
         total_elapsed_ms=500

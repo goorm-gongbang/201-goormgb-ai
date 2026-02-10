@@ -79,11 +79,11 @@ class FailureMatrix:
 
         # 1. 이선좌 (S5, SEAT_TAKEN)
         self._add_rule(
-            State.S5_SEAT, EventType.SEAT_TAKEN,
+            State.S5, EventType.SEAT_TAKEN,
             FailurePolicy(
                 failure_code=FailureCode.F_SEAT_TAKEN,
                 primary_action="다른 좌석 후보 선택",
-                recover_path=State.S5_SEAT, # "Self" 관점
+                recover_path=State.S5, # "Self" 관점
                 retry_budget_key="N_seat",
                 backoff_strategy="jitter + short wait",
                 stop_condition="N_seat 소진 시 S4",
@@ -92,11 +92,11 @@ class FailureMatrix:
 
         # 2. 홀드 실패 (S5, HOLD_FAILED)
         self._add_rule(
-            State.S5_SEAT, EventType.HOLD_FAILED,
+            State.S5, EventType.HOLD_FAILED,
             FailurePolicy(
                 failure_code=FailureCode.F_HOLD_FAILED,
                 primary_action="재시도 또는 후보 변경",
-                recover_path=State.S5_SEAT,
+                recover_path=State.S5,
                 retry_budget_key="N_hold",
                 backoff_strategy="exp backoff(짧게)",
                 stop_condition="N_hold 소진 시 S4",
@@ -105,11 +105,11 @@ class FailureMatrix:
 
         # 3. 홀드 만료/결제 단계 롤백 (S6, TXN_ROLLBACK_REQUIRED)
         self._add_rule(
-            State.S6_TRANSACTION, EventType.TXN_ROLLBACK_REQUIRED,
+            State.S6, EventType.TXN_ROLLBACK_REQUIRED,
             FailurePolicy(
                 failure_code=FailureCode.F_HOLD_EXPIRED,
                 primary_action="롤백 후 재선택",
-                recover_path=State.S5_SEAT,
+                recover_path=State.S5,
                 retry_budget_key="N_txn_rb",
                 stop_condition="반복 시 SX",
             )
@@ -117,11 +117,11 @@ class FailureMatrix:
 
         # 4. 구역 매진 (S4, SECTION_EMPTY)
         self._add_rule(
-            State.S4_SECTION, EventType.SECTION_EMPTY,
+            State.S4, EventType.SECTION_EMPTY,
             FailurePolicy(
                 failure_code=FailureCode.F_SECTION_EMPTY,
                 primary_action="다른 구역 선택",
-                recover_path=State.S4_SECTION,
+                recover_path=State.S4,
                 retry_budget_key="N_section",
                 stop_condition="후보 소진 시 SX",
             )
@@ -129,11 +129,11 @@ class FailureMatrix:
 
         # 5. 챌린지 실패 (S3, CHALLENGE_FAILED)
         self._add_rule(
-            State.S3_SECURITY, EventType.CHALLENGE_FAILED,
+            State.S3, EventType.CHALLENGE_FAILED,
             FailurePolicy(
                 failure_code=FailureCode.F_CHALLENGE_FAILED,
                 primary_action="재시도(템포 완화)",
-                recover_path=State.S3_SECURITY,
+                recover_path=State.S3,
                 retry_budget_key="N_challenge",
                 backoff_strategy="cooldown 증가",
                 stop_condition="N_challenge 소진 시 SX",
@@ -142,7 +142,7 @@ class FailureMatrix:
 
         # 6. 네트워크 타임아웃 (Any, TIMEOUT)
         # Note: 'Any' 처리를 위해 모든 유효 상태 순회
-        for state in [s for s in State if s != State.SX_TERMINAL]:
+        for state in [s for s in State if s != State.SX]:
             self._add_rule(
                 state, EventType.TIMEOUT,
                 FailurePolicy(
@@ -156,13 +156,13 @@ class FailureMatrix:
             )
 
         # 7. 세션 만료 (Any, SESSION_EXPIRED)
-        for state in [s for s in State if s != State.SX_TERMINAL]:
+        for state in [s for s in State if s != State.SX]:
             self._add_rule(
                 state, EventType.SESSION_EXPIRED,
                 FailurePolicy(
                     failure_code=FailureCode.F_SESSION_EXPIRED,
                     primary_action="세션 리셋",
-                    recover_path=State.S0_INIT,
+                    recover_path=State.S0,
                     retry_budget_key="N_session_reset",
                     stop_condition="reset 반복 시 SX",
                 )
@@ -170,22 +170,22 @@ class FailureMatrix:
 
         # 8. 결제 시간 초과 (S6, PAYMENT_TIMEOUT)
         self._add_rule(
-            State.S6_TRANSACTION, EventType.PAYMENT_TIMEOUT,
+            State.S6, EventType.PAYMENT_TIMEOUT,
             FailurePolicy(
                 failure_code=FailureCode.F_PAYMENT_TIMEOUT,
                 primary_action="종료(실패 결과)",
-                recover_path=State.SX_TERMINAL,
+                recover_path=State.SX,
                 stop_condition="즉시 SX",
             )
         )
 
         # 9. 샌드박스 정체 (S2, QUEUE_STUCK)
         self._add_rule(
-            State.S2_QUEUE_ENTRY, EventType.QUEUE_STUCK,
+            State.S2, EventType.QUEUE_STUCK,
             FailurePolicy(
                 failure_code=FailureCode.F_SANDBOX_STUCK,
                 primary_action="리셋/세션 재시작",
-                recover_path=State.S1_PRE_ENTRY, # Spec: S1 or SX
+                recover_path=State.S1, # Spec: S1 or SX
                 retry_budget_key="N_reset",
                 stop_condition="reset 반복 시 SX",
             )

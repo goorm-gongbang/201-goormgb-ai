@@ -38,7 +38,7 @@ def default_policy() -> PolicySnapshot:
 def default_store() -> StateStore:
     """기본 상태 저장소 (S0, 예산 포함)."""
     return StateStore(
-        initial_state=State.S0_INIT,
+        initial_state=State.S0,
         budgets={"retry": 3, "security": 2},
     )
 
@@ -66,26 +66,26 @@ class TestSCN03ForcedChallengeAfterQueuePass:
         - 최종 SX(done)
         """
         events = [
-            SemanticEvent(event_type="FLOW_START"),
-            SemanticEvent(event_type="ENTRY_ENABLED"),
-            SemanticEvent(event_type="QUEUE_PASSED"),
-            SemanticEvent(event_type="DEF_CHALLENGE_FORCED"),  # S4 → S3
-            SemanticEvent(event_type="CHALLENGE_PASSED"),       # S3 → S4
-            SemanticEvent(event_type="SECTION_SELECTED"),
-            SemanticEvent(event_type="SEAT_SELECTED"),
-            SemanticEvent(event_type="HOLD_ACQUIRED"),
-            SemanticEvent(event_type="PAYMENT_COMPLETED"),
+            SemanticEvent(type="FLOW_START"),
+            SemanticEvent(type="ENTRY_ENABLED"),
+            SemanticEvent(type="QUEUE_PASSED"),
+            SemanticEvent(type="DEF_CHALLENGE_FORCED"),  # S4 → S3
+            SemanticEvent(type="CHALLENGE_PASSED"),       # S3 → S4
+            SemanticEvent(type="SECTION_SELECTED"),
+            SemanticEvent(type="SEAT_SELECTED"),
+            SemanticEvent(type="HOLD_ACQUIRED"),
+            SemanticEvent(type="PAYMENT_COMPLETED"),
         ]
 
         result = run_events(events, default_store, default_policy)
 
         # Accept 조건 검증
-        assert result.terminal_state == State.SX_TERMINAL
+        assert result.terminal_state == State.SX
         assert result.terminal_reason == TerminalReason.DONE
-        assert State.S3_SECURITY in result.state_path
+        assert State.S3 in result.state_path
         # S3 진입 후 S4로 복귀 확인
-        s3_index = result.state_path.index(State.S3_SECURITY)
-        assert result.state_path[s3_index + 1] == State.S4_SECTION
+        s3_index = result.state_path.index(State.S3)
+        assert result.state_path[s3_index + 1] == State.S4
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -111,26 +111,26 @@ class TestSCN04ForcedChallengeDuringSeatSelection:
         - 최종 SX(done)
         """
         events = [
-            SemanticEvent(event_type="FLOW_START"),
-            SemanticEvent(event_type="ENTRY_ENABLED"),
-            SemanticEvent(event_type="QUEUE_PASSED"),
-            SemanticEvent(event_type="SECTION_SELECTED"),
-            SemanticEvent(event_type="DEF_CHALLENGE_FORCED"),  # S5 → S3
-            SemanticEvent(event_type="CHALLENGE_PASSED"),       # S3 → S5
-            SemanticEvent(event_type="SEAT_SELECTED"),
-            SemanticEvent(event_type="HOLD_ACQUIRED"),
-            SemanticEvent(event_type="PAYMENT_COMPLETED"),
+            SemanticEvent(type="FLOW_START"),
+            SemanticEvent(type="ENTRY_ENABLED"),
+            SemanticEvent(type="QUEUE_PASSED"),
+            SemanticEvent(type="SECTION_SELECTED"),
+            SemanticEvent(type="DEF_CHALLENGE_FORCED"),  # S5 → S3
+            SemanticEvent(type="CHALLENGE_PASSED"),       # S3 → S5
+            SemanticEvent(type="SEAT_SELECTED"),
+            SemanticEvent(type="HOLD_ACQUIRED"),
+            SemanticEvent(type="PAYMENT_COMPLETED"),
         ]
 
         result = run_events(events, default_store, default_policy)
 
         # Accept 조건 검증
-        assert result.terminal_state == State.SX_TERMINAL
+        assert result.terminal_state == State.SX
         assert result.terminal_reason == TerminalReason.DONE
-        assert State.S3_SECURITY in result.state_path
+        assert State.S3 in result.state_path
         # S3 진입 후 S5로 복귀 확인
-        s3_index = result.state_path.index(State.S3_SECURITY)
-        assert result.state_path[s3_index + 1] == State.S5_SEAT
+        s3_index = result.state_path.index(State.S3)
+        assert result.state_path[s3_index + 1] == State.S5
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -154,35 +154,35 @@ class TestSCN09SeatTakenRollback:
         """
         # retry budget 0으로 시작 → 첫 SEAT_TAKEN에서 즉시 롤백
         store = StateStore(
-            initial_state=State.S0_INIT,
+            initial_state=State.S0,
             budgets={"retry": 0, "security": 2},
         )
         events = [
-            SemanticEvent(event_type="FLOW_START"),
-            SemanticEvent(event_type="ENTRY_ENABLED"),
-            SemanticEvent(event_type="QUEUE_PASSED"),
-            SemanticEvent(event_type="SECTION_SELECTED"),
-            SemanticEvent(event_type="SEAT_TAKEN"),  # S5 → S4 롤백
+            SemanticEvent(type="FLOW_START"),
+            SemanticEvent(type="ENTRY_ENABLED"),
+            SemanticEvent(type="QUEUE_PASSED"),
+            SemanticEvent(type="SECTION_SELECTED"),
+            SemanticEvent(type="SEAT_TAKEN"),  # S5 → S4 롤백
             # S4에서 다시 진행
-            SemanticEvent(event_type="SECTION_SELECTED"),
-            SemanticEvent(event_type="SEAT_SELECTED"),
-            SemanticEvent(event_type="HOLD_ACQUIRED"),
-            SemanticEvent(event_type="PAYMENT_COMPLETED"),
+            SemanticEvent(type="SECTION_SELECTED"),
+            SemanticEvent(type="SEAT_SELECTED"),
+            SemanticEvent(type="HOLD_ACQUIRED"),
+            SemanticEvent(type="PAYMENT_COMPLETED"),
         ]
 
         result = run_events(events, store, default_policy)
 
         # Accept 조건 검증
-        assert result.terminal_state == State.SX_TERMINAL
+        assert result.terminal_state == State.SX
         assert result.terminal_reason == TerminalReason.DONE
         # S5 → S4 롤백 경로 확인
-        assert State.S5_SEAT in result.state_path
-        assert State.S4_SECTION in result.state_path
+        assert State.S5 in result.state_path
+        assert State.S4 in result.state_path
         # 롤백 발생 확인: S5 이후 S4가 다시 등장
-        s5_first_index = result.state_path.index(State.S5_SEAT)
+        s5_first_index = result.state_path.index(State.S5)
         s4_after_s5 = [
             i for i, s in enumerate(result.state_path)
-            if s == State.S4_SECTION and i > s5_first_index
+            if s == State.S4 and i > s5_first_index
         ]
         assert len(s4_after_s5) > 0, "SEAT_TAKEN 후 S4 롤백이 발생해야 함"
 
@@ -209,23 +209,23 @@ class TestSCN13TransactionRollback:
         - 최종 SX(done)
         """
         events = [
-            SemanticEvent(event_type="FLOW_START"),
-            SemanticEvent(event_type="ENTRY_ENABLED"),
-            SemanticEvent(event_type="QUEUE_PASSED"),
-            SemanticEvent(event_type="SECTION_SELECTED"),
-            SemanticEvent(event_type="SEAT_SELECTED"),
-            SemanticEvent(event_type="HOLD_ACQUIRED"),
-            SemanticEvent(event_type="TXN_ROLLBACK_REQUIRED"),  # S6 → S5
+            SemanticEvent(type="FLOW_START"),
+            SemanticEvent(type="ENTRY_ENABLED"),
+            SemanticEvent(type="QUEUE_PASSED"),
+            SemanticEvent(type="SECTION_SELECTED"),
+            SemanticEvent(type="SEAT_SELECTED"),
+            SemanticEvent(type="HOLD_ACQUIRED"),
+            SemanticEvent(type="TXN_ROLLBACK_REQUIRED"),  # S6 → S5
             # S5에서 다시 진행
-            SemanticEvent(event_type="SEAT_SELECTED"),
-            SemanticEvent(event_type="HOLD_ACQUIRED"),
-            SemanticEvent(event_type="PAYMENT_COMPLETED"),
+            SemanticEvent(type="SEAT_SELECTED"),
+            SemanticEvent(type="HOLD_ACQUIRED"),
+            SemanticEvent(type="PAYMENT_COMPLETED"),
         ]
 
         result = run_events(events, default_store, default_policy)
 
         # Accept 조건 검증
-        assert result.terminal_state == State.SX_TERMINAL
+        assert result.terminal_state == State.SX
         assert result.terminal_reason == TerminalReason.DONE
         # S6 → S5 롤백 경로 확인 (state_path에 S6, S5, S6 순서 포함)
         path_str = "".join([s.value for s in result.state_path])
@@ -247,13 +247,13 @@ class TestTerminalReasons:
     ) -> None:
         """terminal_reason = done: 정상 완료."""
         events = [
-            SemanticEvent(event_type="FLOW_START"),
-            SemanticEvent(event_type="ENTRY_ENABLED"),
-            SemanticEvent(event_type="QUEUE_PASSED"),
-            SemanticEvent(event_type="SECTION_SELECTED"),
-            SemanticEvent(event_type="SEAT_SELECTED"),
-            SemanticEvent(event_type="HOLD_ACQUIRED"),
-            SemanticEvent(event_type="PAYMENT_COMPLETED"),
+            SemanticEvent(type="FLOW_START"),
+            SemanticEvent(type="ENTRY_ENABLED"),
+            SemanticEvent(type="QUEUE_PASSED"),
+            SemanticEvent(type="SECTION_SELECTED"),
+            SemanticEvent(type="SEAT_SELECTED"),
+            SemanticEvent(type="HOLD_ACQUIRED"),
+            SemanticEvent(type="PAYMENT_COMPLETED"),
         ]
 
         result = run_events(events, default_store, default_policy)
@@ -268,9 +268,9 @@ class TestTerminalReasons:
     ) -> None:
         """terminal_reason = abort: FATAL_ERROR 발생."""
         events = [
-            SemanticEvent(event_type="FLOW_START"),
-            SemanticEvent(event_type="ENTRY_ENABLED"),
-            SemanticEvent(event_type="FATAL_ERROR", failure_code="NETWORK_FAILURE"),
+            SemanticEvent(type="FLOW_START"),
+            SemanticEvent(type="ENTRY_ENABLED"),
+            SemanticEvent(type="FATAL_ERROR", failure_code="NETWORK_FAILURE"),
         ]
 
         result = run_events(events, default_store, default_policy)
@@ -285,9 +285,9 @@ class TestTerminalReasons:
     ) -> None:
         """terminal_reason = cooldown: 쿨다운 트리거."""
         events = [
-            SemanticEvent(event_type="FLOW_START"),
-            SemanticEvent(event_type="ENTRY_ENABLED"),
-            SemanticEvent(event_type="COOLDOWN_TRIGGERED"),
+            SemanticEvent(type="FLOW_START"),
+            SemanticEvent(type="ENTRY_ENABLED"),
+            SemanticEvent(type="COOLDOWN_TRIGGERED"),
         ]
 
         result = run_events(events, default_store, default_policy)
@@ -302,11 +302,11 @@ class TestTerminalReasons:
     ) -> None:
         """terminal_reason = reset: 세션 만료."""
         events = [
-            SemanticEvent(event_type="FLOW_START"),
-            SemanticEvent(event_type="ENTRY_ENABLED"),
-            SemanticEvent(event_type="QUEUE_PASSED"),
-            SemanticEvent(event_type="SECTION_SELECTED"),
-            SemanticEvent(event_type="SESSION_EXPIRED"),
+            SemanticEvent(type="FLOW_START"),
+            SemanticEvent(type="ENTRY_ENABLED"),
+            SemanticEvent(type="QUEUE_PASSED"),
+            SemanticEvent(type="SECTION_SELECTED"),
+            SemanticEvent(type="SESSION_EXPIRED"),
         ]
 
         result = run_events(events, default_store, default_policy)
@@ -330,25 +330,25 @@ class TestStatePathIntegrity:
     ) -> None:
         """전체 Happy Path 상태 시퀀스 검증."""
         events = [
-            SemanticEvent(event_type="FLOW_START"),
-            SemanticEvent(event_type="ENTRY_ENABLED"),
-            SemanticEvent(event_type="QUEUE_PASSED"),
-            SemanticEvent(event_type="SECTION_SELECTED"),
-            SemanticEvent(event_type="SEAT_SELECTED"),
-            SemanticEvent(event_type="HOLD_ACQUIRED"),
-            SemanticEvent(event_type="PAYMENT_COMPLETED"),
+            SemanticEvent(type="FLOW_START"),
+            SemanticEvent(type="ENTRY_ENABLED"),
+            SemanticEvent(type="QUEUE_PASSED"),
+            SemanticEvent(type="SECTION_SELECTED"),
+            SemanticEvent(type="SEAT_SELECTED"),
+            SemanticEvent(type="HOLD_ACQUIRED"),
+            SemanticEvent(type="PAYMENT_COMPLETED"),
         ]
 
         result = run_events(events, default_store, default_policy)
 
         expected_path = [
-            State.S0_INIT,
-            State.S1_PRE_ENTRY,
-            State.S2_QUEUE_ENTRY,
-            State.S4_SECTION,
-            State.S5_SEAT,
-            State.S6_TRANSACTION,
-            State.SX_TERMINAL,
+            State.S0,
+            State.S1,
+            State.S2,
+            State.S4,
+            State.S5,
+            State.S6,
+            State.SX,
         ]
         assert result.state_path == expected_path
 
@@ -359,13 +359,13 @@ class TestStatePathIntegrity:
     ) -> None:
         """처리된 이벤트 수가 입력 이벤트 수와 일치."""
         events = [
-            SemanticEvent(event_type="FLOW_START"),
-            SemanticEvent(event_type="ENTRY_ENABLED"),
-            SemanticEvent(event_type="QUEUE_PASSED"),
-            SemanticEvent(event_type="SECTION_SELECTED"),
-            SemanticEvent(event_type="SEAT_SELECTED"),
-            SemanticEvent(event_type="HOLD_ACQUIRED"),
-            SemanticEvent(event_type="PAYMENT_COMPLETED"),
+            SemanticEvent(type="FLOW_START"),
+            SemanticEvent(type="ENTRY_ENABLED"),
+            SemanticEvent(type="QUEUE_PASSED"),
+            SemanticEvent(type="SECTION_SELECTED"),
+            SemanticEvent(type="SEAT_SELECTED"),
+            SemanticEvent(type="HOLD_ACQUIRED"),
+            SemanticEvent(type="PAYMENT_COMPLETED"),
         ]
 
         result = run_events(events, default_store, default_policy)

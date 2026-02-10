@@ -4,15 +4,15 @@
   "initial_state": "S0",
   "policy_profile": "default",
   "events": [
-    { "event_type": "FLOW_START", "source": "mock" },
-    { "event_type": "ENTRY_ENABLED", "source": "mock" },
-    { "event_type": "QUEUE_PASSED", "source": "mock" },
-    { "event_type": "SECTION_SELECTED", "source": "mock" },
-    { "event_type": "SESSION_EXPIRED", "source": "mock", "context": { "age_ms": 999999 } }
+    { "type": "FLOW_START", "source": "mock" },
+    { "type": "ENTRY_ENABLED", "source": "mock" },
+    { "type": "QUEUE_PASSED", "source": "mock" },
+    { "type": "SECTION_SELECTED", "source": "mock" },
+    { "type": "SESSION_EXPIRED", "source": "mock", "payload": { "age_ms": 999999 } }
   ],
   "accept": {
     "final_state": "SX",
-    "terminal_reason": "reset",
+    "terminal_reason": "RESET",
     "asserts": [
       { "type": "state_path_contains", "value": ["SX"] }
     ]

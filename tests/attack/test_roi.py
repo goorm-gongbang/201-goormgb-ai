@@ -28,7 +28,7 @@ class TestROILogger:
         
         # 1. 챌린지 실패 기록
         logger.log_failure(
-            state=State.S3_SECURITY,
+            state=State.S3,
             event="CHALLENGE_FAILED",
             failure_code=FailureCode.F_CHALLENGE_FAILED,
             remaining_budgets={"N_challenge": 1},
@@ -39,7 +39,7 @@ class TestROILogger:
 
         # 2. 이선좌 기록
         logger.log_failure(
-            state=State.S5_SEAT,
+            state=State.S5,
             event="SEAT_TAKEN",
             failure_code=FailureCode.F_SEAT_TAKEN,
             remaining_budgets={"N_seat": 5},
@@ -60,7 +60,7 @@ class TestROILogger:
         logger = ROILogger(log_file)
         
         logger.log_failure(
-            state=State.S4_SECTION,
+            state=State.S4,
             event="SECTION_EMPTY",
             failure_code=FailureCode.F_SECTION_EMPTY,
             remaining_budgets={"N_section": 3},
@@ -84,7 +84,7 @@ class TestROILogger:
         
         # S4로 롤백되는 상황 시뮬레이션
         logger.log_failure(
-            state=State.S5_SEAT,
+            state=State.S5,
             event="SEAT_TAKEN",
             failure_code=FailureCode.F_SEAT_TAKEN,
             remaining_budgets={"N_seat": 0},
@@ -103,7 +103,7 @@ class TestROILogger:
         
         # 예외 없이 실행되어야 함
         invalid_logger.log_failure(
-            state=State.S0_INIT,
+            state=State.S0,
             event="TEST",
             failure_code=FailureCode.F_CLIENT_ERROR,
             remaining_budgets={},

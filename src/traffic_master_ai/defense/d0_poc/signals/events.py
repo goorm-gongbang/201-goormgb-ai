@@ -1,21 +1,5 @@
-"""Event primitives for Defense PoC-0."""
+"""Event definition for Defense Signals."""
 
-from dataclasses import dataclass, field
-from typing import Any, Dict
+from traffic_master_ai.common.models.events import SemanticEvent as Event, EventSource
 
-from ..core import EventSource
-
-
-@dataclass(slots=True)
-class Event:
-    """Canonical event shape used by the PoC-0 engine."""
-
-    event_id: str
-    ts_ms: int
-    type: str
-    source: EventSource
-    session_id: str
-    payload: Dict[str, Any] = field(default_factory=dict)
-
-
-__all__ = ["Event"]
+__all__ = ["Event", "EventSource"]

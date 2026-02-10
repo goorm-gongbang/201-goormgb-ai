@@ -15,7 +15,6 @@ from traffic_master_ai.attack.a0_poc.events import SemanticEvent
 from traffic_master_ai.attack.a0_poc.failure import FailureMatrix
 from traffic_master_ai.attack.a0_poc.roi import ROILogger
 from traffic_master_ai.attack.a0_poc.scenario_models import Scenario, ScenarioAssertion
-from traffic_master_ai.attack.a0_poc.scenario_models import Scenario
 from traffic_master_ai.attack.a0_poc.snapshots import PolicySnapshot
 from traffic_master_ai.attack.a0_poc.states import State, TerminalReason
 from traffic_master_ai.attack.a0_poc.store import StateStore
@@ -42,7 +41,6 @@ class ScenarioRunner:
         failure_matrix: FailureMatrix | None = None,
         roi_logger: ROILogger | None = None,
     ) -> ScenarioResult:
-    ) -> ExecutionResult:
         """
         시나리오를 실행하여 가상 시간이 반영된 ExecutionResult를 반환합니다.
         
@@ -71,9 +69,9 @@ class ScenarioRunner:
 
             # B. 이벤트 변환 (ScenarioEvent -> SemanticEvent)
             event = SemanticEvent(
-                event_type=s_evt.event_type,
+                type=EventType(s_evt.type),
                 stage=State(s_evt.stage) if s_evt.stage and s_evt.stage != "unknown" else None,
-                context=s_evt.context,
+                payload=s_evt.payload,
             )
 
             # C. 전이 실행 (transition.py 로직 사용)
@@ -86,10 +84,8 @@ class ScenarioRunner:
 
             # D. 실패 처리 매트릭스 적용 (A0-3 로직 재사용)
             if failure_matrix and not result.is_terminal():
-            # D. 실패 처리 매트릭스 적용 (A0-3 로직 재사용 - private이므로 여기서 직접 처리 또는 orchestrator 호출)
-            if failure_matrix:
                 try:
-                    et = EventType(event.event_type)
+                    et = EventType(event.type.value)
                     failure_policy = failure_matrix.get_policy(current_state, et)
                     if failure_policy:
                         # NOTE: 원래는 orchestrator._apply_failure_policy를 호출해야 함.
@@ -112,19 +108,16 @@ class ScenarioRunner:
                 state_path.append(next_state)
 
             # F. 카운터 누적 (시뮬레이션용)
-            store.increment_counter(event.event_type)
+            store.increment_counter(event.type.value)
             handled_events += 1
 
             if result.terminal_reason:
                 final_terminal_reason = result.terminal_reason
 
-            if next_state.is_terminal() or next_state.value == scenario.accept.final_state:
+            if next_state.is_terminal():
                 # BREAK CONDITION
                 final_terminal_reason = result.terminal_reason or final_terminal_reason or TerminalReason.DONE
                 last_result = result
-            handled_events += 1
-
-            if next_state.is_terminal():
                 break
 
         # 3. 결과 조립
@@ -142,19 +135,6 @@ class ScenarioRunner:
             state_path=state_path,
             terminal_state=final_state,
             terminal_reason=final_terminal_reason,
-        
-        # 터미널 미도달 검증
-        if not final_snapshot.current_state.is_terminal():
-            raise ValueError(f"Scenario {scenario.id} ended without reaching terminal state.")
-
-        terminal_reason = TerminalReason.DONE
-        if last_result and last_result.terminal_reason:
-            terminal_reason = last_result.terminal_reason
-
-        return ExecutionResult(
-            state_path=state_path,
-            terminal_state=final_snapshot.current_state,
-            terminal_reason=terminal_reason,
             handled_events=handled_events,
             total_elapsed_ms=final_snapshot.elapsed_ms,
             final_budgets=dict(final_snapshot.budgets),
@@ -216,15 +196,16 @@ class ScenarioRunner:
             else:
                 if policy.stop_condition:
                     if "S4" in policy.stop_condition:
-                        next_state = State.S4_SECTION
+                        next_state = State.S4
+                        terminal_reason = None
                     elif "SX" in policy.stop_condition:
-                        next_state = State.SX_TERMINAL
+                        next_state = State.SX
                         terminal_reason = TerminalReason.ABORT
         
         if roi_logger:
             roi_logger.log_failure(
                 state=snapshot.current_state,
-                event=event.event_type,
+                event=event.type.value,
                 failure_code=failure_code,
                 remaining_budgets=store.get_snapshot().budgets,
                 stage_elapsed_ms=0,

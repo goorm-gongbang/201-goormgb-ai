@@ -19,37 +19,37 @@ class TestState:
 
     def test_state_enum_values(self) -> None:
         """Verify all state enum values match spec."""
-        assert State.S0_INIT.value == "S0"
-        assert State.S1_PRE_ENTRY.value == "S1"
-        assert State.S2_QUEUE_ENTRY.value == "S2"
-        assert State.S3_SECURITY.value == "S3"
-        assert State.S4_SECTION.value == "S4"
-        assert State.S5_SEAT.value == "S5"
-        assert State.S6_TRANSACTION.value == "S6"
-        assert State.SX_TERMINAL.value == "SX"
+        assert State.S0.value == "S0"
+        assert State.S1.value == "S1"
+        assert State.S2.value == "S2"
+        assert State.S3.value == "S3"
+        assert State.S4.value == "S4"
+        assert State.S5.value == "S5"
+        assert State.S6.value == "S6"
+        assert State.SX.value == "SX"
 
     def test_is_terminal(self) -> None:
         """Only SX is terminal."""
-        assert State.SX_TERMINAL.is_terminal()
+        assert State.SX.is_terminal()
         for state in State:
-            if state != State.SX_TERMINAL:
+            if state != State.SX:
                 assert not state.is_terminal()
 
     def test_is_security(self) -> None:
         """Only S3 is security state."""
-        assert State.S3_SECURITY.is_security()
+        assert State.S3.is_security()
         for state in State:
-            if state != State.S3_SECURITY:
+            if state != State.S3:
                 assert not state.is_security()
 
     def test_can_be_last_non_security(self) -> None:
         """Per spec: last_non_security_state ∈ {S1, S2, S4, S5, S6}."""
         valid_states = {
-            State.S1_PRE_ENTRY,
-            State.S2_QUEUE_ENTRY,
-            State.S4_SECTION,
-            State.S5_SEAT,
-            State.S6_TRANSACTION,
+            State.S1,
+            State.S2,
+            State.S4,
+            State.S5,
+            State.S6,
         }
         for state in State:
             if state in valid_states:
@@ -59,7 +59,7 @@ class TestState:
 
     def test_terminal_reasons(self) -> None:
         """Verify terminal reasons match spec."""
-        assert TERMINAL_REASONS == {"done", "abort", "cooldown", "reset"}
+        assert TERMINAL_REASONS == {"DONE", "ABORT", "COOLDOWN", "RESET"}
 
 
 class TestSemanticEvent:
@@ -67,35 +67,35 @@ class TestSemanticEvent:
 
     def test_creation_minimal(self) -> None:
         """Create event with minimal fields."""
-        event = SemanticEvent(event_type="ENTRY_ENABLED")
-        assert event.event_type == "ENTRY_ENABLED"
+        event = SemanticEvent(type="ENTRY_ENABLED")
+        assert event.type == "ENTRY_ENABLED"
         assert event.stage is None
         assert event.failure_code is None
-        assert event.context == {}
+        assert event.payload == {}
 
     def test_creation_full(self) -> None:
         """Create event with all fields."""
         event = SemanticEvent(
-            event_type="CHALLENGE_FAILED",
-            stage=State.S3_SECURITY,
+            type="CHALLENGE_FAILED",
+            stage=State.S3,
             failure_code="CAPTCHA_TIMEOUT",
-            context={"attempt": 3},
+            payload={"attempt": 3},
         )
-        assert event.event_type == "CHALLENGE_FAILED"
-        assert event.stage == State.S3_SECURITY
+        assert event.type == "CHALLENGE_FAILED"
+        assert event.stage == State.S3
         assert event.failure_code == "CAPTCHA_TIMEOUT"
-        assert event.context == {"attempt": 3}
+        assert event.payload == {"attempt": 3}
 
     def test_immutability(self) -> None:
         """SemanticEvent should be frozen."""
-        event = SemanticEvent(event_type="TEST")
-        with pytest.raises(AttributeError):
-            event.event_type = "MODIFIED"  # type: ignore[misc]
+        event = SemanticEvent(type="FLOW_START")
+        with pytest.raises((AttributeError, TypeError)):
+            event.type = "MODIFIED"  # type: ignore[misc]
 
     def test_empty_event_type_raises(self) -> None:
         """Empty event_type should raise ValueError."""
-        with pytest.raises(ValueError, match="event_type must be non-empty"):
-            SemanticEvent(event_type="")
+        with pytest.raises(ValueError):
+            SemanticEvent(type="")
 
 
 class TestStateSnapshot:
@@ -103,7 +103,7 @@ class TestStateSnapshot:
 
     def test_creation(self, initial_state_snapshot: StateSnapshot) -> None:
         """Create state snapshot."""
-        assert initial_state_snapshot.current_state == State.S0_INIT
+        assert initial_state_snapshot.current_state == State.S0
         assert initial_state_snapshot.last_non_security_state is None
         assert initial_state_snapshot.budgets == {"retry": 3, "security": 2}
         assert initial_state_snapshot.counters == {}
@@ -111,18 +111,18 @@ class TestStateSnapshot:
 
     def test_mutability(self, initial_state_snapshot: StateSnapshot) -> None:
         """StateSnapshot should be mutable."""
-        initial_state_snapshot.current_state = State.S1_PRE_ENTRY
+        initial_state_snapshot.current_state = State.S1
         initial_state_snapshot.elapsed_ms = 1000
-        assert initial_state_snapshot.current_state == State.S1_PRE_ENTRY
+        assert initial_state_snapshot.current_state == State.S1
         assert initial_state_snapshot.elapsed_ms == 1000
 
     def test_copy(self, initial_state_snapshot: StateSnapshot) -> None:
         """Copy should create independent snapshot."""
         copy = initial_state_snapshot.copy()
-        copy.current_state = State.S5_SEAT
+        copy.current_state = State.S5
         copy.budgets["retry"] = 0
         # Original unchanged
-        assert initial_state_snapshot.current_state == State.S0_INIT
+        assert initial_state_snapshot.current_state == State.S0
         assert initial_state_snapshot.budgets["retry"] == 3
 
 
@@ -152,17 +152,17 @@ class TestTransitionResult:
     def test_normal_transition(self) -> None:
         """Create normal (non-terminal) transition result."""
         result = TransitionResult(
-            next_state=State.S2_QUEUE_ENTRY,
+            next_state=State.S2,
             notes=["Transitioned from S1"],
         )
-        assert result.next_state == State.S2_QUEUE_ENTRY
+        assert result.next_state == State.S2
         assert result.terminal_reason is None
         assert not result.is_terminal()
 
     def test_terminal_transition(self) -> None:
         """Create terminal transition result."""
         result = TransitionResult(
-            next_state=State.SX_TERMINAL,
+            next_state=State.SX,
             terminal_reason=TerminalReason.DONE,
             notes=["Payment complete"],
         )
@@ -172,21 +172,21 @@ class TestTransitionResult:
     def test_terminal_requires_reason(self) -> None:
         """SX transition without terminal_reason should raise."""
         with pytest.raises(ValueError, match="terminal_reason 필수"):
-            TransitionResult(next_state=State.SX_TERMINAL)
+            TransitionResult(next_state=State.SX)
 
     def test_non_terminal_no_reason(self) -> None:
         """Non-terminal with terminal_reason should raise."""
         with pytest.raises(ValueError, match="terminal_reason은 None"):
             TransitionResult(
-                next_state=State.S4_SECTION,
+                next_state=State.S4,
                 terminal_reason=TerminalReason.DONE,
             )
 
     def test_immutability(self) -> None:
         """TransitionResult should be frozen."""
-        result = TransitionResult(next_state=State.S2_QUEUE_ENTRY)
+        result = TransitionResult(next_state=State.S2)
         with pytest.raises(AttributeError):
-            result.next_state = State.S3_SECURITY  # type: ignore[misc]
+            result.next_state = State.S3  # type: ignore[misc]
 
 
 class TestDecisionLog:
@@ -197,26 +197,26 @@ class TestDecisionLog:
         log = DecisionLog(
             decision_id="test-001",
             timestamp_ms=1706500000000,
-            current_state=State.S1_PRE_ENTRY,
+            current_state=State.S1,
             event=sample_event,
-            next_state=State.S2_QUEUE_ENTRY,
+            next_state=State.S2,
             policy_profile="default",
             budgets={"retry": 3},
             counters={},
             elapsed_ms=500,
         )
         assert log.decision_id == "test-001"
-        assert log.current_state == State.S1_PRE_ENTRY
-        assert log.next_state == State.S2_QUEUE_ENTRY
+        assert log.current_state == State.S1
+        assert log.next_state == State.S2
 
     def test_to_dict(self, sample_event: SemanticEvent) -> None:
         """Test serialization schema."""
         log = DecisionLog(
             decision_id="test-002",
             timestamp_ms=1706500000000,
-            current_state=State.S1_PRE_ENTRY,
+            current_state=State.S1,
             event=sample_event,
-            next_state=State.S2_QUEUE_ENTRY,
+            next_state=State.S2,
             policy_profile="default",
             budgets={"retry": 2},
             counters={"attempts": 1},
@@ -227,5 +227,6 @@ class TestDecisionLog:
         assert d["decision_id"] == "test-002"
         assert d["current_state"] == "S1"
         assert d["next_state"] == "S2"
-        assert d["event"]["event_type"] == "ENTRY_ENABLED"
+        assert d["event"]["type"] == "ENTRY_ENABLED"
+        assert d["event"]["payload"] == {"source": "test"}
         assert d["notes"] == ["Test note"]

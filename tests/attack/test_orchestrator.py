@@ -31,7 +31,7 @@ def default_policy() -> PolicySnapshot:
 def initial_store() -> StateStore:
     """초기 상태 저장소 (S0, 예산 포함)."""
     return StateStore(
-        initial_state=State.S0_INIT,
+        initial_state=State.S0,
         budgets={"retry": 3, "security": 2},
     )
 
@@ -51,28 +51,28 @@ class TestHappyPath:
     ) -> None:
         """전체 플로우: S0 → S1 → S2 → S4 → S5 → S6 → SX (done)."""
         events = [
-            SemanticEvent(event_type="BOOTSTRAP_COMPLETE"),  # S0 → S1
-            SemanticEvent(event_type="ENTRY_ENABLED"),       # S1 → S2
-            SemanticEvent(event_type="QUEUE_PASSED"),        # S2 → S4
-            SemanticEvent(event_type="SECTION_SELECTED"),    # S4 → S5
-            SemanticEvent(event_type="SEAT_SELECTED"),       # S5 → S6
-            SemanticEvent(event_type="PAYMENT_COMPLETE"),    # S6 → SX
+            SemanticEvent(type="BOOTSTRAP_COMPLETE"),  # S0 → S1
+            SemanticEvent(type="ENTRY_ENABLED"),       # S1 → S2
+            SemanticEvent(type="QUEUE_PASSED"),        # S2 → S4
+            SemanticEvent(type="SECTION_SELECTED"),    # S4 → S5
+            SemanticEvent(type="SEAT_SELECTED"),       # S5 → S6
+            SemanticEvent(type="PAYMENT_COMPLETE"),    # S6 → SX
         ]
 
         result = run_events(events, initial_store, default_policy)
 
-        assert result.terminal_state == State.SX_TERMINAL
+        assert result.terminal_state == State.SX
         assert result.terminal_reason == TerminalReason.DONE
         assert result.handled_events == 6
         assert result.is_success()
         assert result.state_path == [
-            State.S0_INIT,
-            State.S1_PRE_ENTRY,
-            State.S2_QUEUE_ENTRY,
-            State.S4_SECTION,
-            State.S5_SEAT,
-            State.S6_TRANSACTION,
-            State.SX_TERMINAL,
+            State.S0,
+            State.S1,
+            State.S2,
+            State.S4,
+            State.S5,
+            State.S6,
+            State.SX,
         ]
 
     def test_state_path_records_all_states(
@@ -82,18 +82,18 @@ class TestHappyPath:
     ) -> None:
         """state_path가 모든 방문 상태를 기록하는지 확인."""
         events = [
-            SemanticEvent(event_type="BOOTSTRAP_COMPLETE"),
-            SemanticEvent(event_type="ENTRY_ENABLED"),
-            SemanticEvent(event_type="FATAL_ERROR"),  # 즉시 SX
+            SemanticEvent(type="BOOTSTRAP_COMPLETE"),
+            SemanticEvent(type="ENTRY_ENABLED"),
+            SemanticEvent(type="FATAL_ERROR"),  # 즉시 SX
         ]
 
         result = run_events(events, initial_store, default_policy)
 
         assert result.state_path == [
-            State.S0_INIT,
-            State.S1_PRE_ENTRY,
-            State.S2_QUEUE_ENTRY,
-            State.SX_TERMINAL,
+            State.S0,
+            State.S1,
+            State.S2,
+            State.SX,
         ]
         assert result.handled_events == 3
 
@@ -113,8 +113,8 @@ class TestTerminalCases:
     ) -> None:
         """FATAL_ERROR → abort."""
         events = [
-            SemanticEvent(event_type="BOOTSTRAP_COMPLETE"),
-            SemanticEvent(event_type="FATAL_ERROR"),
+            SemanticEvent(type="BOOTSTRAP_COMPLETE"),
+            SemanticEvent(type="FATAL_ERROR"),
         ]
 
         result = run_events(events, initial_store, default_policy)
@@ -129,8 +129,8 @@ class TestTerminalCases:
     ) -> None:
         """COOLDOWN_TRIGGERED → cooldown."""
         events = [
-            SemanticEvent(event_type="BOOTSTRAP_COMPLETE"),
-            SemanticEvent(event_type="COOLDOWN_TRIGGERED"),
+            SemanticEvent(type="BOOTSTRAP_COMPLETE"),
+            SemanticEvent(type="COOLDOWN_TRIGGERED"),
         ]
 
         result = run_events(events, initial_store, default_policy)
@@ -144,10 +144,10 @@ class TestTerminalCases:
     ) -> None:
         """터미널 도달 후 추가 이벤트 무시."""
         events = [
-            SemanticEvent(event_type="BOOTSTRAP_COMPLETE"),
-            SemanticEvent(event_type="FATAL_ERROR"),
-            SemanticEvent(event_type="ENTRY_ENABLED"),  # 무시됨
-            SemanticEvent(event_type="QUEUE_PASSED"),   # 무시됨
+            SemanticEvent(type="BOOTSTRAP_COMPLETE"),
+            SemanticEvent(type="FATAL_ERROR"),
+            SemanticEvent(type="ENTRY_ENABLED"),  # 무시됨
+            SemanticEvent(type="QUEUE_PASSED"),   # 무시됨
         ]
 
         result = run_events(events, initial_store, default_policy)
@@ -171,20 +171,20 @@ class TestSecurityInterrupt:
     ) -> None:
         """S2에서 S3 인터럽트 후 S2로 복귀."""
         events = [
-            SemanticEvent(event_type="BOOTSTRAP_COMPLETE"),   # S0 → S1
-            SemanticEvent(event_type="ENTRY_ENABLED"),        # S1 → S2
-            SemanticEvent(event_type="CHALLENGE_DETECTED"),   # S2 → S3
-            SemanticEvent(event_type="CHALLENGE_PASSED"),     # S3 → S2
-            SemanticEvent(event_type="QUEUE_PASSED"),         # S2 → S4
-            SemanticEvent(event_type="SECTION_SELECTED"),     # S4 → S5
-            SemanticEvent(event_type="SEAT_SELECTED"),        # S5 → S6
-            SemanticEvent(event_type="PAYMENT_COMPLETE"),     # S6 → SX
+            SemanticEvent(type="BOOTSTRAP_COMPLETE"),   # S0 → S1
+            SemanticEvent(type="ENTRY_ENABLED"),        # S1 → S2
+            SemanticEvent(type="CHALLENGE_DETECTED"),   # S2 → S3
+            SemanticEvent(type="CHALLENGE_PASSED"),     # S3 → S2
+            SemanticEvent(type="QUEUE_PASSED"),         # S2 → S4
+            SemanticEvent(type="SECTION_SELECTED"),     # S4 → S5
+            SemanticEvent(type="SEAT_SELECTED"),        # S5 → S6
+            SemanticEvent(type="PAYMENT_COMPLETE"),     # S6 → SX
         ]
 
         result = run_events(events, initial_store, default_policy)
 
         assert result.terminal_reason == TerminalReason.DONE
-        assert State.S3_SECURITY in result.state_path
+        assert State.S3 in result.state_path
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -201,25 +201,25 @@ class TestRollbackCases:
     ) -> None:
         """좌석 선점됨 → 예산 소진 시 S4로 롤백."""
         store = StateStore(
-            initial_state=State.S0_INIT,
+            initial_state=State.S0,
             budgets={"retry": 0, "security": 2},  # retry 예산 없음
         )
         events = [
-            SemanticEvent(event_type="BOOTSTRAP_COMPLETE"),
-            SemanticEvent(event_type="ENTRY_ENABLED"),
-            SemanticEvent(event_type="QUEUE_PASSED"),
-            SemanticEvent(event_type="SECTION_SELECTED"),
-            SemanticEvent(event_type="SEAT_TAKEN"),      # S5 → S4 롤백
-            SemanticEvent(event_type="SECTION_SELECTED"),  # S4 → S5
-            SemanticEvent(event_type="SEAT_SELECTED"),
-            SemanticEvent(event_type="PAYMENT_COMPLETE"),
+            SemanticEvent(type="BOOTSTRAP_COMPLETE"),
+            SemanticEvent(type="ENTRY_ENABLED"),
+            SemanticEvent(type="QUEUE_PASSED"),
+            SemanticEvent(type="SECTION_SELECTED"),
+            SemanticEvent(type="SEAT_TAKEN"),      # S5 → S4 롤백
+            SemanticEvent(type="SECTION_SELECTED"),  # S4 → S5
+            SemanticEvent(type="SEAT_SELECTED"),
+            SemanticEvent(type="PAYMENT_COMPLETE"),
         ]
 
         result = run_events(events, store, default_policy)
 
         assert result.terminal_reason == TerminalReason.DONE
         # S5가 두 번 방문됨 (롤백 후 재진입)
-        s5_count = result.state_path.count(State.S5_SEAT)
+        s5_count = result.state_path.count(State.S5)
         assert s5_count >= 1
 
 
@@ -238,8 +238,8 @@ class TestErrorCases:
     ) -> None:
         """터미널 미도달 상태에서 이벤트 소진 시 에러."""
         events = [
-            SemanticEvent(event_type="BOOTSTRAP_COMPLETE"),
-            SemanticEvent(event_type="ENTRY_ENABLED"),
+            SemanticEvent(type="BOOTSTRAP_COMPLETE"),
+            SemanticEvent(type="ENTRY_ENABLED"),
             # 터미널에 도달하지 않음
         ]
 
@@ -272,13 +272,13 @@ class TestExecutionResultFields:
     ) -> None:
         """final_budgets와 final_counters가 정확히 복사되는지."""
         store = StateStore(
-            initial_state=State.S0_INIT,
+            initial_state=State.S0,
             budgets={"retry": 5, "security": 3},
             counters={"attempts": 0},
         )
         events = [
-            SemanticEvent(event_type="BOOTSTRAP_COMPLETE"),
-            SemanticEvent(event_type="FATAL_ERROR"),
+            SemanticEvent(type="BOOTSTRAP_COMPLETE"),
+            SemanticEvent(type="FATAL_ERROR"),
         ]
 
         result = run_events(events, store, default_policy)
@@ -293,10 +293,10 @@ class TestExecutionResultFields:
     ) -> None:
         """handled_events가 정확히 카운트되는지."""
         events = [
-            SemanticEvent(event_type="BOOTSTRAP_COMPLETE"),
-            SemanticEvent(event_type="ENTRY_ENABLED"),
-            SemanticEvent(event_type="QUEUE_PASSED"),
-            SemanticEvent(event_type="FATAL_ERROR"),
+            SemanticEvent(type="BOOTSTRAP_COMPLETE"),
+            SemanticEvent(type="ENTRY_ENABLED"),
+            SemanticEvent(type="QUEUE_PASSED"),
+            SemanticEvent(type="FATAL_ERROR"),
         ]
 
         result = run_events(events, initial_store, default_policy)

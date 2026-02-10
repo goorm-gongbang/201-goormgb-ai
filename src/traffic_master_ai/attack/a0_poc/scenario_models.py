@@ -10,27 +10,22 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from traffic_master_ai.common.models.events import EventType, EventSource
 from traffic_master_ai.attack.a0_poc.states import State, TerminalReason
 
 
-class EventSource(str, Enum):
-    """이벤트 발생 소스 (v1.0 스키마 준수)."""
-    MOCK = "mock"
-    TIMER = "timer"
-    DEFENSE = "defense"
-    UI = "ui"
-    API = "api"
+# (기존 EventSource 클래스 제거 완료)
 
 
 class ScenarioEvent(BaseModel):
     """시나리오 내 개별 이벤트 명세."""
     model_config = ConfigDict(frozen=True)
 
-    event_type: str = Field(..., min_length=3)
+    type: str = Field(..., min_length=3)
     source: EventSource = EventSource.MOCK
     stage: str | None = None  # State value string (e.g., "S1")
     delay_ms: int = Field(0, ge=0)
-    context: dict[str, Any] = Field(default_factory=dict)
+    payload: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("stage")
     @classmethod

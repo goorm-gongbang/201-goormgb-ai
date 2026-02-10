@@ -5,16 +5,16 @@
   "initial_state": "S0",
   "policy_profile": "default",
   "events": [
-    { "event_type": "FLOW_START", "source": "ui", "delay_ms": 100 },
-    { "event_type": "ENTRY_ENABLED", "source": "api", "stage": "S1" },
-    { "event_type": "QUEUE_PASSED", "source": "ui", "stage": "S2" },
-    { "event_type": "SECTION_SELECTED", "source": "ui", "stage": "S4" },
-    { "event_type": "SEAT_SELECTED", "source": "ui", "stage": "S5" },
-    { "event_type": "PAYMENT_COMPLETED", "source": "api", "stage": "S6" }
+    { "type": "FLOW_START", "source": "ui", "delay_ms": 100 },
+    { "type": "ENTRY_ENABLED", "source": "api", "stage": "S1" },
+    { "type": "QUEUE_PASSED", "source": "ui", "stage": "S2" },
+    { "type": "SECTION_SELECTED", "source": "ui", "stage": "S4" },
+    { "type": "SEAT_SELECTED", "source": "ui", "stage": "S5" },
+    { "type": "PAYMENT_COMPLETED", "source": "api", "stage": "S6" }
   ],
   "accept": {
     "final_state": "SX",
-    "terminal_reason": "done",
+    "terminal_reason": "DONE",
     "asserts": [
       {
         "type": "state_path_equals",
