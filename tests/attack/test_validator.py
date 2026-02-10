@@ -76,7 +76,7 @@ class TestValidateSchema:
         """유효한 source 검증."""
         event = SemanticEvent(
             type="FLOW_START",
-            payload={"source": "ui"},
+            payload={"source": "UI"},
         )
         result = self.validator.validate_schema(event)
         assert result.is_valid is True
@@ -102,7 +102,7 @@ class TestValidateSchema:
 
     def test_all_valid_sources(self) -> None:
         """모든 유효한 source 값 테스트."""
-        valid_sources = ["ui", "api", "timer", "defense", "mock"]
+        valid_sources = ["UI", "API", "TIMER", "DEFENSE", "MOCK"]
         for source in valid_sources:
             event = SemanticEvent(
                 type="FLOW_START",

@@ -99,6 +99,8 @@ class SemanticEvent:
 
     def __post_init__(self) -> None:
         """Auto-coerce string values to proper enum types (graceful)."""
+        if not self.type:
+            raise ValueError("event type is required")
         if isinstance(self.type, str) and not isinstance(self.type, EventType):
             try:
                 object.__setattr__(self, 'type', EventType(self.type))

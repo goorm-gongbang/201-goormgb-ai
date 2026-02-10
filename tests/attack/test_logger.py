@@ -96,6 +96,7 @@ class TestDecisionLoggerBasic:
         assert log.decision_id == "test-decision-001"
         assert log.timestamp_ms == 1706500000000
         assert log.current_state == State.S1
+        assert log.event.type == "ENTRY_ENABLED" # Changed from event_type to type
         assert log.next_state == State.S2
         assert log.policy_profile == "aggressive"
         assert log.budgets == {"retry": 3, "security": 2}
@@ -255,10 +256,10 @@ class TestDecisionLogFields:
     ) -> None:
         """event 필드의 하위 필드가 존재하는지 확인."""
         event = SemanticEvent(
-            event_type="CHALLENGE_FAILED",
+            type="CHALLENGE_FAILED",
             stage=State.S3,
             failure_code="CAPTCHA_TIMEOUT",
-            context={"attempt": 2},
+            payload={"attempt": 2},
         )
 
         logger.record(State.S3, event, sample_result, default_policy, sample_snapshot)
@@ -267,10 +268,10 @@ class TestDecisionLogFields:
         parsed = json.loads(jsonl)
 
         event_data = parsed["event"]
-        assert event_data["event_type"] == "CHALLENGE_FAILED"
+        assert event_data["type"] == "CHALLENGE_FAILED"
         assert event_data["stage"] == "S3"
         assert event_data["failure_code"] == "CAPTCHA_TIMEOUT"
-        assert event_data["context"] == {"attempt": 2}
+        assert event_data["payload"] == {"attempt": 2}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

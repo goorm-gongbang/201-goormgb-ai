@@ -34,7 +34,7 @@ def test_state_path_contains(mock_result: ExecutionResult) -> None:
     assertion = ScenarioAssertion(type="state_path_contains", value="S5")
     passed, msg = check_assertion(assertion, mock_result)
     assert passed is False
-    assert "Did not visit S5" in msg
+    assert "Missing ['S5']" in msg
 
 
 def test_state_path_equals(mock_result: ExecutionResult) -> None:

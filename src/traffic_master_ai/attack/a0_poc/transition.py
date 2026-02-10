@@ -72,10 +72,10 @@ class DecisionLog:
             "timestamp_ms": self.timestamp_ms,
             "current_state": self.current_state.value,
             "event": {
-                "event_type": self.event.type.value if hasattr(self.event.type.value, "value") else self.event.type.value,
+                "type": self.event.type.value if hasattr(self.event.type, "value") else self.event.type,
                 "stage": self.event.stage.value if self.event.stage else None,
                 "failure_code": self.event.failure_code,
-                "context": self.event.payload,
+                "payload": self.event.payload,
             },
             "next_state": self.next_state.value,
             "policy_profile": self.policy_profile,
@@ -98,9 +98,10 @@ class ExecutionResult:
     terminal_state: State
     terminal_reason: TerminalReason
     handled_events: int
-    total_elapsed_ms: int
+    total_elapsed_ms: int = 0
     final_budgets: dict[str, int] = field(default_factory=dict)
     final_counters: dict[str, int] = field(default_factory=dict)
+    failure_code: str | None = None  # 마지막 발생한 실패 코드
 
     def __post_init__(self) -> None:
         """터미널 상태 검증 (시나리오 마다 다를 수 있으므로 유연하게 처리)."""
@@ -399,11 +400,11 @@ def _handle_s4_transition(
             notes=["구역 선택 완료 - S5로 전이"],
         )
 
-    # 단계 점프: S4에서 좌석 선택 혹은 그 이상
+    # 단계 유지: S4에서 좌석 선택 혹은 그 이상 시도 시 S5로 일단 전이하여 단계 준수
     if et in ("SEAT_SELECTED", "HOLD_ACQUIRED", "HOLD_CONFIRMED", "PAYMENT_PAGE_ENTERED"):
         return TransitionResult(
-            next_state=State.S6, # S5 거쳐서 S6으로 간주
-            notes=[f"구역 선택 중 직접 좌석/홀드/결제({et}) - S6으로 전이"],
+            next_state=State.S5, 
+            notes=[f"구역 선택 중 좌석/홀드/결제 시도({et}) - 단계 준수를 위해 S5로 전이"],
         )
         
     if et in ("PAYMENT_COMPLETE", "PAYMENT_COMPLETED"):

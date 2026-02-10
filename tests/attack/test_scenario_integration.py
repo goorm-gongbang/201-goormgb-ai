@@ -25,16 +25,16 @@ def test_scenario_full_pipe(tmp_path: Path) -> None:
         "initial_state": "S0",
         "policy_profile": "default",
         "events": [
-            { "event_type": "FLOW_START", "delay_ms": 100 },
-            { "event_type": "ENTRY_ENABLED", "delay_ms": 100 },
-            { "event_type": "QUEUE_PASSED", "delay_ms": 100 },
-            { "event_type": "SECTION_SELECTED", "delay_ms": 100 },
-            { "event_type": "SEAT_SELECTED", "delay_ms": 100 },
-            { "event_type": "PAYMENT_COMPLETED", "delay_ms": 100 }
+            { "type": "FLOW_START", "delay_ms": 100 },
+            { "type": "ENTRY_ENABLED", "delay_ms": 100 },
+            { "type": "QUEUE_PASSED", "delay_ms": 100 },
+            { "type": "SECTION_SELECTED", "delay_ms": 100 },
+            { "type": "SEAT_SELECTED", "delay_ms": 100 },
+            { "type": "PAYMENT_COMPLETED", "delay_ms": 100 }
         ],
         "accept": {
             "final_state": "SX",
-            "terminal_reason": "done",
+            "terminal_reason": "DONE",
             "asserts": [
                 { "type": "state_path_contains", "value": "S1" },
                 { "type": "event_handled_count_at_least", "value": 3 }
@@ -62,7 +62,7 @@ def test_scenario_full_pipe(tmp_path: Path) -> None:
     # 5. 검증
     assert result.is_success is True
     assert result.total_elapsed_ms == 600
-    assert len(result.assertion_results) == 3 # terminal_reason + 2 custom assertions
+    assert len(result.assertion_results) == 4 # terminal_reason + implicit terminal_reason + 2 custom assertions
     
     # 리포트 출력 확인 (콘솔 출력용)
     report.print_summary()

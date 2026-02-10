@@ -14,23 +14,8 @@ from traffic_master_ai.attack.a0_poc.states import State
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-from traffic_master_ai.common.models.events import EventType
+from traffic_master_ai.common.models.events import EventType, EventSource
 from traffic_master_ai.attack.a0_poc.states import State
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# EventSource Enum
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-class EventSource(str, Enum):
-    """이벤트 발생 소스."""
-    
-    UI = "ui"           # 브라우저 UI 이벤트
-    API = "api"         # API 응답
-    TIMER = "timer"     # 타이머/타임아웃
-    DEFENSE = "defense" # 방어 시스템 감지
-    MOCK = "mock"       # 테스트/시뮬레이션
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -56,6 +41,14 @@ EVENT_VALID_STATES: dict[EventType, frozenset[State]] = {
     # A. Flow/System Events
     # ─────────────────────────────────────────────────────────────────
     EventType.FLOW_START: frozenset({State.S0}),
+    EventType.BOOTSTRAP_COMPLETE: frozenset({State.S0}),
+    EventType.CHALLENGE_DETECTED: frozenset({State.S3}),
+    EventType.HOLD_CONFIRMED: frozenset({State.S6, State.S5}),
+    EventType.CONFIRM_CLICKED: frozenset({State.S6}),
+    EventType.FATAL_ERROR: _NON_TERMINAL,
+    EventType.POLICY_ABORT: _NON_TERMINAL,
+    EventType.COOLDOWN_TRIGGERED: _NON_TERMINAL,
+    EventType.ENTRY_CLICKED: frozenset({State.S1, State.S0}),
     EventType.FLOW_ABORT: _NON_TERMINAL,
     EventType.TIMEOUT: _NON_TERMINAL,
     EventType.SESSION_EXPIRED: _NON_TERMINAL,
@@ -101,6 +94,7 @@ EVENT_VALID_STATES: dict[EventType, frozenset[State]] = {
     # ─────────────────────────────────────────────────────────────────
     EventType.PAYMENT_PAGE_ENTERED: frozenset({State.S6}),
     EventType.PAYMENT_COMPLETED: frozenset({State.S6}),
+    EventType.PAYMENT_COMPLETE: frozenset({State.S6}),
     EventType.PAYMENT_ABORTED: frozenset({State.S6}),
     EventType.PAYMENT_TIMEOUT: frozenset({State.S6}),
     EventType.TXN_ROLLBACK_REQUIRED: frozenset({State.S6}),
@@ -112,6 +106,9 @@ EVENT_VALID_STATES: dict[EventType, frozenset[State]] = {
     EventType.DEF_THROTTLED: _SECURITY_INTERRUPTIBLE,
     EventType.DEF_SANDBOXED: _SECURITY_INTERRUPTIBLE,
     EventType.DEF_HONEY_SHAPED: _SECURITY_INTERRUPTIBLE,
+    EventType.DEF_BLOCKED: _SECURITY_INTERRUPTIBLE,
+    EventType.SIGNAL_REPETITIVE_PATTERN: _NON_TERMINAL,
+    EventType.SIGNAL_TOKEN_MISMATCH: _NON_TERMINAL,
 }
 
 

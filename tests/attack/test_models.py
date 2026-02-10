@@ -59,7 +59,7 @@ class TestState:
 
     def test_terminal_reasons(self) -> None:
         """Verify terminal reasons match spec."""
-        assert TERMINAL_REASONS == {"done", "abort", "cooldown", "reset"}
+        assert TERMINAL_REASONS == {"DONE", "ABORT", "COOLDOWN", "RESET"}
 
 
 class TestSemanticEvent:
@@ -227,5 +227,6 @@ class TestDecisionLog:
         assert d["decision_id"] == "test-002"
         assert d["current_state"] == "S1"
         assert d["next_state"] == "S2"
-        assert d["event"]["event_type"] == "ENTRY_ENABLED" or d["event"].get("type") == "ENTRY_ENABLED"
+        assert d["event"]["type"] == "ENTRY_ENABLED"
+        assert d["event"]["payload"] == {"source": "test"}
         assert d["notes"] == ["Test note"]

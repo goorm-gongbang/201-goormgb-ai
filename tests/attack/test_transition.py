@@ -35,10 +35,15 @@ def default_snapshot() -> StateSnapshot:
     return StateSnapshot(
         current_state=State.S0,
         last_non_security_state=None,
-        budgets={"retry": 3, "security": 2},
+        budgets={"retry": 3},
         counters={},
         elapsed_ms=0,
     )
+
+@pytest.fixture
+def challenge_policy() -> PolicySnapshot:
+    """챌린지 예산이 설정된 정책."""
+    return PolicySnapshot(profile_name="challenge_test", rules={"N_challenge": 2})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -129,29 +134,29 @@ class TestSecurityInterrupt:
 
     def test_scn03_security_interrupt_from_s2(
         self,
-        default_policy: PolicySnapshot,
+        challenge_policy: PolicySnapshot,
         default_snapshot: StateSnapshot,
     ) -> None:
         """SCN-03: S2에서 CHALLENGE_DETECTED → S3 인터럽트."""
         event = SemanticEvent(type="CHALLENGE_DETECTED")
-        result = transition(State.S2, event, default_policy, default_snapshot)
+        result = transition(State.S2, event, challenge_policy, default_snapshot)
 
         assert result.next_state == State.S3
 
     def test_scn03_security_interrupt_from_s5(
         self,
-        default_policy: PolicySnapshot,
+        challenge_policy: PolicySnapshot,
         default_snapshot: StateSnapshot,
     ) -> None:
         """SCN-03: S5에서 CHALLENGE_DETECTED → S3 인터럽트."""
         event = SemanticEvent(type="CHALLENGE_DETECTED")
-        result = transition(State.S5, event, default_policy, default_snapshot)
+        result = transition(State.S5, event, challenge_policy, default_snapshot)
 
         assert result.next_state == State.S3
 
     def test_scn04_return_to_last_non_security_state(
         self,
-        default_policy: PolicySnapshot,
+        challenge_policy: PolicySnapshot,
     ) -> None:
         """SCN-04: S3에서 CHALLENGE_PASSED → last_non_security_state로 복귀."""
         snapshot = StateSnapshot(
@@ -162,13 +167,13 @@ class TestSecurityInterrupt:
             elapsed_ms=0,
         )
         event = SemanticEvent(type="CHALLENGE_PASSED")
-        result = transition(State.S3, event, default_policy, snapshot)
+        result = transition(State.S3, event, challenge_policy, snapshot)
 
         assert result.next_state == State.S5
 
     def test_scn04_return_to_s2(
         self,
-        default_policy: PolicySnapshot,
+        challenge_policy: PolicySnapshot,
     ) -> None:
         """SCN-04: S3에서 CHALLENGE_PASSED → S2로 복귀."""
         snapshot = StateSnapshot(
@@ -179,24 +184,24 @@ class TestSecurityInterrupt:
             elapsed_ms=0,
         )
         event = SemanticEvent(type="CHALLENGE_PASSED")
-        result = transition(State.S3, event, default_policy, snapshot)
+        result = transition(State.S3, event, challenge_policy, snapshot)
 
         assert result.next_state == State.S2
 
     def test_security_challenge_failed_with_budget(
         self,
-        default_policy: PolicySnapshot,
+        challenge_policy: PolicySnapshot,
     ) -> None:
         """보안 챌린지 실패 - 예산 남음 → S3 유지."""
         snapshot = StateSnapshot(
             current_state=State.S3,
             last_non_security_state=State.S2,
-            budgets={"security": 2},
-            counters={},
+            budgets={},
+            counters={"CHALLENGE_FAILED": 0},
             elapsed_ms=0,
         )
         event = SemanticEvent(type="CHALLENGE_FAILED")
-        result = transition(State.S3, event, default_policy, snapshot)
+        result = transition(State.S3, event, challenge_policy, snapshot)
 
         assert result.next_state == State.S3
         assert not result.is_terminal()
@@ -209,16 +214,17 @@ class TestSecurityInterrupt:
         snapshot = StateSnapshot(
             current_state=State.S3,
             last_non_security_state=State.S2,
-            budgets={"security": 0},  # 예산 소진
-            counters={},
+            budgets={},  # 예산 소진
+            counters={"CHALLENGE_FAILED": 2},
             elapsed_ms=0,
         )
+        policy = PolicySnapshot(profile_name="exhausted", rules={"N_challenge": 2})
         event = SemanticEvent(type="CHALLENGE_FAILED")
-        result = transition(State.S3, event, default_policy, snapshot)
+        result = transition(State.S3, event, policy, snapshot)
 
         assert result.next_state == State.SX
         assert result.terminal_reason == TerminalReason.ABORT
-        assert result.failure_code == "SECURITY_BUDGET_EXHAUSTED"
+        assert result.failure_code == "CHALLENGE_BUDGET_EXHAUSTED"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -394,7 +400,7 @@ class TestInvalidEventHandling:
         default_snapshot: StateSnapshot,
     ) -> None:
         """S4에서 유효하지 않은 이벤트 → 무시하고 S4 유지."""
-        event = SemanticEvent(type="PAYMENT_COMPLETE")  # S4에서 유효하지 않음
+        event = SemanticEvent(type="BOOTSTRAP_COMPLETE")  # S4에서 유효하지 않음
         result = transition(State.S4, event, default_policy, default_snapshot)
 
         assert result.next_state == State.S4

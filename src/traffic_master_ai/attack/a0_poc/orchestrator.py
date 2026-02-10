@@ -134,6 +134,7 @@ def run_events(
         total_elapsed_ms=final_snapshot.elapsed_ms,
         final_budgets=dict(final_snapshot.budgets),
         final_counters=dict(final_snapshot.counters),
+        failure_code=last_result.failure_code if last_result else None,
     )
 
 
@@ -159,11 +160,13 @@ def _apply_failure_policy(
             store.decrement_budget(policy.retry_budget_key)
             if isinstance(policy.recover_path, State):
                 next_state = policy.recover_path
+                terminal_reason = None # 복구 시 터미널 리즌 제거
         else:
             # 예산 소진 -> 중단 조건(Stop Condition) 적용
             if policy.stop_condition:
                 if "S4" in policy.stop_condition:
                     next_state = State.S4
+                    terminal_reason = None # S4는 터미널이 아님 
                 elif "SX" in policy.stop_condition:
                     next_state = State.SX
                     terminal_reason = TerminalReason.ABORT

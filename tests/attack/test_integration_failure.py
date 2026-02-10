@@ -15,6 +15,7 @@ from traffic_master_ai.attack.a0_poc import (
     SemanticEvent,
     State,
     StateStore,
+    TerminalReason,
 )
 from traffic_master_ai.attack.a0_poc.orchestrator import run_events
 
@@ -124,8 +125,10 @@ class TestFailureHandlingIntegration:
 
         result = run_events(events, store, policy, failure_matrix, roi_logger)
         
+        # 검증: 예산 소진으로 인한 Abort 확인
         assert result.terminal_state == State.SX
-        assert result.final_budgets["N_challenge"] == 0
+        assert result.terminal_reason == TerminalReason.ABORT
+        assert result.failure_code == "F_CHALLENGE_FAILED"
         # TerminalReason이 Matrix나 stop_condition에 따라 설정되어야 함
         # SCN-06 등은 cooldown이나 abort를 요구함.
         summary = roi_logger.get_roi_summary()

@@ -197,6 +197,7 @@ class ScenarioRunner:
                 if policy.stop_condition:
                     if "S4" in policy.stop_condition:
                         next_state = State.S4
+                        terminal_reason = None
                     elif "SX" in policy.stop_condition:
                         next_state = State.SX
                         terminal_reason = TerminalReason.ABORT

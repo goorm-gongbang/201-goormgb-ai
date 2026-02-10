@@ -24,19 +24,20 @@ class TestEventType:
     """EventType enum 테스트."""
 
     def test_event_type_count(self) -> None:
-        """EventType enum이 33개 값을 가지는지 확인."""
-        assert len(EventType) == 33
+        """EventType enum이 45개 값을 가지는지 확인."""
+        assert len(EventType) == 45
 
     def test_flow_system_events(self) -> None:
         """A. Flow/System 이벤트 (5개)."""
         flow_events = [
             EventType.FLOW_START,
+            EventType.BOOTSTRAP_COMPLETE,
             EventType.FLOW_ABORT,
             EventType.TIMEOUT,
             EventType.SESSION_EXPIRED,
             EventType.RETRY_BUDGET_EXCEEDED,
         ]
-        assert len(flow_events) == 5
+        assert len(flow_events) == 6
         for event in flow_events:
             assert event.value == event.name
 
@@ -119,21 +120,21 @@ class TestEventSource:
     """EventSource enum 테스트."""
 
     def test_event_source_count(self) -> None:
-        """EventSource enum이 5개 값을 가지는지 확인."""
-        assert len(EventSource) == 5
+        """EventSource enum이 8개 값을 가지는지 확인."""
+        assert len(EventSource) == 8
 
     def test_event_source_values(self) -> None:
         """EventSource 값 확인."""
-        assert EventSource.UI.value == "ui"
-        assert EventSource.API.value == "api"
-        assert EventSource.TIMER.value == "timer"
-        assert EventSource.DEFENSE.value == "defense"
-        assert EventSource.MOCK.value == "mock"
+        assert EventSource.UI.value == "UI"
+        assert EventSource.API.value == "API"
+        assert EventSource.TIMER.value == "TIMER"
+        assert EventSource.DEFENSE.value == "DEFENSE"
+        assert EventSource.MOCK.value == "MOCK"
 
     def test_eventsource_is_str_enum(self) -> None:
         """EventSource는 str Enum이어야 함."""
         assert isinstance(EventSource.UI, str)
-        assert EventSource.MOCK == "mock"
+        assert EventSource.MOCK == "MOCK"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

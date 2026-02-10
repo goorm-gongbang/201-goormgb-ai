@@ -27,7 +27,7 @@ class TestScenarioLoader:
             "name": "Valid Test",
             "initial_state": "S0",
             "policy_profile": "default",
-            "events": [{"event_type": "FLOW_START", "source": "ui"}],
+            "events": [{"type": "FLOW_START", "source": "UI"}],
             "accept": {
                 "final_state": "SX",
                 "asserts": [{"type": "state_path_contains", "value": ["S1"]}]
@@ -47,7 +47,7 @@ class TestScenarioLoader:
         """load_all이 유효한 SCN-*.json 파일만 수집하는지 확인."""
         (scenario_dir / "SCN-01.json").write_text(json.dumps({
             "id": "SCN-01", "name": "Valid", "initial_state": "S0", "policy_profile": "p", 
-            "events": [{"event_type": "EVT"}], "accept": {"final_state": "SX", "asserts": [{"type": "no_invalid_events"}]}
+            "events": [{"type": "FLOW_START"}], "accept": {"final_state": "SX", "asserts": [{"type": "no_invalid_events"}]}
         }))
         (scenario_dir / "OTHER.json").write_text("invalid") # 무시되어야 함
         (scenario_dir / "SCN-99.json").write_text("invalid json") # 에러 로그 남기고 건너뜀
@@ -76,7 +76,7 @@ class TestScenarioLoader:
             "name": "Invalid Enum",
             "initial_state": "INVALID_STATE", # Error
             "policy_profile": "default",
-            "events": [{"event_type": "EVT"}],
+            "events": [{"type": "FLOW_START"}],
             "accept": {"final_state": "SX", "asserts": [{"type": "no_invalid_events"}]}
         }
         scn_path.write_text(json.dumps(data))
@@ -92,7 +92,7 @@ class TestScenarioLoader:
         """중복 ID 시나리오 존재 시 경고 발생 확인."""
         content = json.dumps({
             "id": "SCN-01", "name": "Dup", "initial_state": "S0", "policy_profile": "p", 
-            "events": [{"event_type": "EVT"}], "accept": {"final_state": "SX", "asserts": [{"type": "no_invalid_events"}]}
+            "events": [{"type": "FLOW_START"}], "accept": {"final_state": "SX", "asserts": [{"type": "no_invalid_events"}]}
         })
         (scenario_dir / "SCN-01a.json").write_text(content)
         (scenario_dir / "SCN-01b.json").write_text(content)
