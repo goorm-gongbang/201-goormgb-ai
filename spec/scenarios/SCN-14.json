@@ -4,13 +4,13 @@
   "initial_state": "S0",
   "policy_profile": "txn_timeout_rollback",
   "events": [
-    { "event_type": "FLOW_START", "source": "mock" },
-    { "event_type": "ENTRY_ENABLED", "source": "mock" },
-    { "event_type": "QUEUE_PASSED", "source": "mock" },
-    { "event_type": "SECTION_SELECTED", "source": "mock" },
-    { "event_type": "HOLD_ACQUIRED", "source": "mock" },
-    { "event_type": "PAYMENT_PAGE_ENTERED", "source": "mock" },
-    { "event_type": "PAYMENT_TIMEOUT", "source": "mock", "context": { "elapsed_ms": 120000 } }
+    { "type": "FLOW_START", "source": "mock" },
+    { "type": "ENTRY_ENABLED", "source": "mock" },
+    { "type": "QUEUE_PASSED", "source": "mock" },
+    { "type": "SECTION_SELECTED", "source": "mock" },
+    { "type": "HOLD_ACQUIRED", "source": "mock" },
+    { "type": "PAYMENT_PAGE_ENTERED", "source": "mock" },
+    { "type": "PAYMENT_TIMEOUT", "source": "mock", "payload": { "elapsed_ms": 120000 } }
   ],
   "accept": {
     "final_state": "S5",

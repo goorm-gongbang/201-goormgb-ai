@@ -27,6 +27,8 @@ from traffic_master_ai.defense.d0_poc.signals import (
 from traffic_master_ai.defense.d0_poc.signals.events import Event
 
 
+from traffic_master_ai.common.models.events import EventType
+
 def mk_event(
     event_type: str,
     source: EventSource = EventSource.PAGE,
@@ -35,26 +37,14 @@ def mk_event(
     payload: Optional[Dict[str, Any]] = None,
     seq: int = 0,
 ) -> Event:
-    """Factory helper to create test events.
-
-    Args:
-        event_type: The canonical event type string.
-        source: Event source (default: PAGE).
-        session_id: Session identifier (default: "s1").
-        ts_ms: Timestamp in ms (default: 1).
-        payload: Optional payload dict.
-        seq: Sequence number for unique event_id.
-
-    Returns:
-        Event object with test defaults.
-    """
+    """Factory helper to create test events."""
     return Event(
+        type=EventType(event_type),
         event_id=f"test-{seq}",
-        ts_ms=ts_ms + seq,
-        type=event_type,
-        source=source,
         session_id=session_id,
+        source=source,
         payload=payload or {},
+        ts_ms=ts_ms + seq,
     )
 
 

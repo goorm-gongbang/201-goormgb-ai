@@ -100,7 +100,7 @@ def check_assertion(assertion: ScenarioAssertion, result: ExecutionResult) -> tu
     if a_type == "event_handled_count_at_least":
         if isinstance(a_value, dict):
             # {"event_type": "...", "count": ...} 형식
-            et = a_value.get("event_type")
+            et = a_value.get("type") or a_value.get("event_type")
             target_count = a_value.get("count", 0)
             # NOTE: 현재 ExecutionResult에는 전체 개수는 있지만 타입별 개수가 없음.
             # handled_events를 타입별 카운트로 확장하거나 우선 전체 개수로 대체 (PoC-0 수준)

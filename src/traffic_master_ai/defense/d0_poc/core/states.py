@@ -1,40 +1,17 @@
 """Core enumerations for Defense PoC-0 flow and outcomes."""
 
+from traffic_master_ai.common.models.states import FlowState, DefenseTier, TerminalReason as CommonTerminalReason
+
+# Aliases and Extensions
+TerminalReason = CommonTerminalReason
+
 from enum import Enum
-
-
-class FlowState(str, Enum):
-    S0 = "S0"
-    S1 = "S1"
-    S2 = "S2"
-    S3 = "S3"
-    S4 = "S4"
-    S5 = "S5"
-    S6 = "S6"
-    SX = "SX"
-
-
-class DefenseTier(str, Enum):
-    T0 = "T0"
-    T1 = "T1"
-    T2 = "T2"
-    T3 = "T3"
-
 
 class EventSource(str, Enum):
     PAGE = "PAGE"
     BACKEND = "BACKEND"
     TIMER = "TIMER"
     DEFENSE = "DEFENSE"
-
-
-class TerminalReason(str, Enum):
-    DONE = "DONE"
-    ABORT = "ABORT"
-    COOLDOWN = "COOLDOWN"
-    RESET = "RESET"
-    SESSION_EXPIRED = "SESSION_EXPIRED"
-    BLOCKED = "BLOCKED"
 
 
 class FailureCode(str, Enum):

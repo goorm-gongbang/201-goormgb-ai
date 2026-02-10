@@ -30,7 +30,7 @@ class StateStore:
     
     def __init__(
         self,
-        initial_state: State = State.S0_INIT,
+        initial_state: State = State.S0,
         budgets: dict[str, int] | None = None,
         counters: dict[str, int] | None = None,
     ) -> None:
@@ -38,7 +38,7 @@ class StateStore:
         선택적 초기 설정으로 StateStore를 초기화합니다.
         
         Args:
-            initial_state: 시작 상태 (기본값: S0_INIT)
+            initial_state: 시작 상태 (기본값: S0)
             budgets: 초기 예산 값 (기본값: 빈 딕셔너리)
             counters: 초기 카운터 값 (기본값: 빈 딕셔너리)
         """

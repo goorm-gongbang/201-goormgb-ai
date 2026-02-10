@@ -4,16 +4,16 @@
   "initial_state": "S0",
   "policy_profile": "challenge_strict",
   "events": [
-    { "event_type": "FLOW_START", "source": "mock" },
-    { "event_type": "ENTRY_ENABLED", "source": "mock" },
-    { "event_type": "QUEUE_PASSED", "source": "mock" },
-    { "event_type": "DEF_CHALLENGE_FORCED", "source": "defense" },
-    { "event_type": "CHALLENGE_FAILED", "source": "mock", "stage": "S3" },
-    { "event_type": "CHALLENGE_FAILED", "source": "mock", "stage": "S3" }
+    { "type": "FLOW_START", "source": "mock" },
+    { "type": "ENTRY_ENABLED", "source": "mock" },
+    { "type": "QUEUE_PASSED", "source": "mock" },
+    { "type": "DEF_CHALLENGE_FORCED", "source": "defense" },
+    { "type": "CHALLENGE_FAILED", "source": "mock", "stage": "S3" },
+    { "type": "CHALLENGE_FAILED", "source": "mock", "stage": "S3" }
   ],
   "accept": {
     "final_state": "SX",
-    "terminal_reason": "cooldown",
+    "terminal_reason": "COOLDOWN",
     "asserts": [
       { "type": "state_path_contains", "value": ["S3", "SX"] }
     ]

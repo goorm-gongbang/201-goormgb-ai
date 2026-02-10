@@ -14,80 +14,8 @@ from traffic_master_ai.attack.a0_poc.states import State
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-class EventType(str, Enum):
-    """
-    Event Dictionary Spec v1.0에 정의된 33개 시맨틱 이벤트.
-    
-    Categories:
-        A. Flow/System (5개)
-        B. Entry/Queue (7개)
-        C. Security (4개)
-        D. Section (3개)
-        E. Seat (5개)
-        F. Transaction (5개)
-        G. Defense (4개)
-    """
-    
-    # ─────────────────────────────────────────────────────────────────
-    # A. Flow/System Events (5개)
-    # ─────────────────────────────────────────────────────────────────
-    FLOW_START = "FLOW_START"
-    FLOW_ABORT = "FLOW_ABORT"
-    TIMEOUT = "TIMEOUT"
-    SESSION_EXPIRED = "SESSION_EXPIRED"
-    RETRY_BUDGET_EXCEEDED = "RETRY_BUDGET_EXCEEDED"
-    
-    # ─────────────────────────────────────────────────────────────────
-    # B. Entry/Queue Events (7개)
-    # ─────────────────────────────────────────────────────────────────
-    ENTRY_ENABLED = "ENTRY_ENABLED"
-    ENTRY_NOT_READY = "ENTRY_NOT_READY"
-    ENTRY_BLOCKED = "ENTRY_BLOCKED"
-    QUEUE_SHOWN = "QUEUE_SHOWN"
-    QUEUE_PASSED = "QUEUE_PASSED"
-    QUEUE_STUCK = "QUEUE_STUCK"
-    POPUP_OPENED = "POPUP_OPENED"
-    
-    # ─────────────────────────────────────────────────────────────────
-    # C. Security Events (4개)
-    # ─────────────────────────────────────────────────────────────────
-    CHALLENGE_APPEARED = "CHALLENGE_APPEARED"
-    CHALLENGE_PASSED = "CHALLENGE_PASSED"
-    CHALLENGE_FAILED = "CHALLENGE_FAILED"
-    CHALLENGE_NOT_PRESENT = "CHALLENGE_NOT_PRESENT"
-    
-    # ─────────────────────────────────────────────────────────────────
-    # D. Section Events (3개)
-    # ─────────────────────────────────────────────────────────────────
-    SECTION_LIST_READY = "SECTION_LIST_READY"
-    SECTION_SELECTED = "SECTION_SELECTED"
-    SECTION_EMPTY = "SECTION_EMPTY"
-    
-    # ─────────────────────────────────────────────────────────────────
-    # E. Seat Events (5개)
-    # ─────────────────────────────────────────────────────────────────
-    SEATMAP_READY = "SEATMAP_READY"
-    SEAT_SELECTED = "SEAT_SELECTED"
-    SEAT_TAKEN = "SEAT_TAKEN"
-    HOLD_ACQUIRED = "HOLD_ACQUIRED"
-    HOLD_FAILED = "HOLD_FAILED"
-    
-    # ─────────────────────────────────────────────────────────────────
-    # F. Transaction Events (5개)
-    # ─────────────────────────────────────────────────────────────────
-    PAYMENT_PAGE_ENTERED = "PAYMENT_PAGE_ENTERED"
-    PAYMENT_COMPLETED = "PAYMENT_COMPLETED"
-    PAYMENT_ABORTED = "PAYMENT_ABORTED"
-    PAYMENT_TIMEOUT = "PAYMENT_TIMEOUT"
-    TXN_ROLLBACK_REQUIRED = "TXN_ROLLBACK_REQUIRED"
-    
-    # ─────────────────────────────────────────────────────────────────
-    # G. Defense Events (4개)
-    # ─────────────────────────────────────────────────────────────────
-    DEF_CHALLENGE_FORCED = "DEF_CHALLENGE_FORCED"
-    DEF_THROTTLED = "DEF_THROTTLED"
-    DEF_SANDBOXED = "DEF_SANDBOXED"
-    DEF_HONEY_SHAPED = "DEF_HONEY_SHAPED"
+from traffic_master_ai.common.models.events import EventType
+from traffic_master_ai.attack.a0_poc.states import State
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -114,12 +42,12 @@ class EventSource(str, Enum):
 # 편의를 위한 상태 그룹
 _ALL_STATES = frozenset(State)
 _NON_TERMINAL = frozenset({
-    State.S0_INIT, State.S1_PRE_ENTRY, State.S2_QUEUE_ENTRY, 
-    State.S3_SECURITY, State.S4_SECTION, State.S5_SEAT, State.S6_TRANSACTION
+    State.S0, State.S1, State.S2, 
+    State.S3, State.S4, State.S5, State.S6
 })
 _SECURITY_INTERRUPTIBLE = frozenset({
-    State.S1_PRE_ENTRY, State.S2_QUEUE_ENTRY, 
-    State.S4_SECTION, State.S5_SEAT, State.S6_TRANSACTION
+    State.S1, State.S2, 
+    State.S4, State.S5, State.S6
 })
 
 
@@ -127,7 +55,7 @@ EVENT_VALID_STATES: dict[EventType, frozenset[State]] = {
     # ─────────────────────────────────────────────────────────────────
     # A. Flow/System Events
     # ─────────────────────────────────────────────────────────────────
-    EventType.FLOW_START: frozenset({State.S0_INIT}),
+    EventType.FLOW_START: frozenset({State.S0}),
     EventType.FLOW_ABORT: _NON_TERMINAL,
     EventType.TIMEOUT: _NON_TERMINAL,
     EventType.SESSION_EXPIRED: _NON_TERMINAL,
@@ -136,46 +64,46 @@ EVENT_VALID_STATES: dict[EventType, frozenset[State]] = {
     # ─────────────────────────────────────────────────────────────────
     # B. Entry/Queue Events
     # ─────────────────────────────────────────────────────────────────
-    EventType.ENTRY_ENABLED: frozenset({State.S1_PRE_ENTRY}),
-    EventType.ENTRY_NOT_READY: frozenset({State.S1_PRE_ENTRY}),
-    EventType.ENTRY_BLOCKED: frozenset({State.S1_PRE_ENTRY}),
-    EventType.QUEUE_SHOWN: frozenset({State.S2_QUEUE_ENTRY}),
-    EventType.QUEUE_PASSED: frozenset({State.S2_QUEUE_ENTRY}),
-    EventType.QUEUE_STUCK: frozenset({State.S2_QUEUE_ENTRY}),
-    EventType.POPUP_OPENED: frozenset({State.S1_PRE_ENTRY, State.S2_QUEUE_ENTRY}),
+    EventType.ENTRY_ENABLED: frozenset({State.S1}),
+    EventType.ENTRY_NOT_READY: frozenset({State.S1}),
+    EventType.ENTRY_BLOCKED: frozenset({State.S1}),
+    EventType.QUEUE_SHOWN: frozenset({State.S2}),
+    EventType.QUEUE_PASSED: frozenset({State.S2}),
+    EventType.QUEUE_STUCK: frozenset({State.S2}),
+    EventType.POPUP_OPENED: frozenset({State.S1, State.S2}),
     
     # ─────────────────────────────────────────────────────────────────
     # C. Security Events
     # ─────────────────────────────────────────────────────────────────
-    EventType.CHALLENGE_APPEARED: frozenset({State.S3_SECURITY}),
-    EventType.CHALLENGE_PASSED: frozenset({State.S3_SECURITY}),
-    EventType.CHALLENGE_FAILED: frozenset({State.S3_SECURITY}),
-    EventType.CHALLENGE_NOT_PRESENT: frozenset({State.S3_SECURITY}),
+    EventType.CHALLENGE_APPEARED: frozenset({State.S3}),
+    EventType.CHALLENGE_PASSED: frozenset({State.S3}),
+    EventType.CHALLENGE_FAILED: frozenset({State.S3}),
+    EventType.CHALLENGE_NOT_PRESENT: frozenset({State.S3}),
     
     # ─────────────────────────────────────────────────────────────────
     # D. Section Events
     # ─────────────────────────────────────────────────────────────────
-    EventType.SECTION_LIST_READY: frozenset({State.S4_SECTION}),
-    EventType.SECTION_SELECTED: frozenset({State.S4_SECTION}),
-    EventType.SECTION_EMPTY: frozenset({State.S4_SECTION}),
+    EventType.SECTION_LIST_READY: frozenset({State.S4}),
+    EventType.SECTION_SELECTED: frozenset({State.S4}),
+    EventType.SECTION_EMPTY: frozenset({State.S4}),
     
     # ─────────────────────────────────────────────────────────────────
     # E. Seat Events
     # ─────────────────────────────────────────────────────────────────
-    EventType.SEATMAP_READY: frozenset({State.S5_SEAT}),
-    EventType.SEAT_SELECTED: frozenset({State.S5_SEAT}),
-    EventType.SEAT_TAKEN: frozenset({State.S5_SEAT}),
-    EventType.HOLD_ACQUIRED: frozenset({State.S5_SEAT, State.S6_TRANSACTION}),
-    EventType.HOLD_FAILED: frozenset({State.S5_SEAT, State.S6_TRANSACTION}),
+    EventType.SEATMAP_READY: frozenset({State.S5}),
+    EventType.SEAT_SELECTED: frozenset({State.S5}),
+    EventType.SEAT_TAKEN: frozenset({State.S5}),
+    EventType.HOLD_ACQUIRED: frozenset({State.S5, State.S6}),
+    EventType.HOLD_FAILED: frozenset({State.S5, State.S6}),
     
     # ─────────────────────────────────────────────────────────────────
     # F. Transaction Events
     # ─────────────────────────────────────────────────────────────────
-    EventType.PAYMENT_PAGE_ENTERED: frozenset({State.S6_TRANSACTION}),
-    EventType.PAYMENT_COMPLETED: frozenset({State.S6_TRANSACTION}),
-    EventType.PAYMENT_ABORTED: frozenset({State.S6_TRANSACTION}),
-    EventType.PAYMENT_TIMEOUT: frozenset({State.S6_TRANSACTION}),
-    EventType.TXN_ROLLBACK_REQUIRED: frozenset({State.S6_TRANSACTION}),
+    EventType.PAYMENT_PAGE_ENTERED: frozenset({State.S6}),
+    EventType.PAYMENT_COMPLETED: frozenset({State.S6}),
+    EventType.PAYMENT_ABORTED: frozenset({State.S6}),
+    EventType.PAYMENT_TIMEOUT: frozenset({State.S6}),
+    EventType.TXN_ROLLBACK_REQUIRED: frozenset({State.S6}),
     
     # ─────────────────────────────────────────────────────────────────
     # G. Defense Events (S3 인터럽트 가능한 상태에서 발생)

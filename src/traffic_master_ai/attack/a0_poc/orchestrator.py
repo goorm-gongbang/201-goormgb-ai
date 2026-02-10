@@ -78,7 +78,7 @@ def run_events(
         if failure_matrix:
             # EventType enum으로 캐스팅하여 매트릭스 조회
             try:
-                et = EventType(event.event_type)
+                et = EventType(event.type.value)
                 failure_policy = failure_matrix.get_policy(current_state, et)
             except ValueError:
                 failure_policy = None
@@ -163,16 +163,16 @@ def _apply_failure_policy(
             # 예산 소진 -> 중단 조건(Stop Condition) 적용
             if policy.stop_condition:
                 if "S4" in policy.stop_condition:
-                    next_state = State.S4_SECTION
+                    next_state = State.S4
                 elif "SX" in policy.stop_condition:
-                    next_state = State.SX_TERMINAL
+                    next_state = State.SX
                     terminal_reason = TerminalReason.ABORT
     
     # 2. ROI 기록
     if roi_logger:
         roi_logger.log_failure(
             state=snapshot.current_state,
-            event=event.event_type,
+            event=event.type.value,
             failure_code=failure_code,
             remaining_budgets=store.get_snapshot().budgets,
             stage_elapsed_ms=0, # TODO: Stage 타이머 통합 필요

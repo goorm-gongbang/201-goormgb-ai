@@ -69,9 +69,9 @@ class ScenarioRunner:
 
             # B. 이벤트 변환 (ScenarioEvent -> SemanticEvent)
             event = SemanticEvent(
-                event_type=s_evt.event_type,
+                type=EventType(s_evt.type),
                 stage=State(s_evt.stage) if s_evt.stage and s_evt.stage != "unknown" else None,
-                context=s_evt.context,
+                payload=s_evt.payload,
             )
 
             # C. 전이 실행 (transition.py 로직 사용)
@@ -85,7 +85,7 @@ class ScenarioRunner:
             # D. 실패 처리 매트릭스 적용 (A0-3 로직 재사용)
             if failure_matrix and not result.is_terminal():
                 try:
-                    et = EventType(event.event_type)
+                    et = EventType(event.type.value)
                     failure_policy = failure_matrix.get_policy(current_state, et)
                     if failure_policy:
                         # NOTE: 원래는 orchestrator._apply_failure_policy를 호출해야 함.
@@ -108,13 +108,13 @@ class ScenarioRunner:
                 state_path.append(next_state)
 
             # F. 카운터 누적 (시뮬레이션용)
-            store.increment_counter(event.event_type)
+            store.increment_counter(event.type.value)
             handled_events += 1
 
             if result.terminal_reason:
                 final_terminal_reason = result.terminal_reason
 
-            if next_state.is_terminal() or next_state.value == scenario.accept.final_state:
+            if next_state.is_terminal():
                 # BREAK CONDITION
                 final_terminal_reason = result.terminal_reason or final_terminal_reason or TerminalReason.DONE
                 last_result = result
@@ -196,15 +196,15 @@ class ScenarioRunner:
             else:
                 if policy.stop_condition:
                     if "S4" in policy.stop_condition:
-                        next_state = State.S4_SECTION
+                        next_state = State.S4
                     elif "SX" in policy.stop_condition:
-                        next_state = State.SX_TERMINAL
+                        next_state = State.SX
                         terminal_reason = TerminalReason.ABORT
         
         if roi_logger:
             roi_logger.log_failure(
                 state=snapshot.current_state,
-                event=event.event_type,
+                event=event.type.value,
                 failure_code=failure_code,
                 remaining_budgets=store.get_snapshot().budgets,
                 stage_elapsed_ms=0,

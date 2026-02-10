@@ -4,22 +4,22 @@
   "initial_state": "S0",
   "policy_profile": "default",
   "events": [
-    { "event_type": "FLOW_START", "source": "mock" },
-    { "event_type": "ENTRY_ENABLED", "source": "mock" },
-    { "event_type": "QUEUE_PASSED", "source": "mock" },
-    { "event_type": "DEF_CHALLENGE_FORCED", "source": "defense" },
-    { "event_type": "CHALLENGE_APPEARED", "source": "mock", "stage": "S3" },
-    { "event_type": "CHALLENGE_FAILED", "source": "mock", "stage": "S3", "context": { "fail_reason": "wrong" } },
-    { "event_type": "CHALLENGE_APPEARED", "source": "mock", "stage": "S3" },
-    { "event_type": "CHALLENGE_PASSED", "source": "mock", "stage": "S3" },
-    { "event_type": "HOLD_ACQUIRED", "source": "mock", "stage": "S5" },
-    { "event_type": "PAYMENT_COMPLETED", "source": "mock", "stage": "S6" }
+    { "type": "FLOW_START", "source": "mock" },
+    { "type": "ENTRY_ENABLED", "source": "mock" },
+    { "type": "QUEUE_PASSED", "source": "mock" },
+    { "type": "DEF_CHALLENGE_FORCED", "source": "defense" },
+    { "type": "CHALLENGE_APPEARED", "source": "mock", "stage": "S3" },
+    { "type": "CHALLENGE_FAILED", "source": "mock", "stage": "S3", "payload": { "fail_reason": "wrong" } },
+    { "type": "CHALLENGE_APPEARED", "source": "mock", "stage": "S3" },
+    { "type": "CHALLENGE_PASSED", "source": "mock", "stage": "S3" },
+    { "type": "HOLD_ACQUIRED", "source": "mock", "stage": "S5" },
+    { "type": "PAYMENT_COMPLETED", "source": "mock", "stage": "S6" }
   ],
   "accept": {
     "final_state": "SX",
-    "terminal_reason": "done",
+    "terminal_reason": "DONE",
     "asserts": [
-      { "type": "event_handled_count_at_least", "value": { "event_type": "CHALLENGE_FAILED", "count": 1 } }
+      { "type": "event_handled_count_at_least", "value": { "type": "CHALLENGE_FAILED", "count": 1 } }
     ]
   }
 }

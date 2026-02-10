@@ -14,7 +14,7 @@ from traffic_master_ai.attack.a0_poc import (
 def initial_state_snapshot() -> StateSnapshot:
     """Create a basic initial state snapshot."""
     return StateSnapshot(
-        current_state=State.S0_INIT,
+        current_state=State.S0,
         last_non_security_state=None,
         budgets={"retry": 3, "security": 2},
         counters={},
@@ -36,6 +36,6 @@ def sample_event() -> SemanticEvent:
     """Create a sample semantic event."""
     return SemanticEvent(
         event_type="ENTRY_ENABLED",
-        stage=State.S1_PRE_ENTRY,
+        stage=State.S1,
         context={"source": "test"},
     )

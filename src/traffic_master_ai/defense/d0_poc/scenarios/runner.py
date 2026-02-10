@@ -58,7 +58,7 @@ class ScenarioRunner:
         # Create PolicySnapshot for Core transition
         self._policy_snapshot = PolicySnapshot()
 
-    def run_scenario(self, scenario: Scenario) -> List[StepResult]:
+    async def run_scenario(self, scenario: Scenario) -> List[StepResult]:
         """Execute a complete scenario and return step results.
 
         Args:
@@ -76,8 +76,7 @@ class ScenarioRunner:
         results: List[StepResult] = []
 
         for seq, step in enumerate(scenario.steps):
-            result, evidence = self._execute_step(
-            result = self._execute_step(
+            result, evidence = await self.execute_step(
                 seq=seq,
                 step=step,
                 flow_state=flow_state,
@@ -178,8 +177,6 @@ class ScenarioRunner:
         evidence: EvidenceState,
     ) -> Tuple[StepResult, EvidenceState]:
         """Execute a single step and return the result with updated evidence.
-    ) -> StepResult:
-        """Execute a single step and return the result.
 
         Args:
             seq: Step sequence number.
@@ -247,7 +244,6 @@ class ScenarioRunner:
         )
 
         step_result = StepResult(
-        return StepResult(
             seq=seq,
             description=step.description,
             input_event_type=input_event.type,

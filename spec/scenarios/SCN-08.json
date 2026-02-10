@@ -4,18 +4,18 @@
   "initial_state": "S0",
   "policy_profile": "section_strict",
   "events": [
-    { "event_type": "FLOW_START", "source": "mock" },
-    { "event_type": "ENTRY_ENABLED", "source": "mock" },
-    { "event_type": "QUEUE_PASSED", "source": "mock" },
-    { "event_type": "SECTION_LIST_READY", "source": "mock" },
-    { "event_type": "SECTION_EMPTY", "source": "mock" },
-    { "event_type": "SECTION_EMPTY", "source": "mock" },
-    { "event_type": "SECTION_EMPTY", "source": "mock" },
-    { "event_type": "SECTION_EMPTY", "source": "mock" }
+    { "type": "FLOW_START", "source": "mock" },
+    { "type": "ENTRY_ENABLED", "source": "mock" },
+    { "type": "QUEUE_PASSED", "source": "mock" },
+    { "type": "SECTION_LIST_READY", "source": "mock" },
+    { "type": "SECTION_EMPTY", "source": "mock" },
+    { "type": "SECTION_EMPTY", "source": "mock" },
+    { "type": "SECTION_EMPTY", "source": "mock" },
+    { "type": "SECTION_EMPTY", "source": "mock" }
   ],
   "accept": {
     "final_state": "SX",
-    "terminal_reason": "abort",
+    "terminal_reason": "ABORT",
     "asserts": [
       { "type": "state_path_contains", "value": ["S4", "SX"] }
     ]

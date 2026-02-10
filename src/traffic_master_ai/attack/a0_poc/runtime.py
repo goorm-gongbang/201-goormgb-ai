@@ -88,13 +88,13 @@ class TimeboxManager:
 
     # State -> Profile 키 매핑
     _STATE_MAP = {
-        State.S0_INIT: "S0_timeout_ms",
-        State.S1_PRE_ENTRY: "S1_timeout_ms",
-        State.S2_QUEUE_ENTRY: "S2_timeout_ms",
-        State.S3_SECURITY: "S3_timeout_ms",
-        State.S4_SECTION: "S4_timeout_ms",
-        State.S5_SEAT: "S5_timeout_ms",
-        State.S6_TRANSACTION: "S6_timeout_ms",
+        State.S0: "S0_timeout_ms",
+        State.S1: "S1_timeout_ms",
+        State.S2: "S2_timeout_ms",
+        State.S3: "S3_timeout_ms",
+        State.S4: "S4_timeout_ms",
+        State.S5: "S5_timeout_ms",
+        State.S6: "S6_timeout_ms",
     }
 
     def __init__(self, profile: PolicyProfile) -> None:
