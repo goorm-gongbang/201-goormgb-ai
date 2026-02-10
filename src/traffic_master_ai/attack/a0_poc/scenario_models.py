@@ -53,6 +53,7 @@ class AssertionType(str, Enum):
     RETURNED_TO_LAST_NON_SECURITY_STATE = "returned_to_last_non_security_state"
     LOG_LINES_AT_LEAST = "log_lines_at_least"
     NO_INVALID_EVENTS = "no_invalid_events"
+    TERMINAL_REASON = "terminal_reason"
 
 
 class ScenarioAssertion(BaseModel):
