@@ -4,6 +4,8 @@
 
 const API_BASE = '/api';
 
+import { useSecurityStore } from '@/stores/useSecurityStore';
+
 // ─── Correlation ID Management ───
 
 function getCorrelationId(): string {
@@ -18,7 +20,13 @@ function getCorrelationId(): string {
 
 function getSessionId(): string {
   if (typeof window === 'undefined') return 'ssr';
-  return localStorage.getItem('tm_session_id') || 'anonymous';
+  // Must match the key used in api.ts (TM_SESSION_ID) for consistency
+  let sid = localStorage.getItem('TM_SESSION_ID');
+  if (!sid) {
+    sid = crypto.randomUUID();
+    localStorage.setItem('TM_SESSION_ID', sid);
+  }
+  return sid;
 }
 
 // ─── Test Mode Headers ───
@@ -94,6 +102,14 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
 
   if (!res.ok) {
     if (data && isAppError(data)) {
+      // Global Security Challenge Trigger — only if modal is not already showing
+      if (data.reasonCode === 'CHALLENGE_REQUIRED' || data.reasonCode === 'BLOCKED') {
+        const secState = useSecurityStore.getState();
+        if (!secState.isVisible) {
+          secState.showChallenge();
+        }
+      }
+      
       const err: AppError = {
         status: 'FAIL',
         reasonCode: data.reasonCode,

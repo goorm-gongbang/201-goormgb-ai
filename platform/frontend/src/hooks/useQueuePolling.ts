@@ -11,6 +11,8 @@ export interface QueueTicketResponse {
   nextUrl?: string;
 }
 
+import { useSecurityStore } from '@/stores/useSecurityStore';
+
 interface UseQueuePollingOptions {
   ticketId: string;
   intervalMs?: number;

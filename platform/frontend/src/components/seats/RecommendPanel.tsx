@@ -2,6 +2,8 @@
 
 import { useEffect } from 'react';
 import { useSeatStore, type SeatBundle } from '@/stores/useSeatStore';
+import { api } from '@/services/apiClient';
+import { useSecurityStore } from '@/stores/useSecurityStore';
 
 interface RecommendPanelProps {
   gameId: string;
@@ -33,24 +35,23 @@ export default function RecommendPanel({ gameId }: RecommendPanelProps) {
     submitHold,
     setPartySize,
   } = useSeatStore();
+  
+  const lastResult = useSecurityStore((s) => s.lastResult);
 
   // Fetch recommendations on tab/partySize change
   useEffect(() => {
     async function fetchRecs() {
       try {
-        const res = await fetch(
-          `/api/recommendations?gameId=${gameId}&partySize=${partySize}&tab=${activeTab}`
+        const data = await api.get<SeatBundle[]>(
+          `/recommendations?gameId=${gameId}&partySize=${partySize}&tab=${activeTab}`
         );
-        if (res.ok) {
-          const data: SeatBundle[] = await res.json();
-          setRecommendations(data);
-        }
+        setRecommendations(data);
       } catch (err) {
         console.error('[RecommendPanel] Fetch failed:', err);
       }
     }
     fetchRecs();
-  }, [gameId, partySize, activeTab, setRecommendations]);
+  }, [gameId, partySize, activeTab, setRecommendations, lastResult]);
 
   const handleAutoSelect = async () => {
     if (recommendations.length > 0) {

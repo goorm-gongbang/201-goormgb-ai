@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { useSeatStore } from '@/stores/useSeatStore';
+import { api } from '@/services/apiClient';
+import { useSecurityStore } from '@/stores/useSecurityStore';
 
 interface Zone {
   zoneId: string;
@@ -25,22 +27,20 @@ export default function ZoneList({ gameId }: { gameId: string }) {
   const [zoneData, setZoneData] = useState<ZoneData | null>(null);
   const [expandedGroup, setExpandedGroup] = useState<string | null>(null);
   const { selectedZoneId, selectZone } = useSeatStore();
+  const lastResult = useSecurityStore((s) => s.lastResult);
 
   useEffect(() => {
     async function fetchZones() {
       try {
-        const res = await fetch(`/api/zones?gameId=${gameId}`);
-        if (res.ok) {
-          const data: ZoneData = await res.json();
-          setZoneData(data);
-          if (data.groups.length > 0) setExpandedGroup(data.groups[0].groupId);
-        }
+        const data = await api.get<ZoneData>(`/zones?gameId=${gameId}`);
+        setZoneData(data);
+        if (data.groups.length > 0) setExpandedGroup(data.groups[0].groupId);
       } catch (err) {
         console.error('[ZoneList] Fetch failed:', err);
       }
     }
     fetchZones();
-  }, [gameId]);
+  }, [gameId, lastResult]);
 
   if (!zoneData) {
     return <div className="flex justify-center py-8"><div className="h-6 w-6 animate-spin rounded-full border-2 border-emerald-500 border-t-transparent" /></div>;

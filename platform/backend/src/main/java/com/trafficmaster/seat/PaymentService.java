@@ -13,6 +13,7 @@ import org.springframework.stereotype.Service;
 import com.trafficmaster.audit.DecisionAuditLogger;
 import com.trafficmaster.dto.PaymentRequest;
 import com.trafficmaster.dto.PaymentResponse;
+import com.trafficmaster.security.SecurityService;
 
 import lombok.RequiredArgsConstructor;
 
@@ -27,6 +28,7 @@ public class PaymentService {
 
     private final DecisionAuditLogger auditLogger;
     private final SeatService seatService;
+    private final SecurityService securityService;
 
     private final ConcurrentHashMap<String, PaymentResponse> idempotencyCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Payment> paymentStore = new ConcurrentHashMap<>();
@@ -120,6 +122,9 @@ public class PaymentService {
                 "OK", null);
 
         log.info("Payment SUCCEEDED: {} for order {} ({}원)", payment.getPaymentId(), request.getOrderId(), order.getTotalPrice());
+
+        // Reset security verification so next booking triggers a fresh challenge
+        securityService.resetVerification(sessionId);
 
         return buildAndCache(idempotencyKey, payment.getPaymentId(), request.getOrderId(), "SUCCEEDED", null, sessionId);
     }

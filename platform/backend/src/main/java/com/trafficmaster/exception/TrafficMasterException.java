@@ -37,6 +37,10 @@ public class TrafficMasterException extends RuntimeException {
         return new TrafficMasterException("BLOCKED", "보안 정책에 의해 차단되었습니다.", 403);
     }
 
+    public static TrafficMasterException challengeRequired() {
+        return new TrafficMasterException("CHALLENGE_REQUIRED", "보안 검증이 필요합니다.", 428); // 428 Precondition Required
+    }
+
     public static TrafficMasterException paymentFailed(String detail) {
         return new TrafficMasterException("PAYMENT_FAILED", "결제 처리에 실패했습니다: " + detail, 502);
     }

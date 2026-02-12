@@ -20,4 +20,5 @@ public class QueueTicketResponse {
     private String status;
     private double progress;
     private String nextUrl;
+    private boolean requireChallenge;
 }

@@ -2,6 +2,8 @@
 
 import { useEffect } from 'react';
 import { useSeatStore, type SeatCell } from '@/stores/useSeatStore';
+import { api } from '@/services/apiClient';
+import { useSecurityStore } from '@/stores/useSecurityStore';
 
 /**
  * Stage 5 MAP mode: CSS Grid seat view.
@@ -12,6 +14,7 @@ import { useSeatStore, type SeatCell } from '@/stores/useSeatStore';
  *   AVAILABLE + in selectedSeats  → green (SELECTED_BY_ME), checkmark
  *   AVAILABLE                     → white, clickable
  */
+
 export default function ZoneSeatGridView() {
   const {
     selectedZoneId,
@@ -23,6 +26,8 @@ export default function ZoneSeatGridView() {
     setSeatGrid,
     toggleSeat,
   } = useSeatStore();
+  
+  const lastResult = useSecurityStore((s) => s.lastResult);
 
   // Fetch seat grid when zone changes
   useEffect(() => {
@@ -30,17 +35,14 @@ export default function ZoneSeatGridView() {
 
     async function fetchGrid() {
       try {
-        const res = await fetch(`/api/zones/${selectedZoneId}/seats?gameId=game-001`);
-        if (res.ok) {
-          const data = await res.json();
-          setSeatGrid(data.seats, data.rows, data.cols);
-        }
+        const data = await api.get<any>(`/zones/${selectedZoneId}/seats?gameId=game-001`);
+        setSeatGrid(data.seats, data.rows, data.cols);
       } catch (err) {
         console.error('[ZoneSeatGridView] Fetch failed:', err);
       }
     }
     fetchGrid();
-  }, [selectedZoneId, setSeatGrid]);
+  }, [selectedZoneId, setSeatGrid, lastResult]);
 
   if (!selectedZoneId) {
     return (

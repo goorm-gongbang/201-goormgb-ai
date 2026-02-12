@@ -18,6 +18,7 @@ interface SecurityState {
   status: SecurityStatus;
   errorMessage: string | null;
   remainingAttempts: number;
+  lastResult: 'PASS' | 'FAIL' | null;
 
   showChallenge: () => Promise<void>;
   hideChallenge: () => void;
@@ -31,8 +32,10 @@ export const useSecurityStore = create<SecurityState>((set, get) => ({
   errorMessage: null,
   remainingAttempts: 3,
 
+  lastResult: null,
+
   showChallenge: async () => {
-    set({ isVisible: true, status: 'LOADING', errorMessage: null });
+    set({ isVisible: true, status: 'LOADING', errorMessage: null, lastResult: null });
 
     try {
       const sessionId = getOrCreateSessionId();
@@ -43,7 +46,7 @@ export const useSecurityStore = create<SecurityState>((set, get) => ({
       set({ challengeData: data, status: 'IDLE' });
     } catch (err) {
       console.error('[SecurityStore] Failed to fetch challenge:', err);
-      set({ status: 'IDLE', errorMessage: '보안 문제를 불러올 수 없습니다.' });
+      set({ status: 'IDLE', errorMessage: '보안 문제를 불러올 수 없습니다.', lastResult: 'FAIL' });
     }
   },
 
@@ -53,6 +56,7 @@ export const useSecurityStore = create<SecurityState>((set, get) => ({
       challengeData: null,
       status: 'IDLE',
       errorMessage: null,
+      // Do not reset lastResult here so callers can read it
     });
   },
 
@@ -85,6 +89,7 @@ export const useSecurityStore = create<SecurityState>((set, get) => ({
           status: 'IDLE',
           errorMessage: null,
           remainingAttempts: 3,
+          lastResult: 'PASS',
         });
         return true;
       } else {
@@ -92,12 +97,13 @@ export const useSecurityStore = create<SecurityState>((set, get) => ({
           status: 'FAILED',
           errorMessage: `오답입니다. 남은 기회: ${data.remainingAttempts}회`,
           remainingAttempts: data.remainingAttempts,
+          lastResult: 'FAIL',
         });
         return false;
       }
     } catch (err) {
       console.error('[SecurityStore] Verify failed:', err);
-      set({ status: 'FAILED', errorMessage: '검증 요청에 실패했습니다.' });
+      set({ status: 'FAILED', errorMessage: '검증 요청에 실패했습니다.', lastResult: 'FAIL' });
       return false;
     }
   },

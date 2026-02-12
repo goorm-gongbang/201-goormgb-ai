@@ -60,11 +60,20 @@ test.describe('Stage 2 - Queue E2E Tests', () => {
     const toggle = page.getByLabel('Toggle recommend');
     await toggle.click();
     await page.locator('#booking-button').click();
-    await page.waitForURL(/\/queue\//, { timeout: 10000 });
-
-    // Wait for redirect to /select (GRANTED status)
-    // estimatedWaitMs = 5000, so should transition within ~6-7 seconds
-    await page.waitForURL(/\/select/, { timeout: 15000 });
+    // Wait for redirect to /select (GRANTED status) → QueueService now redirects immediately
+    // estimatedWaitMs = 5000.
+    await page.waitForURL(/\/seats/, { timeout: 15000 });
+    
+    // S7 Enhancement: Security Challenge appears ON THE SEATS SCREEN (triggered by Map API)
+    // Wait for security modal
+    await expect(page.locator('text=보안 확인')).toBeVisible({ timeout: 10000 });
+    
+    // Solve challenge (3+4=7)
+    await page.fill('input[placeholder="답변 입력 (예: 7)"]', '7');
+    await page.click('button:has-text("제출")');
+    
+    // Modal should close
+    await expect(page.locator('text=보안 확인')).not.toBeVisible();
   });
 
   // ─── 4. Direct Path (No Queue) ───

@@ -116,6 +116,10 @@ public class SecurityService {
             challengeSessions.remove(challengeId);
             challengeTimestamps.remove(challengeId);
             counter.set(0);
+            
+            // Mark session as verified (for MapController check)
+            sessionVerification.put(sessionId, true);
+            log.info("[SecurityService] Marked session {} as VERIFIED", sessionId);
 
             return VerifyResponse.builder()
                     .result("PASS")
@@ -148,6 +152,22 @@ public class SecurityService {
         }
     }
 
+    // sessionId → verified status (simplified for MVP/demo)
+    private final ConcurrentHashMap<String, Boolean> sessionVerification = new ConcurrentHashMap<>();
+
+    public boolean isVerified(String sessionId) {
+        return sessionVerification.getOrDefault(sessionId, false);
+    }
+
+    /**
+     * Reset verification so the next seat-entry will require a fresh challenge.
+     * Called after a booking cycle completes (e.g. payment success or hold release).
+     */
+    public void resetVerification(String sessionId) {
+        sessionVerification.remove(sessionId);
+        log.info("[SecurityService] Reset verification for session {}", sessionId);
+    }
+    
     // ─── Helpers ───
 
     private long calculateDuration(String challengeId) {
