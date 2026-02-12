@@ -1,40 +1,73 @@
-# 🚀 Local Testbed Startup Guide
+# 🎫 Traffic-Master Platform
 
-본 가이드는 `feat/mvp-testbed` 브랜치에서 행동 데이터를 수집하기 위해 서버를 기동하는 방법을 설명합니다.
+티켓 예매 시스템의 풀스택 플랫폼입니다. 대기열 → 보안 검증 → 좌석 선택 → 결제까지의 전체 예매 플로우를 구현합니다.
 
-## 1. Backend (Spring Boot) 서버 기동
-백엔드는 수집된 행동 피처(M-Prim)를 수신하고 로깅하는 역할을 합니다.
+## 아키텍처
 
-### **방법 A: IntelliJ IDEA 활용 (추천)**
-- 사용자님의 기술 스택에 있는 **IntelliJ**로 `platform/backend` 폴더를 엽니다.
-- `build.gradle` 파일을 우클릭하여 **"Import Gradle Project"**를 선택합니다.
-- 오른쪽 Gradle 탭에서 `Tasks > application > bootRun`을 실행하거나, `DefenderApplication.java`를 직접 실행합니다.
+```
+platform/
+├── backend/    # Spring Boot 3 (Java 17) — REST API, 대기열, 보안, 결제
+└── frontend/   # Next.js 16 (React 19) — SPA UI
+```
 
-### **방법 B: 터미널 활용**
-- Gradle이 설치되어 있지 않다면 먼저 설치가 필요합니다: `brew install gradle`
-- 설치 후: `gradle bootRun`
+## 빠른 시작
 
-## 2. Frontend (Next.js) 서버 기동
-사용자가 직접 마우스 움직임을 '연기'할 UI 환경입니다.
+### 1. Backend 실행
+
+```bash
+cd platform/backend
+
+# 일반 모드
+./gradlew bootRun
+
+# 테스트 모드 (보안 퀴즈 강제 활성화)
+TM_TEST_MODE=true ./gradlew bootRun
+```
+
+- **포트**: `http://localhost:8080`
+- **API 베이스**: `/api/*`
+
+### 2. Frontend 실행
 
 ```bash
 cd platform/frontend
+npm install   # 최초 1회
 npm run dev
 ```
+
 - **포트**: `http://localhost:3000`
-- **접속**: 브라우저에서 `http://localhost:3000`으로 이동합니다.
 
-## 3. 데이터 수집 방법 (Nogada Workflow)
-1. 브라우저에서 **좌석 선택 페이지**에 접속합니다.
-2. 마우스를 **인간답게** 움직여서 원하는 좌석 위로 이동합니다.
-3. 좌석을 **클릭**합니다.
-4. 클릭 직후, 하단 **"Last Interaction"** 패널에 실시간으로 추출된 `Linearity`, `Tremor`, `Dwell Time` 등이 표시되는지 확인합니다.
-5. **백엔드 터미널 로그**를 확인하여 `Received Telemetry: ...` 메시지가 찍히는지 확인합니다.
+## 주요 기능 (Stage 1~7)
 
----
+| Stage | 기능 | 백엔드 | 프론트엔드 |
+|-------|------|--------|-----------|
+| 1 | 공연 목록 | `GameController` | `page.tsx` |
+| 2 | 가상 대기열 | `QueueService` | `useQueuePolling` |
+| 3 | 보안 검증 (캡챠) | `SecurityService` | `SecurityLayer` |
+| 4-5 | 좌석 선택 (지도) | `SeatService`, `MapController` | `ZoneSeatGridView` |
+| 6 | 결제 | `PaymentService` | `PaymentPanel` |
+| 7 | 인프라 | `DecisionAuditLogger` | `apiClient` |
 
-> [!TIP]
-> **다양한 페르소나를 연기해 보세요!**
-> - 아주 직선적이고 빠른 움직임 (Aggressive)
-> - 머뭇거리며 곡선을 그리거나 떨림이 있는 움직임 (Stealth/Natural)
-> 이렇게 쌓인 로그가 나중에 AI의 '행동 뱅크'가 됩니다.
+## 환경 변수
+
+| 변수 | 설명 | 기본값 |
+|------|------|--------|
+| `TM_TEST_MODE` | 테스트 훅 활성화 (보안 퀴즈 강제 등) | `false` |
+| `TM_PAYMENT_FAIL_RATE` | 결제 실패율 (0.0~1.0) | `0` |
+
+## 테스트 모드 헤더
+
+`TM_TEST_MODE=true`일 때 프론트엔드에서 자동으로 아래 헤더가 전송됩니다:
+
+| 헤더 | 설명 |
+|------|------|
+| `X-Session-Id` | 세션 식별자 |
+| `X-TM-ForceChallenge` | 보안 퀴즈 강제 |
+| `X-TM-PaymentFailRate` | 결제 실패율 |
+| `X-TM-QueueWaitMs` | 대기열 대기시간 |
+
+## 예매 플로우
+
+```
+홈(공연 목록) → 대기열 진입 → 대기열 통과 → 보안 퀴즈 → 좌석 선택 → 결제 → 완료
+```
