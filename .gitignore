@@ -81,3 +81,25 @@ Thumbs.db
 # Local development
 *.local
 .env.local
+
+# ─── Java / Gradle ───
+.gradle/
+**/build/
+!src/**/build/
+*.class
+*.jar
+*.war
+
+# ─── Node.js / Next.js ───
+node_modules/
+.next/
+out/
+.turbo/
+
+# ─── Backend Logs ───
+**/logs/*.jsonl
+**/logs/*.log
+
+# ─── AI Agent / Handover ───
+.handover/
+.gemini/
