@@ -1,0 +1,189 @@
+meta:
+  project: "Traffic-Master"
+  version: "1.0.0"
+  stage:
+    id: "S5"
+    name: "SEAT_SELECTION"
+    description: "좌석 추천 및 맵 기반 선택 (Atomic Hold 보장 구간)"
+    type: "Hybrid (Data-Driven + Interactive)"
+
+# 25~28, 35~37. 도메인 모델 정의
+domain:
+  # 모드 정의 (필수)
+  modes:
+    - "RECOMMEND"
+    - "MAP"
+  
+  models:
+    SeatMode:
+      type: "enum"
+      values: ["RECOMMEND", "MAP"]
+      constraint: "Must be determined upon Stage 5 entry"
+
+    SeatBundle:
+      description: "추천 모드에서 사용하는 좌석 묶음"
+      fields:
+        seatBundleId: "string (UUID)"
+        gameId: "string"
+        seatIds: "string[]"
+        sectionLabel: "string"
+        rowLabel: "string"
+        totalPrice: "money"
+        rank: "integer (1|2|3)"
+
+    Zone:
+      description: "맵 모드 구역 정보"
+      fields:
+        zoneId: "string"
+        label: "string"
+        remaining: "integer"
+        disabled: "boolean"
+
+    SeatGrid:
+      description: "맵 모드 개별 좌석 그리드"
+      fields:
+        zoneId: "string"
+        rows: "integer"
+        cols: "integer"
+        seats: 
+          type: "array"
+          items:
+            seatId: "string"
+            status: "AVAILABLE | HELD_BY_OTHERS | UNAVAILABLE"
+            label: "string"
+
+    Hold:
+      description: "임시 선점 객체 (서버 상태)"
+      fields:
+        holdId: "string (UUID)"
+        sessionId: "string"
+        seatIds: "string[]"
+        status: "ACTIVE | EXPIRED | FAILED"
+        expiresAt: "ISODate"
+
+# 31 & 38. API 계약 (Contract)
+api:
+  endpoints:
+    # 추천 API
+    - path: "/api/recommendations"
+      method: "GET"
+      queryParams: ["gameId", "sessionId", "partySize", "tab"]
+      response: "Recommendation[]"
+
+    # 맵 API
+    - path: "/api/zones"
+      method: "GET"
+      response: "{ zones: Zone[], groups: ZoneGroup[] }"
+
+    - path: "/api/zones/{zoneId}/seats"
+      method: "GET"
+      response: "ZoneSeatGridResponse"
+
+    # 핵심: Hold (공통)
+    - path: "/api/holds"
+      method: "POST"
+      description: "좌석 선점 요청 (Atomic)"
+      headers:
+        Idempotency-Key: "required (UUID v4)"
+      body:
+        sessionId: "uuid"
+        gameId: "string"
+        mode: "RECOMMEND | MAP"
+        target: 
+          seatBundleId: "string (optional)"
+          seatIds: "string[] (required)"
+      response:
+        holdId: "string"
+        status: "SUCCESS | FAIL"
+        expiresAt: "ISODate"
+        reason: "null | HELD_BY_OTHERS | SOLD_OUT | ALREADY_HAS_ACTIVE_HOLD"
+
+    # 주문서 이동
+    - path: "/api/orders"
+      method: "POST"
+      body:
+        holdId: "string (required)"
+      response: "OrderToken"
+
+# 30 & 39. UI 상태 및 로직 (State Machine)
+uiLogic:
+  states:
+    RECOMMEND_VIEW:
+      on:
+        REFRESH: "Reload Recommendations"
+        SELECT: "Hold Submitting..."
+    
+    MAP_ZONE_VIEW:
+      on:
+        SELECT_ZONE: "Transition to SEAT_VIEW"
+    
+    MAP_SEAT_VIEW:
+      on:
+        SELECT_SEAT: "Update Local Selection (Client Only)"
+        SUBMIT: "Hold Submitting... (Only if count == partySize)"
+
+  # 🔥 핵심 비즈니스 규칙 (반드시 구현되어야 함)
+  consistencyGuarantees:
+    atomicity:
+      rule: "All-or-Nothing"
+      description: "요청된 seatIds 중 하나라도 선점 불가 시 전체 실패 처리"
+    
+    idempotency:
+      rule: "Strict Key Check"
+      description: "Idempotency-Key 누락 시 400 Bad Request. 동일 Key 재요청 시 캐시된 결과 반환."
+    
+    concurrency:
+      rule: "Single Active Hold"
+      description: "Session당 Active Hold는 단 1개만 허용. 기존 Hold가 있다면 신규 요청 거부."
+    
+    stateSeparation:
+      rule: "UI != Server"
+      description: "UI에서의 선택(Click)은 서버의 Hold 상태와 무관함. 오직 API 성공만이 자원을 확보함."
+
+# 32 & 40. 이벤트 및 로깅 (Telemetry)
+telemetry:
+  events:
+    # 공통
+    - name: "STAGE_5_VIEWED"
+      payload: { mode: "RECOMMEND | MAP" }
+    - name: "BOOKING_CLICKED_STAGE5"
+      payload: { mode: "string", seatCount: "number" }
+    
+    # 추천 모드
+    - "RECOMMEND_TAB_CHANGED"
+    - "RECOMMEND_REFRESH_CLICKED"
+    - "RECOMMEND_CARD_SELECTED"
+    - "AUTO_SELECT_CLICKED"
+    
+    # 맵 모드
+    - "ZONE_SELECTED"
+    - "SEAT_CLICKED"
+    - "SEAT_SELECTED"
+    - "SEAT_DESELECTED"
+    
+    # Hold 결과 (가장 중요)
+    - name: "HOLD_REQUESTED"
+      payload: { idempotencyKey: "string", seatIds: "[]" }
+    - name: "HOLD_SUCCEEDED"
+      payload: { holdId: "string" }
+    - name: "HOLD_FAILED"
+      payload: { reason: "HELD_BY_OTHERS | ..." }
+
+# 33. 방어 및 리스크 관리
+riskControl:
+  indicators:
+    - "High frequency of RECOMMEND_REFRESH"
+    - "Rapid Tab Switching"
+    - "Repetitive Auto-Select"
+    - "Consecutive HOLD_FAILED"
+  actions:
+    - "Inject CAPTCHA (Stage 3)"
+    - "Temporary Session Block"
+
+# 34. 완료 조건 (Definition of Done)
+completionCriteria:
+  - "Mode (Recommend/Map) Logic Operational"
+  - "Atomic Hold Verified (Test Case Required)"
+  - "Idempotency Logic Verified"
+  - "Fail Modal with Reason Code implemented"
+  - "Transition to Order Page (with valid Hold)"

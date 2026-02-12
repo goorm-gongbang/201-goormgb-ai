@@ -1,0 +1,142 @@
+meta:
+  project: "Traffic-Master"
+  version: "1.0.0"
+  stage:
+    id: "S6"
+    name: "PAYMENT"
+    description: "결제 처리 및 주문 확정 (Transaction Finalization)"
+    type: "Transactional"
+
+# 41 ~ 43. 도메인 모델 정의
+domain:
+  models:
+    Order:
+      description: "결제 대기 중인 주문서"
+      fields:
+        orderId: "string (UUID)"
+        sessionId: "string"
+        gameId: "string"
+        seats:
+          type: "array"
+          items: { grade: "string", label: "string", seatId: "string" }
+        amount:
+          type: "object"
+          properties: { ticket: "number", fee: "number", discount: "number", total: "number" }
+        tax:
+          type: "object"
+          properties: { maskedPhone: "string" }
+        status:
+          type: "enum"
+          values: ["ACTIVE", "EXPIRED", "PAID", "CANCELLED"]
+        expiresAt: "ISODate"
+        
+      # 🔥 위험 D 해결: TTL 동기화 규칙
+      constraints:
+        ttlSync: "Order.expiresAt MUST match or be strictly within Hold.expiresAt"
+
+    Payment:
+      description: "결제 시도 및 결과 레코드"
+      fields:
+        paymentId: "string (UUID)"
+        orderId: "string"
+        method:
+          type: "enum"
+          values: ["TOSS", "KAKAO", "PAYCO", "OTHER"]
+        status:
+          type: "enum"
+          values: ["SUCCEEDED", "FAILED"]
+        reasonCode:
+          type: "enum"
+          values: ["TIMEOUT", "DECLINED", "EXPIRED", "ALREADY_PAID"]
+        createdAt: "ISODate"
+
+# 44. API 계약 (Contract)
+api:
+  endpoints:
+    # 주문서 조회
+    - path: "/api/orders/{orderId}"
+      method: "GET"
+      response: "Order (ViewModel)"
+
+    # 현금영수증 번호 업데이트
+    - path: "/api/orders/{orderId}/tax"
+      method: "PATCH"
+      body: { phone: "string" }
+      response: { maskedPhone: "string" }
+
+    # 결제 실행 (핵심)
+    - path: "/api/payments"
+      method: "POST"
+      description: "PG사 결제 승인 및 주문 상태 변경 요청"
+      headers:
+        Idempotency-Key: "required (UUID v4)" # 🔥 위험 B 해결
+      body:
+        orderId: "string"
+        method: "TOSS | KAKAO | PAYCO | OTHER"
+        agreeTerms: "boolean"
+        agreeCancelFee: "boolean"
+      response:
+        success: { result: "OK", paymentId: "string", nextUrl: "string" }
+        fail: { result: "FAIL", reasonCode: "string" }
+
+    # 결제 취소 (명시적 포기) - 🔥 위험 E 해결
+    - path: "/api/orders/{orderId}/cancel"
+      method: "POST"
+      description: "사용자가 결제창에서 '취소' 클릭 시 호출. 즉시 Hold 해제."
+      response: { status: "CANCELLED" }
+
+# 45. 상태 전이 및 로직 (State Machine)
+stateLogic:
+  orderStates:
+    ACTIVE:
+      allow: ["PAYMENT_ATTEMPT", "CANCEL", "EXPIRE"]
+    PAID:
+      allow: [] # Final State
+    EXPIRED:
+      allow: [] # Final State (Payment Attempt Blocked)
+    CANCELLED:
+      allow: [] # Final State (Hold Released)
+
+  # 🔥 핵심 비즈니스 규칙 (구현 필수)
+  consistencyGuarantees:
+    serverSideValidation: # 🔥 위험 A 해결
+      rule: "Trust Server Time Only"
+      description: "프론트엔드 타이머는 UX일 뿐임. 결제 요청 시 서버의 현재 시간 > expiresAt이면 무조건 EXPIRED 리턴."
+    
+    idempotency: # 🔥 위험 B 해결
+      rule: "Strict Payment Idempotency"
+      description: "동일 Idempotency-Key로 재요청 시, 실제 결제 로직을 다시 태우지 않고 저장된 Payment 결과를 반환."
+    
+    stateFinality: # 🔥 위험 C 해결
+      rule: "PAID is Immutable"
+      description: "이미 PAID 상태인 Order에 대해 추가 결제 시도는 허용하지 않음 (ALREADY_PAID 에러 반환)."
+    
+    cancelPolicy: # 🔥 위험 E 해결
+      rule: "Explicit Release"
+      description: "Cancel 요청 시 Order 상태를 CANCELLED로 변경하고, 연결된 Seat Hold를 즉시 해제(Release)한다."
+
+# 46. 이벤트 및 로깅 (Telemetry)
+telemetry:
+  events:
+    - "PAYMENT_PAGE_VIEWED"
+    - "PAYMENT_METHOD_SELECTED"
+    - "TAX_DEDUCTION_PHONE_UPDATED"
+    - "TERMS_AGREED_TOGGLED"
+    - "CANCEL_FEE_AGREED_TOGGLED"
+    # 중요 트랜잭션 이벤트
+    - name: "PAYMENT_SUBMITTED"
+      payload: { idempotencyKey: "string", amount: "number" }
+    - name: "PAYMENT_SUCCEEDED"
+      payload: { paymentId: "string", orderId: "string" }
+    - name: "PAYMENT_FAILED"
+      payload: { reason: "TIMEOUT | DECLINED | EXPIRED" }
+    - name: "ORDER_EXPIRED_SERVER" # 서버가 만료 처리했을 때
+    - name: "ORDER_CANCELLED_USER" # 유저가 취소했을 때
+
+# 완료 조건 (Definition of Done)
+completionCriteria:
+  - "Server-side Expiration Check Verified"
+  - "Idempotency Key Handling Verified"
+  - "Order State Machine Test (Active -> Paid/Expired/Cancelled)"
+  - "Hold Release on Cancel/Expire Verified"
+  - "Payment Gateway Mock Integration"

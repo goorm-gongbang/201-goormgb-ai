@@ -1,0 +1,174 @@
+meta:
+  project: "Traffic-Master"
+  version: "1.0.0"
+  stage:
+    id: "S1"
+    name: "PRE_ENTRY"
+    description: "경기 상세 정보 확인 및 예매 진입 (대기열 전 단계)"
+  updatedAt: "2024-05-20T10:00:00Z"
+
+# 1. 도메인 정의 (Global Constants)
+domain:
+  stages:
+    S1: "PRE_ENTRY"
+    S2: "QUEUE"
+    S3: "SECURITY"
+    S4: "SECTION_SELECTION"
+    S5: "SEAT_SELECTION"
+    S6: "TRANSACTION"
+    SX: "TERMINAL"
+
+# 2 & 8. 세션 및 스토리지 설정
+session:
+  id:
+    type: "UUID v4"
+    generatedAt: "Entrance of Stage 1"
+  storage:
+    client:
+      type: "LocalStorage"
+      keys:
+        sessionId: "TM_SESSION_ID"
+        preferences: "TM_PREFERENCES"
+    server:
+      type: "Redis/SessionStore"
+  schema:
+    sessionId: "string"
+    currentStage: "S1"
+    createdAt: "ISODate"
+    updatedAt: "ISODate"
+
+# 3. 데이터 모델 & 유효성 검사 (Types & Validation)
+dataModels:
+  Preferences:
+    fields:
+      recommendEnabled:
+        type: "boolean"
+        default: false
+      partySize:
+        type: "integer"
+        default: 2
+        validation:
+          min: 1
+          max: 10
+      priceFilterEnabled:
+        type: "boolean"
+        default: false
+      priceRange:
+        type: "object"
+        default: { min: 20000, max: 100000 }
+        validation:
+          minPrice: 20000
+          maxPrice: 100000
+          rule: "min <= max"
+
+  GameDetail:
+    fields:
+      gameId: "string"
+      homeTeam: "Team"
+      awayTeam: "Team"
+      dateTime: "ISODate"
+      venue: "Venue"
+      saleStatus:
+        type: "enum"
+        values: ["ON_SALE", "SOLD_OUT", "CLOSED"]
+      dDay: "integer"
+      priceTable: "PriceItem[]"
+
+# 4. UI 상태 전이 및 로직 (State Machine)
+uiLogic:
+  actions:
+    toggleRecommend:
+      trigger: "User click"
+      effects:
+        - target: "preferences.recommendEnabled"
+          operation: "update"
+        - target: "LocalStorage"
+          operation: "sync"
+        - target: "API"
+          operation: "POST /sessions/{id}/preferences"
+      event: "PREFERENCE_TOGGLE_CHANGED"
+
+    changePartySize:
+      trigger: "User select"
+      validation: "1 <= value <= 10"
+      effects:
+        - target: "preferences.partySize"
+          operation: "update"
+        - target: "LocalStorage"
+          operation: "sync"
+      event: "PARTY_SIZE_CHANGED"
+
+    togglePriceFilter:
+      trigger: "User toggle"
+      effects:
+        - target: "UI.slider"
+          operation: "enable/disable"
+      event: "PRICE_FILTER_TOGGLED"
+
+    clickBooking:
+      trigger: "User click '예매하기'"
+      precondition: "saleStatus === ON_SALE"
+      effects:
+        - target: "API"
+          operation: "POST /booking/entry"
+        - target: "Stage"
+          transitionTo: "S2"
+      event: "BOOKING_CLICKED"
+
+# 5. API 계약 (Contract)
+api:
+  endpoints:
+    - path: "/api/games/{gameId}"
+      method: "GET"
+      response: "GameDetail"
+
+    - path: "/api/sessions/{sessionId}/preferences"
+      method: "GET"
+      response: "Preferences"
+
+    - path: "/api/sessions/{sessionId}/preferences"
+      method: "POST"
+      body: "Preferences"
+
+    - path: "/api/booking/entry"
+      method: "POST"
+      body:
+        sessionId: "uuid"
+        gameId: "string"
+        preferences: "Preferences"
+      response:
+        queueTicketId: "string"
+        nextUrl: "string"
+
+# 6 & 7. 이벤트 및 로깅 (Telemetry)
+telemetry:
+  logFile: "decision_audit.jsonl"
+  format: "Append-only JSON"
+  schema:
+    timestamp: "ISODate"
+    stage: "S1"
+    sessionId: "string"
+    eventType: "enum"
+    payload: "Record<string, any>"
+  events:
+    - "STAGE_1_ENTRY_VIEWED"
+    - "PREFERENCE_TOGGLE_CHANGED"
+    - "PARTY_SIZE_CHANGED"
+    - "PRICE_FILTER_TOGGLED"
+    - "PRICE_RANGE_CHANGED"
+    - "BOOKING_CLICKED"
+
+# 10. 구현 범위 제외 (Out of Scope)
+outOfScope:
+  - "Hold"
+  - "Queue Polling"
+  - "Security Challenge"
+  - "Seat Data"
+  - "Payment"
+
+# 11. 완료 조건 (Definition of Done)
+completionCriteria:
+  - "Session Created"
+  - "Preferences Synced"
+  - "Events Logged"
+  - "Transition to S2 Success"

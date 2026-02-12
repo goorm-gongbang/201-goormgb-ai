@@ -1,0 +1,181 @@
+meta:
+  project: "Traffic-Master"
+  version: "1.0.0"
+  type: "Addendum"
+  description: "Runtime Consistency, State Machines, and Testability Extensions"
+  targetScope: "Global (Stage 1 ~ 6)"
+
+# 1. 전역 스테이지 및 전이 규칙 (Global Flow)
+globalFlow:
+  definitions:
+    stages:
+      - "S1_PRE_ENTRY"
+      - "S2_QUEUE"
+      - "S3_SECURITY_CHALLENGE"
+      - "S5_SEAT_SELECTION" # (Stage 4 merged into S5)
+      - "S6_PAYMENT"
+
+  transitions:
+    # S1 -> S2 (진입)
+    - source: "S1"
+      target: "S2"
+      condition: "POST /api/booking/entry Success AND queueTicketId exists"
+    
+    # S2 -> S3 (보안 개입)
+    - source: "S2"
+      target: "S3"
+      condition: "Queue Status == GRANTED AND requireChallenge == true"
+    
+    # S2 -> S5 (정상 진입)
+    - source: "S2"
+      target: "S5"
+      condition: "Queue Status == GRANTED AND requireChallenge == false"
+    
+    # S3 -> Back (개입 해제 후 복귀)
+    - source: "S3"
+      target: "S2"
+      condition: "insertedAtStage == 2 AND Challenge Passed"
+    - source: "S3"
+      target: "S5"
+      condition: "insertedAtStage == 5 AND Challenge Passed"
+    
+    # S5 -> S6 (주문 생성)
+    - source: "S5"
+      target: "S6"
+      condition: "Hold Success AND Order Created"
+
+# 3. 전역 상태 머신 (State Machines)
+stateMachines:
+  QueueTicket:
+    states: ["WAITING", "GRANTED", "BLOCKED"]
+    constraints:
+      - "If GRANTED, nextStage MUST be S5"
+      - "If BLOCKED, reasonCode MUST be present"
+      - "Progress range: 0 ~ 100"
+
+  SecurityChallenge:
+    states: ["ACTIVE", "PASSED", "FAILED", "BLOCKED"]
+    fields:
+      insertedAtStage: "2 | 5"
+      attemptCount: "integer"
+
+  Hold:
+    states: ["ACTIVE", "EXPIRED", "FAILED"]
+    constraints:
+      - "Atomicity: SeatIds are secured All-or-Nothing"
+      - "Concurrency: Max 1 ACTIVE hold per sessionId"
+      - "Expiration: Seats revert to AVAILABLE immediately upon EXPIRED"
+
+  Order:
+    states: ["ACTIVE", "EXPIRED", "PAID", "CANCELLED"]
+    constraints:
+      - "Sync: Order.expiresAt MUST == Hold.expiresAt"
+      - "Finality: If PAID, linked Hold cannot be reactivated"
+
+  Payment:
+    states: ["SUCCEEDED", "FAILED"]
+    constraints:
+      - "Effect: SUCCEEDED implies Order.status = PAID"
+      - "Idempotency: Re-payment on same Order+Key returns cached result"
+
+# 4. 멱등성 규격 (Idempotency)
+consistency:
+  idempotency:
+    header: "Idempotency-Key"
+    scope: "resourceScope + idempotencyKey"
+    behavior: "Return cached response for duplicate requests. No side-effects."
+    requiredEndpoints:
+      - "POST /api/holds"
+      - "POST /api/orders"
+      - "POST /api/payments"
+
+  expiration:
+    authority: "Server Side"
+    rule: "Client timer is visual only. Server timestamp is final."
+    paymentRule: "If current_time > order.expiresAt, Payment Request fails immediately."
+
+# 6. 표준 에러/상태 코드 (Standardized Codes)
+standardCodes:
+  Queue:
+    - "POLICY_BLOCKED"
+    - "TIMEOUT"
+    - "SANDBOXED"
+  Challenge:
+    - "WRONG_ANSWER"
+    - "TIMEOUT"
+    - "MAX_ATTEMPTS"
+  Hold:
+    - "HELD_BY_OTHERS"
+    - "SOLD_OUT"
+    - "UNAVAILABLE"
+    - "ALREADY_HAS_ACTIVE_HOLD"
+    - "INVALID_IDEMPOTENCY"
+  Order:
+    - "HOLD_EXPIRED"
+    - "HOLD_NOT_FOUND"
+    - "ALREADY_ORDERED"
+  Payment:
+    - "EXPIRED"
+    - "DECLINED"
+    - "TIMEOUT"
+    - "ALREADY_PAID"
+
+# 7. 감사 로그 규격 (Audit Logging)
+telemetry:
+  logSchema: "decision_audit.jsonl"
+  fields:
+    ts: "ISODate"
+    sessionId: "string"
+    stage: "Stage Enum"
+    eventType: "string"
+    actor: "USER | ATTACK_AGENT | DEFENSE_AGENT | SYSTEM"
+    requestId: "string"
+    correlationId: "string (Persists from S1 Booking Click)"
+    payload: "object"
+    serverDecision:
+      riskTier: "T0 | T1 | T2 | T3"
+      action: "NONE | THROTTLE | CHALLENGE | HONEY | BLOCK"
+    result:
+      status: "OK | FAIL"
+      reasonCode: "string"
+  
+  privacy:
+    - "Phone Number: Masked only"
+    - "Payment Info: DO NOT LOG"
+    - "Raw Inputs: DO NOT LOG (Timing only)"
+
+# 8. 테스트 및 실험 훅 (Test Hooks)
+testing:
+  activation:
+    env: "TM_TEST_MODE=true"
+    header: "X-TM-TestMode: true"
+  
+  controlParameters:
+    holdFailRate:
+      header: "X-TM-HoldFailRate"
+      value: "float (0.0 - 1.0)"
+      description: "Force random hold failures to test atomicity/retry"
+    
+    queueWaitTime:
+      header: "X-TM-QueueWaitMs"
+      value: "integer (ms)"
+      description: "Force specific queue delay"
+    
+    forceChallenge:
+      header: "X-TM-ForceChallenge"
+      value: "true"
+      description: "Inject challenge regardless of risk score"
+      params: { "X-TM-InsertedAtStage": "2 | 5" }
+    
+    paymentFailRate:
+      header: "X-TM-PaymentFailRate"
+      value: "float (0.0 - 1.0)"
+      description: "Simulate PG failures"
+
+# 10. 완료 기준 (Definition of Done)
+completionCriteria:
+  - "Global Stage Transition Logic Implemented"
+  - "Atomicity & Idempotency Tests Passed"
+  - "Server-side Expiration Enforcement Verified"
+  - "Full Traceability via decision_audit.jsonl"
+  - "Test Hooks Operational for Agent Simulation"

@@ -1,0 +1,87 @@
+meta:
+  project: "Traffic-Master"
+  version: "1.0.0"
+  stage:
+    id: "S3"
+    name: "SECURITY"
+    description: "부정 예매 방지 및 봇 차단 (Control Plane Intervention)"
+    architectureType: "Global Interceptor" # UI 컴포넌트가 아닌 개입 장치임
+
+# 18 & 19. 도메인 모델 정의
+domain:
+  models:
+    SecurityChallenge:
+      fields:
+        challengeId: "string (UUID)"
+        sessionId: "string (UUID)"
+        type:
+          type: "enum"
+          values: ["QUIZ"] # 추후 CAPTCHA 등 확장 가능
+        insertedAtStage:
+          type: "enum"
+          values: [2, 4, 5]
+          description: "어느 스테이지 사이에 개입했는지 추적"
+        attemptCount: "integer"
+        maxAttempts: "integer"
+        status:
+          type: "enum"
+          values: ["ACTIVE", "PASSED", "FAILED", "BLOCKED"]
+        createdAt: "ISODate"
+
+# 20. API 계약
+api:
+  endpoints:
+    - path: "/api/security/challenge"
+      method: "GET"
+      response:
+        challengeId: "string"
+        type: "QUIZ"
+        prompt: "string"
+        imageUrl: "string | null"
+
+    - path: "/api/security/verify"
+      method: "POST"
+      body:
+        challengeId: "string"
+        answer: "string"
+      response:
+        result: "PASS | FAIL"
+
+# 21. 상태 전이 규칙
+stateLogic:
+  transitions:
+    - from: "ACTIVE"
+      to: "PASSED"
+      condition: "Correct Answer"
+    - from: "ACTIVE"
+      to: "FAILED"
+      condition: "Wrong Answer AND attempt < max"
+    - from: "ACTIVE"
+      to: "BLOCKED"
+      condition: "Wrong Answer AND attempt >= max"
+
+# 23. 개입 포인트 (Architecture Hooks)
+interventionPoints:
+  - location: "After S2 (Queue)"
+    trigger: "Post-queue verification"
+  - location: "Before S5 (Seat Selection)"
+    trigger: "High-value seat protection"
+  - location: "High Risk Action"
+    trigger: "Dynamic anomaly detection"
+  requirement: "Must log 'insertedAtStage' field"
+
+# 22. 이벤트 스키마 확장
+telemetry:
+  events:
+    - "SECURITY_CHALLENGE_SHOWN"
+    - "SECURITY_CHALLENGE_SUBMITTED"
+    - "SECURITY_CHALLENGE_PASSED"
+    - "SECURITY_CHALLENGE_FAILED"
+
+# 24. 완료 조건
+completionCriteria:
+  - "Modal/Interceptor Rendering"
+  - "API Integration (Verify)"
+  - "PASS/FAIL Logic Executed"
+  - "Attempt Count Managed"
+  - "Telemetry Logged"
