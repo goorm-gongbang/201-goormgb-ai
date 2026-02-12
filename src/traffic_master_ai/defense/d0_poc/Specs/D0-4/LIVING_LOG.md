@@ -81,7 +81,7 @@ Paths:
   - 모든 시나리오 실행 후 `logger.close()` 호출
 - 검증 완료:
   - 15개 시나리오 전체 PASS
-  - logs/decision_audit.jsonl 생성 (89 Step 로그)
+  - logs/poc_0_decision_audit.jsonl 생성 (89 Step 로그)
   - 모든 줄 JSON 파싱 성공
 
 Paths:
@@ -124,7 +124,7 @@ Paths:
     - st.status로 단계별 진행상황 업데이트
     - 각 단계 결과 expander로 stdout/stderr 표시
   - Section 2: Audit Log Explorer
-    - decision_audit.jsonl 읽어서 DataFrame 생성
+    - poc_0_decision_audit.jsonl 읽어서 DataFrame 생성
     - 컬럼: Timestamp, TraceID, Seq, Event Type, State, Tier, Actions, Reason
     - TraceID/Tier 드롭다운 필터링
     - Summary metrics: Total Entries, Unique Traces, T3 Escalations, Blocked Sessions
