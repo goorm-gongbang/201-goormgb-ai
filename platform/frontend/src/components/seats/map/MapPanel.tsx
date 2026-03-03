@@ -2,6 +2,7 @@
 
 import { useSeatStore } from '@/stores/useSeatStore';
 import ZoneList from './ZoneList';
+import { getOrCreateSessionId } from '@/services/api';
 
 interface MapPanelProps {
   gameId: string;
@@ -23,7 +24,7 @@ export default function MapPanel({ gameId }: MapPanelProps) {
     if (result.status === 'SUCCESS' && result.holdId) {
       const orderRes = await fetch('/api/orders', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Session-Id': getOrCreateSessionId() },
         body: JSON.stringify({ holdId: result.holdId }),
       });
       const order = await orderRes.json();
@@ -46,6 +47,7 @@ export default function MapPanel({ gameId }: MapPanelProps) {
             value={partySize}
             onChange={(e) => setPartySize(Number(e.target.value))}
             className="px-2 py-1 rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 text-sm"
+            data-testid="party-size-select"
           >
             {[1, 2, 3, 4].map((n) => (
               <option key={n} value={n}>{n}</option>

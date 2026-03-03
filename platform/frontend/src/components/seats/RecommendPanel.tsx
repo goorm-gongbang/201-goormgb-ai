@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { useSeatStore, type SeatBundle } from '@/stores/useSeatStore';
 import { api } from '@/services/apiClient';
 import { useSecurityStore } from '@/stores/useSecurityStore';
+import { getOrCreateSessionId } from '@/services/api';
 
 interface RecommendPanelProps {
   gameId: string;
@@ -60,7 +61,7 @@ export default function RecommendPanel({ gameId }: RecommendPanelProps) {
         // Create order and navigate
         const orderRes = await fetch('/api/orders', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-Session-Id': getOrCreateSessionId() },
           body: JSON.stringify({ holdId: result.holdId }),
         });
         const order = await orderRes.json();
@@ -84,6 +85,7 @@ export default function RecommendPanel({ gameId }: RecommendPanelProps) {
             value={partySize}
             onChange={(e) => setPartySize(Number(e.target.value))}
             className="px-2 py-1 rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 text-sm"
+            data-testid="party-size-select"
           >
             {[1, 2, 3, 4].map((n) => (
               <option key={n} value={n}>{n}</option>
@@ -132,6 +134,7 @@ export default function RecommendPanel({ gameId }: RecommendPanelProps) {
                     ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/20 shadow-md'
                     : 'border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:border-zinc-300'
                 }`}
+                data-testid={`rec-${bundle.seatBundleId}`}
               >
                 <div className="flex items-start justify-between">
                   <div className="space-y-1">
@@ -170,6 +173,7 @@ export default function RecommendPanel({ gameId }: RecommendPanelProps) {
           onClick={handleAutoSelect}
           disabled={holdSubmitting || recommendations.length === 0}
           className="flex-1 py-3 rounded-xl font-semibold border-2 border-emerald-500 text-emerald-600 hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+          data-testid="rec-auto-select"
         >
           자동 선택
         </button>
@@ -181,7 +185,7 @@ export default function RecommendPanel({ gameId }: RecommendPanelProps) {
             if (result.status === 'SUCCESS' && result.holdId) {
               const orderRes = await fetch('/api/orders', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'X-Session-Id': getOrCreateSessionId() },
                 body: JSON.stringify({ holdId: result.holdId }),
               });
               const order = await orderRes.json();

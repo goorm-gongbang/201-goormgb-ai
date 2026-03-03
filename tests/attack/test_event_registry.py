@@ -24,8 +24,8 @@ class TestEventType:
     """EventType enum 테스트."""
 
     def test_event_type_count(self) -> None:
-        """EventType enum이 45개 값을 가지는지 확인."""
-        assert len(EventType) == 45
+        """EventType enum이 51개 값을 가지는지 확인."""
+        assert len(EventType) == 51
 
     def test_flow_system_events(self) -> None:
         """A. Flow/System 이벤트 (5개)."""
@@ -200,7 +200,9 @@ class TestEventValidStates:
             State.S1,
             State.S2,
             State.S4,
+            State.S4R,
             State.S5,
+            State.S5R,
             State.S6,
         })
         for event_type in defense_events:

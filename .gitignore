@@ -96,9 +96,10 @@ node_modules/
 out/
 .turbo/
 
-# ─── Backend Logs ───
-**/logs/*.jsonl
-**/logs/*.log
+# ─── Logs ───
+logs/
+**/logs/**/*.jsonl
+**/logs/**/*.log
 
 # ─── AI Agent / Handover ───
 .handover/

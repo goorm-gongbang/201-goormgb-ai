@@ -117,6 +117,7 @@ export default function PaymentForm({ orderId, maskedPhone, onPhoneSaved }: Paym
             checked={agreeTerms}
             onChange={(e) => setAgreeTerms(e.target.checked)}
             className="mt-0.5 h-5 w-5 rounded border-zinc-300 text-emerald-500 focus:ring-emerald-500"
+            data-testid="agree-terms"
           />
           <div>
             <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">[필수] 이용약관 동의</p>
@@ -130,6 +131,7 @@ export default function PaymentForm({ orderId, maskedPhone, onPhoneSaved }: Paym
             checked={agreeCancelFee}
             onChange={(e) => setAgreeCancelFee(e.target.checked)}
             className="mt-0.5 h-5 w-5 rounded border-zinc-300 text-emerald-500 focus:ring-emerald-500"
+            data-testid="agree-cancel-fee"
           />
           <div>
             <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">[필수] 취소 수수료 안내 동의</p>

@@ -4,6 +4,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import SecurityLayer from "@/components/security/SecurityLayer";
 import SecurityTrigger from "@/components/security/SecurityTrigger";
+import TelemetryLayer from "@/components/telemetry/TelemetryLayer";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -31,6 +32,8 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         {children}
+        {/* Stage 7: Global Behavioral Telemetry */}
+        <TelemetryLayer />
         {/* Stage 3: Global Security Challenge Interceptor */}
         <SecurityLayer />
         <Suspense fallback={null}>
@@ -40,4 +43,3 @@ export default function RootLayout({
     </html>
   );
 }
-

@@ -51,6 +51,7 @@ export default function BookingCard({ saleStatus, onBookingClick, loading }: Boo
               : 'bg-zinc-300 dark:bg-zinc-600'
           }`}
           aria-label="Toggle recommend"
+          data-testid="recommend-toggle"
         >
           <span
             className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
@@ -69,6 +70,7 @@ export default function BookingCard({ saleStatus, onBookingClick, loading }: Boo
           value={preferences.partySize}
           onChange={(e) => setPartySize(Number(e.target.value))}
           className="w-full rounded-lg border border-zinc-300 bg-white py-2 px-3 text-sm text-zinc-800 dark:bg-zinc-800 dark:border-zinc-600 dark:text-zinc-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none"
+          data-testid="preentry-party-size-select"
         >
           {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
             <option key={n} value={n}>

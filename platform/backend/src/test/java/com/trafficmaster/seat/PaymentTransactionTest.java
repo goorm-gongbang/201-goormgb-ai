@@ -18,6 +18,7 @@ import com.trafficmaster.dto.OrderRequest;
 import com.trafficmaster.dto.OrderResponse;
 import com.trafficmaster.dto.PaymentRequest;
 import com.trafficmaster.dto.PaymentResponse;
+import com.trafficmaster.security.SecurityService;
 
 /**
  * Stage 6: Payment transaction tests.
@@ -27,6 +28,7 @@ class PaymentTransactionTest {
     private SeatService seatService;
     private PaymentService paymentService;
     private DecisionAuditLogger auditLogger;
+    private SecurityService securityService;
 
     @BeforeEach
     void setup() throws Exception {
@@ -34,7 +36,8 @@ class PaymentTransactionTest {
         tmpLog.deleteOnExit();
         auditLogger = new DecisionAuditLogger(tmpLog.getAbsolutePath());
         seatService = new SeatService(auditLogger);
-        paymentService = new PaymentService(auditLogger, seatService);
+        securityService = new SecurityService(auditLogger);
+        paymentService = new PaymentService(auditLogger, seatService, securityService);
     }
 
     private String createActiveOrder() {

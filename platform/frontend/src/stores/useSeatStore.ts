@@ -122,7 +122,7 @@ export const useSeatStore = create<SeatState>((set, get) => ({
       const idempotencyKey = crypto.randomUUID();
       const res = await fetch('/api/holds', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey, 'X-Session-Id': sessionId },
         body: JSON.stringify({
           sessionId, gameId: state.gameId, mode: 'RECOMMEND',
           seatBundleId: target.seatBundleId, seatIds: target.seatIds,
@@ -179,7 +179,7 @@ export const useSeatStore = create<SeatState>((set, get) => ({
 
       const res = await fetch('/api/holds', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey, 'X-Session-Id': sessionId },
         body: JSON.stringify({ sessionId, gameId: state.gameId, mode: 'MAP', seatIds }),
       });
       const data: HoldResult = await res.json();

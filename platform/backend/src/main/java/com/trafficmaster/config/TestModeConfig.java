@@ -9,8 +9,16 @@ import org.springframework.web.servlet.HandlerInterceptor;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
+import com.trafficmaster.audit.AuditEvent;
+import com.trafficmaster.audit.DecisionAuditLogger;
+import com.trafficmaster.security.RiskControlService;
+import com.trafficmaster.security.RiskDecision;
+
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+
+import java.util.Map;
+import java.util.UUID;
 
 /**
  * Stage 7: Test mode hooks — activated only when TM_TEST_MODE=true.
@@ -23,11 +31,14 @@ public class TestModeConfig implements WebMvcConfigurer {
 
     private static final Logger log = LoggerFactory.getLogger(TestModeConfig.class);
     private final com.trafficmaster.security.SecurityService securityService;
+    private final RiskControlService riskControlService;
+    private final DecisionAuditLogger auditLogger;
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
         log.warn("⚠️ TEST MODE ACTIVE — Test hooks enabled");
-        registry.addInterceptor(new TestHookInterceptor(securityService)).addPathPatterns("/api/**");
+        registry.addInterceptor(new TestHookInterceptor(securityService, riskControlService, auditLogger))
+                .addPathPatterns("/api/**");
     }
 
     /**
@@ -38,6 +49,8 @@ public class TestModeConfig implements WebMvcConfigurer {
     static class TestHookInterceptor implements HandlerInterceptor {
         
         private final com.trafficmaster.security.SecurityService securityService;
+        private final RiskControlService riskControlService;
+        private final DecisionAuditLogger auditLogger;
 
         @Override
         public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
@@ -67,13 +80,72 @@ public class TestModeConfig implements WebMvcConfigurer {
             String forceChallengeHeader = request.getHeader("X-TM-ForceChallenge");
             boolean forceChallenge = forceChallengeHeader == null || "true".equalsIgnoreCase(forceChallengeHeader);
             
+            String uri = request.getRequestURI();
+            boolean isSeatEntry = uri.startsWith("/api/zones")
+                    || uri.startsWith("/api/recommendations")
+                    || uri.startsWith("/api/holds");
+
+            // Defense gating: telemetry-based risk decision (AC-4).
+            if (isSeatEntry) {
+                String sessionId = request.getHeader("X-Session-Id");
+                if (sessionId != null && !sessionId.isBlank()) {
+                    RiskDecision decision = riskControlService.decide(sessionId);
+                    if (decision == RiskDecision.BLOCKED) {
+                        auditLogger.log(AuditEvent.builder()
+                                .sessionId(sessionId)
+                                .stage("DEFENSE")
+                                .eventType("DEF_BLOCKED")
+                                .actor("SERVER")
+                                .requestId(UUID.randomUUID().toString())
+                                .payload(Map.of(
+                                        "uri", uri,
+                                        "decision", decision.name()
+                                ))
+                                .serverDecision(AuditEvent.ServerDecision.builder()
+                                        .riskTier("T3")
+                                        .action("BLOCK")
+                                        .build())
+                                .result(AuditEvent.Result.builder()
+                                        .status("FAIL")
+                                        .reasonCode("BLOCKED")
+                                        .build())
+                                .build());
+
+                        throw com.trafficmaster.exception.TrafficMasterException.blocked();
+                    }
+
+                    if (decision == RiskDecision.CHALLENGE_REQUIRED) {
+                        auditLogger.log(AuditEvent.builder()
+                                .sessionId(sessionId)
+                                .stage("DEFENSE")
+                                .eventType("DEF_CHALLENGE_FORCED")
+                                .actor("SERVER")
+                                .requestId(UUID.randomUUID().toString())
+                                .payload(Map.of(
+                                        "uri", uri,
+                                        "decision", decision.name()
+                                ))
+                                .serverDecision(AuditEvent.ServerDecision.builder()
+                                        .riskTier("T2")
+                                        .action("CHALLENGE")
+                                        .build())
+                                .result(AuditEvent.Result.builder()
+                                        .status("FAIL")
+                                        .reasonCode("CHALLENGE_REQUIRED")
+                                        .build())
+                                .build());
+
+                        // Force a fresh challenge even if the session passed previously.
+                        securityService.resetVerification(sessionId);
+                        throw com.trafficmaster.exception.TrafficMasterException.challengeRequired();
+                    }
+                }
+            }
+
             if (forceChallenge) {
                 request.setAttribute("tm.test.forceChallenge", true);
                 
                 // Enforce challenge on specific Seat-related entry points
-                String uri = request.getRequestURI();
-                boolean isSeatEntry = uri.startsWith("/api/zones") || uri.startsWith("/api/recommendations");
-                
                 if (isSeatEntry) {
                     String sessionId = request.getHeader("X-Session-Id");
                     boolean verified = sessionId != null && securityService.isVerified(sessionId);

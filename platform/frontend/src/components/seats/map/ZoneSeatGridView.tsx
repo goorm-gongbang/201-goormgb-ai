@@ -84,6 +84,7 @@ export default function ZoneSeatGridView() {
       <div className="overflow-x-auto">
         <div
           className="inline-grid gap-[3px] p-3 bg-white dark:bg-zinc-800 rounded-2xl border border-zinc-200 dark:border-zinc-700"
+          data-testid="seat-grid"
           style={{
             gridTemplateColumns: `28px repeat(${gridCols}, 28px)`,
             gridTemplateRows: `24px repeat(${gridRows}, 28px)`,
@@ -135,6 +136,9 @@ export default function ZoneSeatGridView() {
                     disabled={!isAvailable && !isSelectedByMe}
                     className={cellClass}
                     title={`${seat.label} (${seat.status})`}
+                    data-testid={`seat-${seat.seatId}`}
+                    data-seat-status={seat.status}
+                    data-seat-label={seat.label}
                   >
                     {isSelectedByMe ? '✓' : isHeld ? '×' : isUnavailable ? '·' : '○'}
                   </button>

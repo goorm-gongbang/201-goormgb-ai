@@ -26,6 +26,7 @@ import com.trafficmaster.exception.TrafficMasterException;
 import com.trafficmaster.seat.Order;
 import com.trafficmaster.seat.PaymentService;
 import com.trafficmaster.seat.SeatService;
+import com.trafficmaster.security.SecurityService;
 
 /**
  * Stage 7: Platform integration tests.
@@ -34,6 +35,7 @@ class PlatformIntegrationTest {
 
     private SeatService seatService;
     private PaymentService paymentService;
+    private SecurityService securityService;
     private DecisionAuditLogger auditLogger;
     private File logFile;
     private ObjectMapper mapper;
@@ -44,7 +46,8 @@ class PlatformIntegrationTest {
         logFile.deleteOnExit();
         auditLogger = new DecisionAuditLogger(logFile.getAbsolutePath());
         seatService = new SeatService(auditLogger);
-        paymentService = new PaymentService(auditLogger, seatService);
+        securityService = new SecurityService(auditLogger);
+        paymentService = new PaymentService(auditLogger, seatService, securityService);
         mapper = new ObjectMapper();
         mapper.registerModule(new JavaTimeModule());
     }

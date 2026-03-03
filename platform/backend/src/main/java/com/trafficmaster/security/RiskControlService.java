@@ -2,15 +2,15 @@ package com.trafficmaster.security;
 
 /**
  * Risk assessment interface.
- * MVP: always returns false (no challenge triggered).
+ * MVP: telemetry-based thresholding in TM_TEST_MODE.
  * Production: integrate with ML anomaly detection.
  */
 public interface RiskControlService {
 
     /**
-     * Evaluate whether a security challenge should be triggered for this session.
+     * Decide what security action should be taken for this session.
      * @param sessionId user session identifier
-     * @return true if challenge should be triggered
+     * @return decision (NONE/CHALLENGE_REQUIRED/BLOCKED)
      */
-    boolean shouldTriggerChallenge(String sessionId);
+    RiskDecision decide(String sessionId);
 }

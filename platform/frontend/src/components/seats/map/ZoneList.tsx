@@ -59,6 +59,7 @@ export default function ZoneList({ gameId }: { gameId: string }) {
             <button
               onClick={() => setExpandedGroup(isExpanded ? null : group.groupId)}
               className="w-full flex items-center justify-between px-4 py-2.5 bg-zinc-50 dark:bg-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-750 transition-colors"
+              data-testid={`zone-group-${group.groupId}`}
             >
               <span className="font-semibold text-sm text-zinc-800 dark:text-zinc-200">
                 🏟️ {group.label}
@@ -85,6 +86,8 @@ export default function ZoneList({ gameId }: { gameId: string }) {
                           ? 'bg-emerald-50 dark:bg-emerald-900/20 border-l-3 border-emerald-500'
                           : 'hover:bg-zinc-50 dark:hover:bg-zinc-800'
                       }`}
+                      data-testid={`zone-${zone.zoneId}`}
+                      data-remaining={zone.remaining}
                     >
                       <span className={`text-sm ${isSelected ? 'font-bold text-emerald-700 dark:text-emerald-400' : 'text-zinc-700 dark:text-zinc-300'}`}>
                         {zone.label}

@@ -74,6 +74,7 @@ function SeatsContent() {
                         : 'bg-zinc-300 dark:bg-zinc-600'
                     }`}
                     aria-label="추천 모드 토글"
+                    data-testid="seat-mode-toggle"
                   >
                     <span
                       className={`absolute top-0.5 left-0.5 w-6 h-6 bg-white rounded-full shadow-md transition-transform duration-300 ${
