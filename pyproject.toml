@@ -26,6 +26,11 @@ attack_mvp = [
     "langgraph>=1.0.0",
     "playwright>=1.42.0",
 ]
+defense_api = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "redis>=5.0.0",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/traffic_master_ai"]

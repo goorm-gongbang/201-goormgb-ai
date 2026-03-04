@@ -1,6 +1,7 @@
 'use client';
 
 import { useSeatStore } from '@/stores/useSeatStore';
+import { API_PATHS, HTTP_HEADERS } from '@/contracts/http';
 import ZoneList from './ZoneList';
 import { getOrCreateSessionId } from '@/services/api';
 
@@ -22,9 +23,12 @@ export default function MapPanel({ gameId }: MapPanelProps) {
   const handleBook = async () => {
     const result = await submitMapHold();
     if (result.status === 'SUCCESS' && result.holdId) {
-      const orderRes = await fetch('/api/orders', {
+      const orderRes = await fetch(API_PATHS.ORDERS, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Session-Id': getOrCreateSessionId() },
+        headers: {
+          [HTTP_HEADERS.CONTENT_TYPE]: HTTP_HEADERS.APPLICATION_JSON,
+          [HTTP_HEADERS.X_SESSION_ID]: getOrCreateSessionId(),
+        },
         body: JSON.stringify({ holdId: result.holdId }),
       });
       const order = await orderRes.json();

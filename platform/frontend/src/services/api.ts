@@ -1,9 +1,10 @@
 import axios from 'axios';
 import type { BookingRequest, BookingResponse, GameDetail, Preferences } from '@/types';
+import { HTTP_HEADERS, STORAGE_KEYS } from '@/contracts/http';
 
 // ─── Session ID Management (SSOT: TM_SESSION_ID in LocalStorage) ───
 
-const SESSION_STORAGE_KEY = 'TM_SESSION_ID';
+const SESSION_STORAGE_KEY = STORAGE_KEYS.TM_SESSION_ID;
 
 export function getOrCreateSessionId(): string {
   if (typeof window === 'undefined') return '';
@@ -20,13 +21,13 @@ export function getOrCreateSessionId(): string {
 
 const api = axios.create({
   baseURL: '/api',
-  headers: { 'Content-Type': 'application/json' },
+  headers: { [HTTP_HEADERS.CONTENT_TYPE]: HTTP_HEADERS.APPLICATION_JSON },
 });
 
 api.interceptors.request.use((config) => {
   const sessionId = getOrCreateSessionId();
   if (sessionId) {
-    config.headers['X-Session-Id'] = sessionId;
+    config.headers[HTTP_HEADERS.X_SESSION_ID] = sessionId;
   }
   return config;
 });

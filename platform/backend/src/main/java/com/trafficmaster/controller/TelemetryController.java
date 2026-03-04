@@ -17,6 +17,7 @@ import com.fasterxml.jackson.annotation.JsonAlias;
 import com.trafficmaster.audit.TrajectoryRawLogger;
 import com.trafficmaster.audit.AuditEvent;
 import com.trafficmaster.audit.DecisionAuditLogger;
+import com.trafficmaster.contract.TelemetryContract;
 
 import lombok.RequiredArgsConstructor;
 
@@ -40,24 +41,24 @@ public class TelemetryController {
     public ResponseEntity<Map<String, String>> collectBehavior(@RequestBody TelemetryBehaviorRequest request) {
         String sessionId = request.sessionId != null && !request.sessionId.isBlank()
                 ? request.sessionId
-                : "anonymous";
+                : TelemetryContract.SESSION_ANONYMOUS;
         String trigger = request.trigger != null && !request.trigger.isBlank()
                 ? request.trigger
-                : "unknown";
+                : TelemetryContract.TRIGGER_UNKNOWN;
         String datasetId = request.datasetId != null ? request.datasetId : "";
         String requestId = request.requestId != null && !request.requestId.isBlank()
                 ? request.requestId
                 : UUID.randomUUID().toString();
 
         Map<String, Object> payload = new HashMap<>();
-        payload.put("trigger", trigger);
+        payload.put(TelemetryContract.PAYLOAD_TRIGGER, trigger);
         if (request.features != null) {
-            payload.put("features", request.features);
+            payload.put(TelemetryContract.PAYLOAD_FEATURES, request.features);
         }
         if (request.points != null && !request.points.isEmpty()) {
-            payload.put("rawPoints", Map.of(
-                    "count", request.points.size(),
-                    "datasetId", datasetId
+            payload.put(TelemetryContract.PAYLOAD_RAW_POINTS, Map.of(
+                    TelemetryContract.PAYLOAD_COUNT, request.points.size(),
+                    TelemetryContract.PAYLOAD_DATASET_ID, datasetId
             ));
         }
 
@@ -80,9 +81,9 @@ public class TelemetryController {
 
         auditLogger.log(AuditEvent.builder()
                 .sessionId(sessionId)
-                .stage("TELEMETRY")
-                .eventType("BEHAVIOR")
-                .actor("USER")
+                .stage(TelemetryContract.STAGE_TELEMETRY)
+                .eventType(TelemetryContract.EVENT_BEHAVIOR)
+                .actor(TelemetryContract.ACTOR_USER)
                 .requestId(requestId)
                 .correlationId(request.correlationId)
                 .payload(payload)

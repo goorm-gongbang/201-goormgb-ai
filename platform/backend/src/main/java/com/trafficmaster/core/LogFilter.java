@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 
 import com.trafficmaster.audit.AuditEvent;
 import com.trafficmaster.audit.DecisionAuditLogger;
+import com.trafficmaster.contract.TmHeaders;
 
 import jakarta.servlet.Filter;
 import jakarta.servlet.FilterChain;
@@ -42,14 +43,14 @@ public class LogFilter implements Filter {
 
         // 1. Set MDC
         String requestId = UUID.randomUUID().toString();
-        String correlationId = req.getHeader("X-Correlation-Id");
+        String correlationId = req.getHeader(TmHeaders.X_CORRELATION_ID);
         if (correlationId == null || correlationId.isBlank()) {
             correlationId = UUID.randomUUID().toString();
         }
-        String sessionId = req.getHeader("X-Session-Id");
+        String sessionId = req.getHeader(TmHeaders.X_SESSION_ID);
         if (sessionId == null) sessionId = "anonymous";
 
-        String actor = req.getHeader("X-TM-Actor");
+        String actor = req.getHeader(TmHeaders.X_TM_ACTOR);
         if (actor == null) actor = "USER";
 
         MDC.put("requestId", requestId);
@@ -58,8 +59,8 @@ public class LogFilter implements Filter {
         MDC.put("actor", actor);
 
         // Set correlation ID on response for tracing
-        res.setHeader("X-Correlation-Id", correlationId);
-        res.setHeader("X-Request-Id", requestId);
+        res.setHeader(TmHeaders.X_CORRELATION_ID, correlationId);
+        res.setHeader(TmHeaders.X_REQUEST_ID, requestId);
 
         try {
             chain.doFilter(request, response);

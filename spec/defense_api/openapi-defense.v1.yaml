@@ -1,0 +1,443 @@
+openapi: 3.0.3
+info:
+  title: Traffic Master AI Defense API
+  description: Mock/stub API for cloud ext_authz integration. Deterministic rule-based
+    decisions until full defense engine rollout.
+  version: v1
+paths:
+  /healthz:
+    get:
+      tags:
+      - health
+      summary: Healthz
+      operationId: healthz_healthz_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /readyz:
+    get:
+      tags:
+      - health
+      summary: Readyz
+      operationId: readyz_readyz_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /runtime/{session_id}:
+    get:
+      tags:
+      - state
+      summary: Runtime State
+      operationId: runtime_state_runtime__session_id__get
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeStateSnapshot'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /evaluate:
+    post:
+      tags:
+      - decision
+      summary: Evaluate
+      operationId: evaluate_evaluate_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EvaluateRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvaluateResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /meta/storage:
+    get:
+      tags:
+      - state
+      summary: Storage Meta
+      operationId: storage_meta_meta_storage_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: string
+                type: object
+                title: Response Storage Meta Meta Storage Get
+components:
+  schemas:
+    EvaluateRequest:
+      properties:
+        session_id:
+          type: string
+          minLength: 1
+          title: Session Id
+        trace_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trace Id
+        request_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Request Id
+        correlation_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Correlation Id
+        path:
+          type: string
+          minLength: 1
+          title: Path
+        method:
+          type: string
+          minLength: 1
+          title: Method
+          description: HTTP method such as GET/POST
+        timestamp:
+          type: integer
+          minimum: 0.0
+          title: Timestamp
+          description: Unix epoch milliseconds
+        headers:
+          additionalProperties:
+            type: string
+          type: object
+          title: Headers
+        flow_state:
+          anyOf:
+          - type: string
+            enum:
+            - S0
+            - S1
+            - S2
+            - S3
+            - S4
+            - S4R
+            - S5
+            - S5R
+            - S6
+            - SX
+          - type: 'null'
+          title: Flow State
+        defense_tier:
+          anyOf:
+          - type: string
+            enum:
+            - T0
+            - T1
+            - T2
+            - T3
+          - type: 'null'
+          title: Defense Tier
+        challenge_fail_count:
+          type: integer
+          minimum: 0.0
+          title: Challenge Fail Count
+          default: 0
+        repetitive_pattern_count:
+          type: integer
+          minimum: 0.0
+          title: Repetitive Pattern Count
+          default: 0
+        token_mismatch:
+          type: boolean
+          title: Token Mismatch
+          default: false
+        signals:
+          items:
+            type: string
+          type: array
+          title: Signals
+        telemetry_features:
+          anyOf:
+          - $ref: '#/components/schemas/EvaluateTelemetryFeatures'
+          - type: 'null'
+      additionalProperties: false
+      type: object
+      required:
+      - session_id
+      - path
+      - method
+      - timestamp
+      title: EvaluateRequest
+      description: Adapter -> AI defense decision request.
+    EvaluateResponse:
+      properties:
+        allow:
+          type: boolean
+          title: Allow
+        session_id:
+          type: string
+          title: Session Id
+        flow_state:
+          type: string
+          enum:
+          - S0
+          - S1
+          - S2
+          - S3
+          - S4
+          - S4R
+          - S5
+          - S5R
+          - S6
+          - SX
+          title: Flow State
+        defense_tier:
+          type: string
+          enum:
+          - T0
+          - T1
+          - T2
+          - T3
+          title: Defense Tier
+        action:
+          anyOf:
+          - type: string
+            enum:
+            - DEF_BLOCKED
+            - DEF_CHALLENGE_FORCED
+            - DEF_THROTTLED
+            - DEF_SANDBOXED
+          - type: 'null'
+          title: Action
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        rule_hits:
+          items:
+            type: string
+          type: array
+          title: Rule Hits
+        risk_score:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Risk Score
+        policy_version:
+          type: string
+          title: Policy Version
+          default: def-pol-0.1.0
+        headers_to_add:
+          additionalProperties:
+            type: string
+          type: object
+          title: Headers To Add
+        decision_id:
+          type: string
+          title: Decision Id
+        latency_ms:
+          type: integer
+          minimum: 0.0
+          title: Latency Ms
+        version:
+          type: string
+          title: Version
+          default: v1
+      additionalProperties: false
+      type: object
+      required:
+      - allow
+      - session_id
+      - flow_state
+      - defense_tier
+      - decision_id
+      - latency_ms
+      title: EvaluateResponse
+      description: AI defense decision response consumed by authz adapter.
+    EvaluateTelemetryFeatures:
+      properties:
+        totalDist:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Totaldist
+        linearDist:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Lineardist
+        linearityRatio:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Linearityratio
+        avgVelocity:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Avgvelocity
+        tremorStdDev:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Tremorstddev
+        dwellTime:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Dwelltime
+        timestamp:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Timestamp
+      additionalProperties: false
+      type: object
+      title: EvaluateTelemetryFeatures
+      description: Telemetry summary features for a single trigger window.
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    HealthResponse:
+      properties:
+        status:
+          type: string
+          const: ok
+          title: Status
+        service:
+          type: string
+          title: Service
+        version:
+          type: string
+          title: Version
+      type: object
+      required:
+      - status
+      - service
+      - version
+      title: HealthResponse
+      description: Basic liveness/readiness response.
+    RuntimeStateSnapshot:
+      properties:
+        flow_state:
+          type: string
+          enum:
+          - S0
+          - S1
+          - S2
+          - S3
+          - S4
+          - S4R
+          - S5
+          - S5R
+          - S6
+          - SX
+          title: Flow State
+          default: S0
+        defense_tier:
+          type: string
+          enum:
+          - T0
+          - T1
+          - T2
+          - T3
+          title: Defense Tier
+          default: T0
+        risk_score:
+          type: number
+          title: Risk Score
+          default: 0.0
+        challenge_fail_count:
+          type: integer
+          title: Challenge Fail Count
+          default: 0
+        seat_taken_streak:
+          type: integer
+          title: Seat Taken Streak
+          default: 0
+        hold_fail_streak:
+          type: integer
+          title: Hold Fail Streak
+          default: 0
+        heavy_budget_left:
+          type: integer
+          title: Heavy Budget Left
+          default: 2
+        replan_budget_left:
+          type: integer
+          title: Replan Budget Left
+          default: 3
+        probation_until_ms:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Probation Until Ms
+        policy_version:
+          type: string
+          title: Policy Version
+          default: def-pol-0.1.0
+        updated_ts_ms:
+          type: integer
+          title: Updated Ts Ms
+          default: 0
+      additionalProperties: false
+      type: object
+      title: RuntimeStateSnapshot
+      description: Runtime session state kept in Redis (or in-memory fallback).
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError

@@ -1,13 +1,14 @@
 'use client';
 
 import { useSeatStore } from '@/stores/useSeatStore';
+import { REASON_CODES } from '@/contracts/http';
 
 const REASON_LABELS: Record<string, string> = {
   HELD_BY_OTHERS: '이 좌석은 다른 사용자가 이미 선점하였습니다.',
   ALREADY_HAS_ACTIVE_HOLD: '이미 선점 중인 좌석이 있습니다.',
   SOLD_OUT: '해당 좌석이 매진되었습니다.',
   NETWORK_ERROR: '네트워크 오류가 발생했습니다.',
-  MISSING_IDEMPOTENCY_KEY: '요청 오류가 발생했습니다.',
+  [REASON_CODES.MISSING_IDEMPOTENCY_KEY]: '요청 오류가 발생했습니다.',
 };
 
 export default function HoldFailureModal() {

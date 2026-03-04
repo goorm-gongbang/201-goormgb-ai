@@ -2,37 +2,54 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from dataclasses import replace
 
 from langgraph.runtime import Runtime
 
 from traffic_master_ai.common.models.states import FlowState, TerminalReason
 
+from ..contracts.api import (
+    API_PATH_HOLDS,
+    API_PATH_RECOMMENDATIONS,
+    API_PATH_SEATS_SUFFIX,
+    API_PATH_ZONES_PREFIX,
+    URL_GLOB_PAYMENT,
+    URL_GLOB_PAYMENT_DONE,
+    URL_GLOB_QUEUE_PAGE,
+    URL_GLOB_SEATS_MAP,
+    URL_GLOB_SEATS_RECOMMEND,
+)
+from ..contracts.defense import (
+    is_blocked_response,
+    is_challenge_required_response,
+)
+from ..contracts.selectors import (
+    SEL_AGREE_CANCEL,
+    SEL_AGREE_TERMS,
+    SEL_BOOKING_BTN,
+    SEL_HOLD_FAIL_CLOSE,
+    SEL_MAP_BOOK_BTN,
+    SEL_PARTY_SIZE_SELECT_MAP,
+    SEL_PARTY_SIZE_SELECT_RECOMMEND,
+    SEL_PAY_BTN,
+    SEL_REC_AUTO,
+    SEL_SEAT_AVAILABLE,
+    SEL_SEAT_GRID,
+    SEL_SEAT_MODE_TOGGLE,
+    SEL_SECURITY_ERROR,
+    SEL_SECURITY_INPUT,
+    SEL_SECURITY_OVERLAY,
+    SEL_SECURITY_SUBMIT,
+    SEL_ZONE_ITEM,
+)
+from ..contracts.storage import (
+    TM_PREFERENCES_KEY,
+    TM_SESSION_ID_KEY,
+    build_default_tm_preferences,
+)
 from ..logging.audit import now_ms
 from ..security.arithmetic import ArithmeticParseError, solve_arithmetic_prompt
 from ..state import AgentState
 from .context import AgentContext
-
-
-SEL_BOOKING_BTN = "#booking-button:not([disabled])"
-SEL_SECURITY_OVERLAY = '[data-testid="security-overlay"]'
-SEL_SECURITY_INPUT = '[data-testid="security-input"]'
-SEL_SECURITY_SUBMIT = '[data-testid="security-submit"]'
-SEL_SECURITY_ERROR = '[data-testid="security-error"]'
-
-SEL_ZONE_ITEM = 'button[data-testid^="zone-"][data-remaining]:not([disabled])'
-SEL_SEAT_GRID = '[data-testid="seat-grid"]'
-SEL_SEAT_AVAILABLE = 'button[data-seat-status="AVAILABLE"]'
-SEL_MAP_BOOK_BTN = "#booking-button-map:not([disabled])"
-
-SEL_REC_AUTO = '[data-testid="rec-auto-select"]:not([disabled])'
-SEL_SEAT_MODE_TOGGLE = '[data-testid="seat-mode-toggle"]'
-
-SEL_HOLD_FAIL_CLOSE = '[data-testid="hold-fail-close"]'
-
-SEL_AGREE_TERMS = '[data-testid="agree-terms"]'
-SEL_AGREE_CANCEL = '[data-testid="agree-cancel-fee"]'
-SEL_PAY_BTN = "#pay-button:not([disabled])"
 
 
 async def _enter_security_if_visible(
@@ -68,16 +85,11 @@ async def node_init(state: AgentState, runtime: Runtime[AgentContext]) -> dict:
 
     # Deterministic session ID for this run.
     session_id = str(uuid.uuid4())
-    await w.set_local_storage("TM_SESSION_ID", session_id)
+    await w.set_local_storage(TM_SESSION_ID_KEY, session_id)
 
     # Ensure Pre-Entry preference matches agent mode (controls queue nextUrl mode).
-    prefs = {
-        "recommendEnabled": state.mode == "RECOMMEND",
-        "partySize": 2,
-        "priceFilterEnabled": False,
-        "priceRange": {"min": 20000, "max": 100000},
-    }
-    await w.set_local_storage_json("TM_PREFERENCES", prefs)
+    prefs = build_default_tm_preferences(state.mode)
+    await w.set_local_storage_json(TM_PREFERENCES_KEY, prefs)
     await w.reload()
 
     runtime.context.audit.log(
@@ -104,7 +116,7 @@ async def node_pre_entry(state: AgentState, runtime: Runtime[AgentContext]) -> d
     try:
         await w.wait_for_selector(SEL_BOOKING_BTN, timeout_ms=120_000)
         await w.human_click(SEL_BOOKING_BTN)
-        await w.wait_for_url("**/queue/**", timeout_ms=60_000)
+        await w.wait_for_url(URL_GLOB_QUEUE_PAGE, timeout_ms=60_000)
     except Exception as e:
         runtime.context.audit.log(
             {
@@ -136,10 +148,10 @@ async def node_queue(state: AgentState, runtime: Runtime[AgentContext]) -> dict:
     try:
         # Queue page redirects to /seats?mode=... once GRANTED.
         if state.mode == "MAP":
-            await w.wait_for_url("**/seats?mode=MAP", timeout_ms=180_000)
+            await w.wait_for_url(URL_GLOB_SEATS_MAP, timeout_ms=180_000)
             next_state = FlowState.S4
         else:
-            await w.wait_for_url("**/seats?mode=RECOMMEND", timeout_ms=180_000)
+            await w.wait_for_url(URL_GLOB_SEATS_RECOMMEND, timeout_ms=180_000)
             next_state = FlowState.S4R
     except Exception as e:
         runtime.context.audit.log(
@@ -293,8 +305,8 @@ async def node_section_map(state: AgentState, runtime: Runtime[AgentContext]) ->
 
     try:
         # Ensure party size is 1 for robustness.
-        await w.wait_for_selector('[data-testid="party-size-select"]', timeout_ms=30_000)
-        await w.select_option('[data-testid="party-size-select"]', "1")
+        await w.wait_for_selector(SEL_PARTY_SIZE_SELECT_MAP, timeout_ms=30_000)
+        await w.select_option(SEL_PARTY_SIZE_SELECT_MAP, "1")
 
         # Wait for zones (may require security first in TM_TEST_MODE).
         await w.wait_for_selector(SEL_ZONE_ITEM, timeout_ms=60_000)
@@ -305,7 +317,7 @@ async def node_section_map(state: AgentState, runtime: Runtime[AgentContext]) ->
         clicked = False
         try:
             async with w.page.expect_response(
-                lambda r: ("/api/zones/" in r.url) and ("/seats" in r.url),
+                lambda r: (API_PATH_ZONES_PREFIX in r.url) and (API_PATH_SEATS_SUFFIX in r.url),
                 timeout=60_000,
             ) as resp_info:
                 await w.human_click(SEL_ZONE_ITEM)
@@ -334,7 +346,7 @@ async def node_section_map(state: AgentState, runtime: Runtime[AgentContext]) ->
                 }
             )
 
-            if status == 403 or reason_code == "BLOCKED":
+            if is_blocked_response(status, reason_code):
                 runtime.context.audit.log(
                     {
                         "ts_ms": now_ms(),
@@ -346,7 +358,7 @@ async def node_section_map(state: AgentState, runtime: Runtime[AgentContext]) ->
                 )
                 return {"flow_state": FlowState.SX, "terminal_reason": TerminalReason.BLOCKED}
 
-            if status == 428 or reason_code == "CHALLENGE_REQUIRED":
+            if is_challenge_required_response(status, reason_code):
                 return {"flow_state": FlowState.S3, "last_non_security_state": FlowState.S4}
         except Exception:
             # If we fail to capture the response, proceed best-effort.
@@ -399,7 +411,7 @@ async def node_seat_map(state: AgentState, runtime: Runtime[AgentContext]) -> di
         clicked = False
         try:
             async with w.page.expect_response(
-                lambda r: "/api/holds" in r.url,
+                lambda r: API_PATH_HOLDS in r.url,
                 timeout=10_000,
             ) as resp_info:
                 await w.human_click(SEL_MAP_BOOK_BTN)
@@ -427,9 +439,9 @@ async def node_seat_map(state: AgentState, runtime: Runtime[AgentContext]) -> di
                     }
                 )
 
-                if hold_resp.status == 403 or reason_code == "BLOCKED":
+                if is_blocked_response(hold_resp.status, reason_code):
                     return {"flow_state": FlowState.SX, "terminal_reason": TerminalReason.BLOCKED}
-                if hold_resp.status == 428 or reason_code == "CHALLENGE_REQUIRED":
+                if is_challenge_required_response(hold_resp.status, reason_code):
                     return {"flow_state": FlowState.S3, "last_non_security_state": FlowState.S5}
         except Exception:
             if not clicked:
@@ -437,7 +449,7 @@ async def node_seat_map(state: AgentState, runtime: Runtime[AgentContext]) -> di
 
         # Either payment navigation, or hold failure modal.
         async def _wait_payment() -> str:
-            await w.wait_for_url("**/payment?orderId=*", timeout_ms=60_000)
+            await w.wait_for_url(URL_GLOB_PAYMENT, timeout_ms=60_000)
             return "PAYMENT"
 
         async def _wait_hold_fail() -> str:
@@ -492,15 +504,15 @@ async def node_recommend(state: AgentState, runtime: Runtime[AgentContext]) -> d
     w = runtime.context.worker
 
     try:
-        await w.wait_for_selector('[data-testid="party-size-select"]', timeout_ms=30_000)
+        await w.wait_for_selector(SEL_PARTY_SIZE_SELECT_RECOMMEND, timeout_ms=30_000)
         # Defense gating can block /api/recommendations. Detect early.
         selected = False
         try:
             async with w.page.expect_response(
-                lambda r: "/api/recommendations" in r.url,
+                lambda r: API_PATH_RECOMMENDATIONS in r.url,
                 timeout=10_000,
             ) as resp_info:
-                await w.select_option('[data-testid="party-size-select"]', "1")
+                await w.select_option(SEL_PARTY_SIZE_SELECT_RECOMMEND, "1")
                 selected = True
 
             rec_resp = await resp_info.value
@@ -525,13 +537,13 @@ async def node_recommend(state: AgentState, runtime: Runtime[AgentContext]) -> d
                     }
                 )
 
-                if rec_resp.status == 403 or reason_code == "BLOCKED":
+                if is_blocked_response(rec_resp.status, reason_code):
                     return {"flow_state": FlowState.SX, "terminal_reason": TerminalReason.BLOCKED}
-                if rec_resp.status == 428 or reason_code == "CHALLENGE_REQUIRED":
+                if is_challenge_required_response(rec_resp.status, reason_code):
                     return {"flow_state": FlowState.S3, "last_non_security_state": FlowState.S4R}
         except Exception:
             if not selected:
-                await w.select_option('[data-testid="party-size-select"]', "1")
+                await w.select_option(SEL_PARTY_SIZE_SELECT_RECOMMEND, "1")
 
         # Wait for an actionable recommendation.
         await w.wait_for_selector(SEL_REC_AUTO, timeout_ms=60_000)
@@ -539,7 +551,7 @@ async def node_recommend(state: AgentState, runtime: Runtime[AgentContext]) -> d
         # Fallback: switch to MAP mode if no recommendations.
         try:
             await w.human_click(SEL_SEAT_MODE_TOGGLE)
-            await w.wait_for_url("**/seats?mode=MAP", timeout_ms=30_000)
+            await w.wait_for_url(URL_GLOB_SEATS_MAP, timeout_ms=30_000)
             runtime.context.audit.log(
                 {
                     "ts_ms": now_ms(),
@@ -582,7 +594,7 @@ async def node_accept_recommend(state: AgentState, runtime: Runtime[AgentContext
         clicked = False
         try:
             async with w.page.expect_response(
-                lambda r: "/api/holds" in r.url,
+                lambda r: API_PATH_HOLDS in r.url,
                 timeout=10_000,
             ) as resp_info:
                 await w.human_click(SEL_REC_AUTO)
@@ -610,16 +622,16 @@ async def node_accept_recommend(state: AgentState, runtime: Runtime[AgentContext
                     }
                 )
 
-                if hold_resp.status == 403 or reason_code == "BLOCKED":
+                if is_blocked_response(hold_resp.status, reason_code):
                     return {"flow_state": FlowState.SX, "terminal_reason": TerminalReason.BLOCKED}
-                if hold_resp.status == 428 or reason_code == "CHALLENGE_REQUIRED":
+                if is_challenge_required_response(hold_resp.status, reason_code):
                     return {"flow_state": FlowState.S3, "last_non_security_state": FlowState.S5R}
         except Exception:
             if not clicked:
                 await w.human_click(SEL_REC_AUTO)
 
         async def _wait_payment() -> str:
-            await w.wait_for_url("**/payment?orderId=*", timeout_ms=60_000)
+            await w.wait_for_url(URL_GLOB_PAYMENT, timeout_ms=60_000)
             return "PAYMENT"
 
         async def _wait_hold_fail() -> str:
@@ -684,7 +696,7 @@ async def node_payment(state: AgentState, runtime: Runtime[AgentContext]) -> dic
         await w.wait_for_selector(SEL_PAY_BTN, timeout_ms=30_000)
         await w.human_click(SEL_PAY_BTN)
 
-        await w.wait_for_url("**/payment/done*", timeout_ms=60_000)
+        await w.wait_for_url(URL_GLOB_PAYMENT_DONE, timeout_ms=60_000)
     except Exception as e:
         runtime.context.audit.log(
             {

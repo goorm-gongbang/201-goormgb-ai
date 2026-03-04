@@ -4,16 +4,17 @@
 
 const API_BASE = '/api';
 
+import { HTTP_HEADERS, REASON_CODES, SESSION_STORAGE_KEYS, STORAGE_KEYS } from '@/contracts/http';
 import { useSecurityStore } from '@/stores/useSecurityStore';
 
 // ─── Correlation ID Management ───
 
 function getCorrelationId(): string {
   if (typeof window === 'undefined') return crypto.randomUUID();
-  let id = sessionStorage.getItem('correlationId');
+  let id = sessionStorage.getItem(SESSION_STORAGE_KEYS.CORRELATION_ID);
   if (!id) {
     id = crypto.randomUUID();
-    sessionStorage.setItem('correlationId', id);
+    sessionStorage.setItem(SESSION_STORAGE_KEYS.CORRELATION_ID, id);
   }
   return id;
 }
@@ -21,10 +22,10 @@ function getCorrelationId(): string {
 function getSessionId(): string {
   if (typeof window === 'undefined') return 'ssr';
   // Must match the key used in api.ts (TM_SESSION_ID) for consistency
-  let sid = localStorage.getItem('TM_SESSION_ID');
+  let sid = localStorage.getItem(STORAGE_KEYS.TM_SESSION_ID);
   if (!sid) {
     sid = crypto.randomUUID();
-    localStorage.setItem('TM_SESSION_ID', sid);
+    localStorage.setItem(STORAGE_KEYS.TM_SESSION_ID, sid);
   }
   return sid;
 }
@@ -35,21 +36,21 @@ function getTestHeaders(): Record<string, string> {
   if (typeof window === 'undefined') return {};
   const headers: Record<string, string> = {};
 
-  const testMode = localStorage.getItem('tm_test_mode');
+  const testMode = localStorage.getItem(STORAGE_KEYS.TM_TEST_MODE);
   if (testMode === 'true') {
-    headers['X-TM-TestMode'] = 'true';
+    headers[HTTP_HEADERS.X_TM_TEST_MODE] = 'true';
 
-    const holdFail = localStorage.getItem('tm_hold_fail_rate');
-    if (holdFail) headers['X-TM-HoldFailRate'] = holdFail;
+    const holdFail = localStorage.getItem(STORAGE_KEYS.TM_HOLD_FAIL_RATE);
+    if (holdFail) headers[HTTP_HEADERS.X_TM_HOLD_FAIL_RATE] = holdFail;
 
-    const payFail = localStorage.getItem('tm_pay_fail_rate');
-    if (payFail) headers['X-TM-PaymentFailRate'] = payFail;
+    const payFail = localStorage.getItem(STORAGE_KEYS.TM_PAY_FAIL_RATE);
+    if (payFail) headers[HTTP_HEADERS.X_TM_PAYMENT_FAIL_RATE] = payFail;
 
-    const queueWait = localStorage.getItem('tm_queue_wait_ms');
-    if (queueWait) headers['X-TM-QueueWaitMs'] = queueWait;
+    const queueWait = localStorage.getItem(STORAGE_KEYS.TM_QUEUE_WAIT_MS);
+    if (queueWait) headers[HTTP_HEADERS.X_TM_QUEUE_WAIT_MS] = queueWait;
 
-    const forceChallenge = localStorage.getItem('tm_force_challenge');
-    if (forceChallenge) headers['X-TM-ForceChallenge'] = forceChallenge;
+    const forceChallenge = localStorage.getItem(STORAGE_KEYS.TM_FORCE_CHALLENGE);
+    if (forceChallenge) headers[HTTP_HEADERS.X_TM_FORCE_CHALLENGE] = forceChallenge;
   }
 
   return headers;
@@ -81,15 +82,15 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   const { method = 'GET', body, headers = {}, idempotencyKey } = options;
 
   const mergedHeaders: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'X-Correlation-Id': getCorrelationId(),
-    'X-Session-Id': getSessionId(),
+    [HTTP_HEADERS.CONTENT_TYPE]: HTTP_HEADERS.APPLICATION_JSON,
+    [HTTP_HEADERS.X_CORRELATION_ID]: getCorrelationId(),
+    [HTTP_HEADERS.X_SESSION_ID]: getSessionId(),
     ...getTestHeaders(),
     ...headers,
   };
 
   if (idempotencyKey) {
-    mergedHeaders['Idempotency-Key'] = idempotencyKey;
+    mergedHeaders[HTTP_HEADERS.IDEMPOTENCY_KEY] = idempotencyKey;
   }
 
   const res = await fetch(`${API_BASE}${path}`, {
@@ -103,7 +104,10 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   if (!res.ok) {
     if (data && isAppError(data)) {
       // Global Security Challenge Trigger — only if modal is not already showing
-      if (data.reasonCode === 'CHALLENGE_REQUIRED' || data.reasonCode === 'BLOCKED') {
+      if (
+        data.reasonCode === REASON_CODES.CHALLENGE_REQUIRED
+        || data.reasonCode === REASON_CODES.BLOCKED
+      ) {
         const secState = useSecurityStore.getState();
         if (!secState.isVisible) {
           secState.showChallenge();

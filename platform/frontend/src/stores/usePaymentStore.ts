@@ -1,6 +1,7 @@
 'use client';
 
 import { create } from 'zustand';
+import { API_PATHS, HTTP_HEADERS } from '@/contracts/http';
 
 interface PaymentState {
   orderId: string | null;
@@ -50,11 +51,11 @@ export const usePaymentStore = create<PaymentState>((set, get) => ({
 
     set({ submitting: true });
     try {
-      const res = await fetch('/api/payments', {
+      const res = await fetch(API_PATHS.PAYMENTS, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Idempotency-Key': crypto.randomUUID(),
+          [HTTP_HEADERS.CONTENT_TYPE]: HTTP_HEADERS.APPLICATION_JSON,
+          [HTTP_HEADERS.IDEMPOTENCY_KEY]: crypto.randomUUID(),
         },
         body: JSON.stringify({
           orderId: state.orderId,

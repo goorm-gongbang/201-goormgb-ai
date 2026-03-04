@@ -100,7 +100,11 @@ out/
 logs/
 **/logs/**/*.jsonl
 **/logs/**/*.log
+platform/backend/behavior_bank.jsonl
 
 # ─── AI Agent / Handover ───
 .handover/
 .gemini/
+
+# ─── Delivery Bundles (generated handoff copies) ───
+spec/delivery_bundle_*/

@@ -38,6 +38,14 @@ public class BehaviorTelemetryStore {
             Double avgVelocity,
             Double tremorStdDev,
             Double dwellTime,
+            Long moveEventCount,
+            Double segmentDurationMs,
+            Long keyDownCount,
+            Double keyHoldAvgMs,
+            Double keyIntervalCv,
+            Long backspaceCount,
+            Boolean pasteDetected,
+            Long imeCompositionCount,
             Long timestamp
     ) {
         static Snapshot from(Map<String, Object> features) {
@@ -49,6 +57,14 @@ public class BehaviorTelemetryStore {
                     asDouble(features.get("avgVelocity")),
                     asDouble(features.get("tremorStdDev")),
                     asDouble(features.get("dwellTime")),
+                    asLong(features.get("moveEventCount")),
+                    asDouble(features.get("segmentDurationMs")),
+                    asLong(features.get("keyDownCount")),
+                    asDouble(features.get("keyHoldAvgMs")),
+                    asDouble(features.get("keyIntervalCv")),
+                    asLong(features.get("backspaceCount")),
+                    asBoolean(features.get("pasteDetected")),
+                    asLong(features.get("imeCompositionCount")),
                     asLong(features.get("timestamp"))
             );
         }
@@ -78,6 +94,16 @@ public class BehaviorTelemetryStore {
             }
             return null;
         }
+
+        private static Boolean asBoolean(Object v) {
+            if (v == null) return null;
+            if (v instanceof Boolean b) return b;
+            if (v instanceof String s) {
+                String normalized = s.trim().toLowerCase();
+                if ("true".equals(normalized)) return true;
+                if ("false".equals(normalized)) return false;
+            }
+            return null;
+        }
     }
 }
-

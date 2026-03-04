@@ -1,6 +1,7 @@
 'use client';
 
 import { create } from 'zustand';
+import { API_PATHS, HTTP_HEADERS } from '@/contracts/http';
 import { getOrCreateSessionId } from '@/services/api';
 
 // ─── Types ───
@@ -120,9 +121,13 @@ export const useSeatStore = create<SeatState>((set, get) => ({
     try {
       const sessionId = getOrCreateSessionId();
       const idempotencyKey = crypto.randomUUID();
-      const res = await fetch('/api/holds', {
+      const res = await fetch(API_PATHS.HOLDS, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey, 'X-Session-Id': sessionId },
+        headers: {
+          [HTTP_HEADERS.CONTENT_TYPE]: HTTP_HEADERS.APPLICATION_JSON,
+          [HTTP_HEADERS.IDEMPOTENCY_KEY]: idempotencyKey,
+          [HTTP_HEADERS.X_SESSION_ID]: sessionId,
+        },
         body: JSON.stringify({
           sessionId, gameId: state.gameId, mode: 'RECOMMEND',
           seatBundleId: target.seatBundleId, seatIds: target.seatIds,
@@ -177,9 +182,13 @@ export const useSeatStore = create<SeatState>((set, get) => ({
       const idempotencyKey = crypto.randomUUID();
       const seatIds = state.selectedSeats.map(s => s.seatId);
 
-      const res = await fetch('/api/holds', {
+      const res = await fetch(API_PATHS.HOLDS, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey, 'X-Session-Id': sessionId },
+        headers: {
+          [HTTP_HEADERS.CONTENT_TYPE]: HTTP_HEADERS.APPLICATION_JSON,
+          [HTTP_HEADERS.IDEMPOTENCY_KEY]: idempotencyKey,
+          [HTTP_HEADERS.X_SESSION_ID]: sessionId,
+        },
         body: JSON.stringify({ sessionId, gameId: state.gameId, mode: 'MAP', seatIds }),
       });
       const data: HoldResult = await res.json();

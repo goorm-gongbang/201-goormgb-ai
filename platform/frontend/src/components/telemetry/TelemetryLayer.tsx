@@ -2,39 +2,41 @@
 
 import { useEffect, useRef } from 'react';
 
+import { API_PATHS, HTTP_HEADERS, SESSION_STORAGE_KEYS, STORAGE_KEYS } from '@/contracts/http';
+import { TELEMETRY_TRIGGERS, type TelemetryTrigger } from '@/contracts/telemetry';
 import { BehavioralSensor, type TelemetryFeature, type TelemetrySample } from '@/lib/sensor';
 
 function getSessionId(): string {
   if (typeof window === 'undefined') return 'ssr';
-  let sid = localStorage.getItem('TM_SESSION_ID');
+  let sid = localStorage.getItem(STORAGE_KEYS.TM_SESSION_ID);
   if (!sid) {
     sid = crypto.randomUUID();
-    localStorage.setItem('TM_SESSION_ID', sid);
+    localStorage.setItem(STORAGE_KEYS.TM_SESSION_ID, sid);
   }
   return sid;
 }
 
 function getCorrelationId(): string {
   if (typeof window === 'undefined') return '';
-  return sessionStorage.getItem('correlationId') || '';
+  return sessionStorage.getItem(SESSION_STORAGE_KEYS.CORRELATION_ID) || '';
 }
 
 function shouldCaptureRawTrajectory(): boolean {
   if (typeof window === 'undefined') return false;
-  return localStorage.getItem('TM_CAPTURE_RAW_TRAJ') === '1';
+  return localStorage.getItem(STORAGE_KEYS.TM_CAPTURE_RAW_TRAJ) === '1';
 }
 
 function getTrajectoryDatasetId(): string {
   if (typeof window === 'undefined') return '';
-  return localStorage.getItem('TM_TRAJ_DATASET_ID') || '';
+  return localStorage.getItem(STORAGE_KEYS.TM_TRAJ_DATASET_ID) || '';
 }
 
-async function sendBehavior(sample: TelemetrySample, trigger: string): Promise<void> {
+async function sendBehavior(sample: TelemetrySample, trigger: TelemetryTrigger): Promise<void> {
   try {
     const datasetId = sample.points && sample.points.length > 0 ? getTrajectoryDatasetId() : '';
-    await fetch('/api/telemetry/behavior', {
+    await fetch(API_PATHS.TELEMETRY_BEHAVIOR, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { [HTTP_HEADERS.CONTENT_TYPE]: HTTP_HEADERS.APPLICATION_JSON },
       body: JSON.stringify({
         sessionId: getSessionId(),
         correlationId: getCorrelationId(),
@@ -68,7 +70,7 @@ export default function TelemetryLayer(): null {
       if (!collectingRef.current) return;
       collectingRef.current = false;
       const sample = sensor.stop(e.timeStamp);
-      void sendBehavior(sample, 'click');
+      void sendBehavior(sample, TELEMETRY_TRIGGERS.CLICK);
     };
 
     const onPointerMove = (e: PointerEvent) => {
@@ -90,24 +92,56 @@ export default function TelemetryLayer(): null {
       }
     };
 
-    const stopAndSend = (trigger: string) => {
+    const stopAndSend = (trigger: TelemetryTrigger) => {
       if (!collectingRef.current) return;
       collectingRef.current = false;
       const sample = sensor.stop(performance.now());
       void sendBehavior(sample, trigger);
     };
 
-    const onPointerCancel = () => stopAndSend('cancel');
+    const onPointerCancel = () => stopAndSend(TELEMETRY_TRIGGERS.CANCEL);
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      sensor.onKeyDown(e.key, e.code, e.timeStamp, e.repeat);
+    };
+
+    const onKeyUp = (e: KeyboardEvent) => {
+      sensor.onKeyUp(e.code, e.timeStamp);
+    };
+
+    const onPaste = () => {
+      sensor.onPaste();
+    };
+
+    const onBeforeInput = (e: InputEvent) => {
+      if (e.inputType === 'insertFromPaste' || e.inputType === 'insertFromPasteAsQuotation') {
+        sensor.onPaste();
+      }
+    };
+
+    const onCompositionStart = () => {
+      sensor.onCompositionStart();
+    };
 
     // Capture phase to observe events regardless of component structure.
     window.addEventListener('pointerdown', onPointerDown, true);
     window.addEventListener('pointermove', onPointerMove, true);
     window.addEventListener('pointercancel', onPointerCancel, true);
+    window.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('keyup', onKeyUp, true);
+    document.addEventListener('paste', onPaste, true);
+    document.addEventListener('beforeinput', onBeforeInput, true);
+    document.addEventListener('compositionstart', onCompositionStart, true);
 
     return () => {
       window.removeEventListener('pointerdown', onPointerDown, true);
       window.removeEventListener('pointermove', onPointerMove, true);
       window.removeEventListener('pointercancel', onPointerCancel, true);
+      window.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('keyup', onKeyUp, true);
+      document.removeEventListener('paste', onPaste, true);
+      document.removeEventListener('beforeinput', onBeforeInput, true);
+      document.removeEventListener('compositionstart', onCompositionStart, true);
     };
   }, []);
 

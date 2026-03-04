@@ -7,6 +7,8 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.trafficmaster.contract.ReasonCodes;
+import com.trafficmaster.contract.TmHeaders;
 import com.trafficmaster.dto.PaymentRequest;
 import com.trafficmaster.dto.PaymentResponse;
 import com.trafficmaster.seat.PaymentService;
@@ -27,15 +29,15 @@ public class PaymentController {
     @PostMapping
     public ResponseEntity<PaymentResponse> processPayment(
             @Valid @RequestBody PaymentRequest request,
-            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
-            @RequestHeader(value = "X-TM-PaymentFailRate", required = false) String failRateHeader) {
+            @RequestHeader(value = TmHeaders.IDEMPOTENCY_KEY, required = false) String idempotencyKey,
+            @RequestHeader(value = TmHeaders.X_TM_PAYMENT_FAIL_RATE, required = false) String failRateHeader) {
 
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             return ResponseEntity.badRequest().body(
                     PaymentResponse.builder()
                             .orderId(request.getOrderId())
                             .status("FAILED")
-                            .reasonCode("MISSING_IDEMPOTENCY_KEY")
+                            .reasonCode(ReasonCodes.MISSING_IDEMPOTENCY_KEY)
                             .build());
         }
 

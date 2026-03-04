@@ -11,6 +11,8 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 import com.trafficmaster.audit.AuditEvent;
 import com.trafficmaster.audit.DecisionAuditLogger;
+import com.trafficmaster.contract.ReasonCodes;
+import com.trafficmaster.contract.TmHeaders;
 import com.trafficmaster.security.RiskControlService;
 import com.trafficmaster.security.RiskDecision;
 
@@ -58,26 +60,26 @@ public class TestModeConfig implements WebMvcConfigurer {
             request.setAttribute("tm.test.mode", true);
 
             // X-TM-QueueWaitMs → queue wait override
-            String queueWait = request.getHeader("X-TM-QueueWaitMs");
+            String queueWait = request.getHeader(TmHeaders.X_TM_QUEUE_WAIT_MS);
             if (queueWait != null) {
                 request.setAttribute("tm.test.queueWaitMs", Long.parseLong(queueWait));
             }
 
             // X-TM-HoldFailRate → hold failure rate
-            String holdFail = request.getHeader("X-TM-HoldFailRate");
+            String holdFail = request.getHeader(TmHeaders.X_TM_HOLD_FAIL_RATE);
             if (holdFail != null) {
                 request.setAttribute("tm.test.holdFailRate", Double.parseDouble(holdFail));
             }
 
             // X-TM-PaymentFailRate → payment failure rate
-            String payFail = request.getHeader("X-TM-PaymentFailRate");
+            String payFail = request.getHeader(TmHeaders.X_TM_PAYMENT_FAIL_RATE);
             if (payFail != null) {
                 request.setAttribute("tm.test.paymentFailRate", Double.parseDouble(payFail));
             }
 
             // X-TM-ForceChallenge → force security challenge
             // Default to TRUE in test mode for S7 demo (unless explicitly disabled)
-            String forceChallengeHeader = request.getHeader("X-TM-ForceChallenge");
+            String forceChallengeHeader = request.getHeader(TmHeaders.X_TM_FORCE_CHALLENGE);
             boolean forceChallenge = forceChallengeHeader == null || "true".equalsIgnoreCase(forceChallengeHeader);
             
             String uri = request.getRequestURI();
@@ -87,7 +89,7 @@ public class TestModeConfig implements WebMvcConfigurer {
 
             // Defense gating: telemetry-based risk decision (AC-4).
             if (isSeatEntry) {
-                String sessionId = request.getHeader("X-Session-Id");
+                String sessionId = request.getHeader(TmHeaders.X_SESSION_ID);
                 if (sessionId != null && !sessionId.isBlank()) {
                     RiskDecision decision = riskControlService.decide(sessionId);
                     if (decision == RiskDecision.BLOCKED) {
@@ -107,7 +109,7 @@ public class TestModeConfig implements WebMvcConfigurer {
                                         .build())
                                 .result(AuditEvent.Result.builder()
                                         .status("FAIL")
-                                        .reasonCode("BLOCKED")
+                                        .reasonCode(ReasonCodes.BLOCKED)
                                         .build())
                                 .build());
 
@@ -131,7 +133,7 @@ public class TestModeConfig implements WebMvcConfigurer {
                                         .build())
                                 .result(AuditEvent.Result.builder()
                                         .status("FAIL")
-                                        .reasonCode("CHALLENGE_REQUIRED")
+                                        .reasonCode(ReasonCodes.CHALLENGE_REQUIRED)
                                         .build())
                                 .build());
 
@@ -147,7 +149,7 @@ public class TestModeConfig implements WebMvcConfigurer {
                 
                 // Enforce challenge on specific Seat-related entry points
                 if (isSeatEntry) {
-                    String sessionId = request.getHeader("X-Session-Id");
+                    String sessionId = request.getHeader(TmHeaders.X_SESSION_ID);
                     boolean verified = sessionId != null && securityService.isVerified(sessionId);
                     
                     log.info("[TestMode] Checking verification for session {}: {}", sessionId, verified);

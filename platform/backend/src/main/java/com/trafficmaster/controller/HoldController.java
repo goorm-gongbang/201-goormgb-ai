@@ -9,6 +9,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.trafficmaster.dto.HoldRequest;
 import com.trafficmaster.dto.HoldResponse;
+import com.trafficmaster.contract.ReasonCodes;
+import com.trafficmaster.contract.TmHeaders;
 import com.trafficmaster.seat.SeatService;
 
 import jakarta.validation.Valid;
@@ -27,14 +29,14 @@ public class HoldController {
 
     @PostMapping
     public ResponseEntity<HoldResponse> holdSeats(
-            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+            @RequestHeader(value = TmHeaders.IDEMPOTENCY_KEY, required = false) String idempotencyKey,
             @Valid @RequestBody HoldRequest request) {
 
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             return ResponseEntity.badRequest().body(
                     HoldResponse.builder()
                             .status("FAIL")
-                            .reason("MISSING_IDEMPOTENCY_KEY")
+                            .reason(ReasonCodes.MISSING_IDEMPOTENCY_KEY)
                             .build()
             );
         }

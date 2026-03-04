@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
+import { API_PATHS, HTTP_HEADERS } from '@/contracts/http';
 import { useSeatStore, type SeatBundle } from '@/stores/useSeatStore';
 import { api } from '@/services/apiClient';
 import { useSecurityStore } from '@/stores/useSecurityStore';
@@ -59,9 +60,12 @@ export default function RecommendPanel({ gameId }: RecommendPanelProps) {
       const result = await submitHold(recommendations[0]);
       if (result.status === 'SUCCESS' && result.holdId) {
         // Create order and navigate
-        const orderRes = await fetch('/api/orders', {
+        const orderRes = await fetch(API_PATHS.ORDERS, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Session-Id': getOrCreateSessionId() },
+          headers: {
+            [HTTP_HEADERS.CONTENT_TYPE]: HTTP_HEADERS.APPLICATION_JSON,
+            [HTTP_HEADERS.X_SESSION_ID]: getOrCreateSessionId(),
+          },
           body: JSON.stringify({ holdId: result.holdId }),
         });
         const order = await orderRes.json();
@@ -183,9 +187,12 @@ export default function RecommendPanel({ gameId }: RecommendPanelProps) {
             if (!selectedRecommendation) return;
             const result = await submitHold();
             if (result.status === 'SUCCESS' && result.holdId) {
-              const orderRes = await fetch('/api/orders', {
+              const orderRes = await fetch(API_PATHS.ORDERS, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-Session-Id': getOrCreateSessionId() },
+                headers: {
+                  [HTTP_HEADERS.CONTENT_TYPE]: HTTP_HEADERS.APPLICATION_JSON,
+                  [HTTP_HEADERS.X_SESSION_ID]: getOrCreateSessionId(),
+                },
                 body: JSON.stringify({ holdId: result.holdId }),
               });
               const order = await orderRes.json();

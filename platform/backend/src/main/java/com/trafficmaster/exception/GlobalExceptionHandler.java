@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import com.trafficmaster.audit.AuditEvent;
 import com.trafficmaster.audit.DecisionAuditLogger;
+import com.trafficmaster.contract.ReasonCodes;
 
 import lombok.RequiredArgsConstructor;
 
@@ -61,7 +62,7 @@ public class GlobalExceptionHandler {
         return ResponseEntity.badRequest()
                 .body(Map.of(
                         "status", "FAIL",
-                        "reasonCode", "VALIDATION_ERROR",
+                        "reasonCode", ReasonCodes.VALIDATION_ERROR,
                         "message", detail));
     }
 
@@ -78,7 +79,7 @@ public class GlobalExceptionHandler {
                 .actor("SYSTEM")
                 .result(AuditEvent.Result.builder()
                         .status("FAIL")
-                        .reasonCode("INTERNAL_ERROR")
+                        .reasonCode(ReasonCodes.INTERNAL_ERROR)
                         .build())
                 .payload(Map.of("message", ex.getMessage() != null ? ex.getMessage() : "Unknown error"))
                 .build());
@@ -86,7 +87,7 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(500)
                 .body(Map.of(
                         "status", "FAIL",
-                        "reasonCode", "INTERNAL_ERROR",
+                        "reasonCode", ReasonCodes.INTERNAL_ERROR,
                         "message", "서버 내부 오류가 발생했습니다."));
     }
 }
