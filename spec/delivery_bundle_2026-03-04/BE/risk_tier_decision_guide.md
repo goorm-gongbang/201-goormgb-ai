@@ -84,11 +84,15 @@
 
 - `x-defense-policy-version`
 - `x-defense-action`
-  - `blocked`
+  - `none`
+  - `throttle`
   - `challenge`
+  - `honey`
   - `sandbox`
+  - `block`
+- `x-defense-actions` (복수 액션, optional)
 - `x-defense-tier`
-- `x-block-reason` (blocked 시)
+- `x-block-reason` (block 시)
 - `x-challenge-type` (challenge 시, 현재 `quiz`)
 
 ## 5) LLM 호출 위치(현재/목표)

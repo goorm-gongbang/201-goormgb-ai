@@ -85,9 +85,11 @@ S6 규칙:
 
 - `DEF_CHALLENGE_FORCED` -> 403 + `x-defense-action: challenge`
 - Challenge active 중 high-value 재요청 -> 428 + `CHALLENGE_REQUIRED` (app gating)
-- `DEF_BLOCKED` -> 403 + `x-defense-action: blocked`
-- `DEF_THROTTLED` -> 200 + `x-defense-action: throttled`
+- `DEF_THROTTLED` -> 200 + `x-defense-action: throttle`
+- `DEF_HONEY_SEAT_INJECTED` -> 200 + `x-defense-action: honey`
 - `DEF_SANDBOXED` -> 200 + `x-defense-action: sandbox`
+- `DEF_BLOCKED` -> 403 + `x-defense-action: block`
+- `DEF_HONEY_TRIGGERED` -> 403 + `x-defense-action: block`, `x-block-reason: honey_triggered`
 
 참조:
 

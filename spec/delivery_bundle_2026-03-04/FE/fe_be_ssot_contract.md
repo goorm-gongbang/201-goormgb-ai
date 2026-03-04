@@ -88,12 +88,14 @@
 
 ## 5) 방어 헤더 계약(Cloud/FE 공용)
 
-- `x-defense-action`: `none | challenge | blocked | throttled | sandbox`
+- `x-defense-action`: `none | throttle | challenge | honey | sandbox | block`
+- `x-defense-actions`: `comma-separated multi actions` (optional)
 - `x-defense-tier`: `T0 | T1 | T2 | T3`
 - `x-defense-policy-version`: 정책 버전
 - `x-block-reason`: 차단 사유
 - `x-challenge-type`: 현재 mock은 `quiz`
 - 상태코드 해석: edge deny는 `403`, challenge active 중 app gating은 `428 CHALLENGE_REQUIRED`
+- multi-action 우선순위: `block > challenge > throttle > honey > sandbox > none`
 
 주의:
 - 헤더 "키 이름"은 고정

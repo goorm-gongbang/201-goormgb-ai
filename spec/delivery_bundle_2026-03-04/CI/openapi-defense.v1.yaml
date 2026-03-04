@@ -11,6 +11,7 @@ x-contract-governance:
   - request/response field names
   - enum values (flow_state, defense_tier, action)
   - response header keys carried in headers_to_add
+  - x-defense-action vocabulary (none|throttle|challenge|honey|sandbox|block)
   tunable:
   - threshold and budget values used by policy engine
   - policy_version string
@@ -247,6 +248,8 @@ components:
             - DEF_BLOCKED
             - DEF_CHALLENGE_FORCED
             - DEF_THROTTLED
+            - DEF_HONEY_SEAT_INJECTED
+            - DEF_HONEY_TRIGGERED
             - DEF_SANDBOXED
           - type: 'null'
           title: Action
@@ -275,6 +278,10 @@ components:
             type: string
           type: object
           title: Headers To Add
+          description: |
+            Response headers to be propagated by adapter/envoy.
+            x-defense-action primary values: none|throttle|challenge|honey|sandbox|block
+            x-defense-actions optional multi-action list (comma-separated), e.g. "throttle,challenge".
         decision_id:
           type: string
           title: Decision Id
