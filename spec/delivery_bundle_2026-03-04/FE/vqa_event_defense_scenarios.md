@@ -84,13 +84,15 @@ S6 규칙:
 ## 5) 방어 액션 매핑
 
 - `DEF_CHALLENGE_FORCED` -> 403 + `x-defense-action: challenge`
+- Challenge active 중 high-value 재요청 -> 428 + `CHALLENGE_REQUIRED` (app gating)
 - `DEF_BLOCKED` -> 403 + `x-defense-action: blocked`
+- `DEF_THROTTLED` -> 200 + `x-defense-action: throttled`
 - `DEF_SANDBOXED` -> 200 + `x-defense-action: sandbox`
 
 참조:
 
 - `src/traffic_master_ai/defense/api/policy.py`
-- `spec/defense_api/openapi-defense.v1.yaml`
+- `spec/delivery_bundle_2026-03-04/CI/openapi-defense.v1.yaml`
 
 ## 6) 예시 시나리오
 

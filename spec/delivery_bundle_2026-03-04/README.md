@@ -8,6 +8,7 @@
 
 원본 문서는 `spec/` 및 `src/` 경로에 있습니다.
 번들 전체 가변값 정책은 `CONFIGURABILITY_POLICY.md`를 기준으로 합니다.
+문서 충돌 시 `DEFENSE_CONSISTENCY_LOCK_V1.md`를 우선 적용합니다.
 
 ## Contract Governance (중요)
 

@@ -31,16 +31,16 @@ Key pattern:
 `tm:sess:{sessionId}`
 
 Fields:
-- `flowState`
-- `defenseTier`
-- `riskScore`
-- `probationUntilMs`
-- `challengeFailCount`
-- `seatTakenStreak`
-- `holdFailStreak`
-- `heavyBudgetLeft`
-- `replanBudgetLeft`
-- `policyVersion`
+- `flow_state`
+- `defense_tier`
+- `risk_score`
+- `probation_until_ms`
+- `challenge_fail_count`
+- `seat_taken_streak`
+- `hold_fail_streak`
+- `heavy_budget_left`
+- `replan_budget_left`
+- `policy_version`
 
 TTL:
 - `TM_SESSION_STATE_TTL_SECONDS` (baseline 1800, tunable)

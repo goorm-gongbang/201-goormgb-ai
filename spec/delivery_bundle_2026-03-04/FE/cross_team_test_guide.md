@@ -47,7 +47,7 @@ curl "http://localhost:${TM_AI_DEFENSE_PORT:-8000}/meta/storage"
 
 기준 파일:
 
-- `spec/defense_api/openapi-defense.v1.yaml`
+- `spec/delivery_bundle_2026-03-04/CI/openapi-defense.v1.yaml`
 
 ## 3) 공격 에이전트 E2E 실행
 

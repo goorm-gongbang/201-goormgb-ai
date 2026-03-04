@@ -6,12 +6,12 @@
 - Note: 문서의 포트 값(`8000`)은 baseline 예시입니다.
 
 ## Files
-- OpenAPI contract: `/Users/jangjihyeon/201-goormgb-ai/spec/defense_api/openapi-defense.v1.yaml`
-- Mock service code: `/Users/jangjihyeon/201-goormgb-ai/src/traffic_master_ai/defense/api/main.py`
-- Dockerfile: `/Users/jangjihyeon/201-goormgb-ai/src/traffic_master_ai/defense/api/Dockerfile`
-- Postgres schema (analytics): `/Users/jangjihyeon/201-goormgb-ai/spec/defense_api/postgres_schema.sql`
-- Verification SQL: `/Users/jangjihyeon/201-goormgb-ai/spec/defense_api/verification_queries.sql`
-- Storage strategy: `/Users/jangjihyeon/201-goormgb-ai/spec/defense_api/storage_strategy.md`
+- OpenAPI contract: `/Users/jangjihyeon/201-goormgb-ai/spec/delivery_bundle_2026-03-04/CI/openapi-defense.v1.yaml`
+- Mock service code: `/Users/jangjihyeon/201-goormgb-ai/spec/delivery_bundle_2026-03-04/CI/ai_defense_api_main.py`
+- Dockerfile: `/Users/jangjihyeon/201-goormgb-ai/spec/delivery_bundle_2026-03-04/CI/Dockerfile.ai-defense`
+- Postgres schema (analytics): `/Users/jangjihyeon/201-goormgb-ai/spec/delivery_bundle_2026-03-04/CI/postgres_schema.sql`
+- Verification SQL: `/Users/jangjihyeon/201-goormgb-ai/spec/delivery_bundle_2026-03-04/CI/verification_queries.sql`
+- Storage strategy: `/Users/jangjihyeon/201-goormgb-ai/spec/delivery_bundle_2026-03-04/CI/storage_strategy.md`
 
 ## Run
 ```bash

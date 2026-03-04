@@ -84,15 +84,16 @@
 
 상세 payload는 별도 문서:
 
-- `spec/integration/telemetry_payload_guide.md`
+- `spec/delivery_bundle_2026-03-04/FE/telemetry_payload_guide.md`
 
 ## 5) 방어 헤더 계약(Cloud/FE 공용)
 
-- `x-defense-action`: `challenge | blocked | sandbox`
+- `x-defense-action`: `none | challenge | blocked | throttled | sandbox`
 - `x-defense-tier`: `T0 | T1 | T2 | T3`
 - `x-defense-policy-version`: 정책 버전
 - `x-block-reason`: 차단 사유
 - `x-challenge-type`: 현재 mock은 `quiz`
+- 상태코드 해석: edge deny는 `403`, challenge active 중 app gating은 `428 CHALLENGE_REQUIRED`
 
 주의:
 - 헤더 "키 이름"은 고정
@@ -101,7 +102,7 @@
 참조:
 
 - `src/traffic_master_ai/defense/api/policy.py`
-- `spec/defense_api/openapi-defense.v1.yaml`
+- `spec/delivery_bundle_2026-03-04/CI/openapi-defense.v1.yaml`
 
 ## 6) 변경 승인 체크리스트
 
