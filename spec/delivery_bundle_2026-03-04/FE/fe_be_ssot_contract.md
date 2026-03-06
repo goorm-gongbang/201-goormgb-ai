@@ -100,6 +100,7 @@
 주의:
 - 헤더 "키 이름"은 고정
 - 헤더 "값의 정책 기준(언제 challenge/block)"은 운영 가변
+- v1 고정 정책: challenge는 Queue 통과 직후 1회에서만 사용하며, 세션 중 tier 상승만으로 추가 challenge를 발동하지 않음
 
 참조:
 

@@ -10,6 +10,10 @@
 번들 전체 가변값 정책은 `CONFIGURABILITY_POLICY.md`를 기준으로 합니다.
 문서 충돌 시 `DEFENSE_CONSISTENCY_LOCK_V1.md`를 우선 적용합니다.
 
+VQA 정책 고정(v1):
+- Queue 통과 직후 1회 고정 challenge
+- 세션 진행 중 tier 상승만으로 추가 challenge 금지
+
 ## Contract Governance (중요)
 
 이 번들의 숫자/포트/임계값은 아래 규칙으로 해석합니다.

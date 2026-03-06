@@ -5,13 +5,13 @@
 ## 0) Contract vs Tunable
 
 - Fixed:
-  - 이벤트명(`VQA_CHALLENGE_*`, `VQA_ESCALATION_TRIGGERED`)
+  - 이벤트명(`VQA_CHALLENGE_*`)
   - 필수 식별자 필드(`session_id`, `challenge_id`, `ts_ms`)
+  - Queue 통과 직후 1회 고정 VQA
+  - 세션 중 추가 VQA 금지
   - S6 신규 개입 금지 원칙
 - Tunable:
-  - 챌린지 삽입 타이밍
   - 최대 시도 횟수/TTL
-  - escalation 비율
   - 챌린지 타입/난이도
 
 문서 내 값은 baseline이며 운영 데이터로 조정 가능합니다.
@@ -50,16 +50,17 @@
 
 ## 3) 목표 구현(MVP-1)
 
-### Baseline VQA (baseline policy)
+### Queue Gate VQA (fixed policy)
 
 - 삽입 시점: S2 -> S3 (Queue 통과 직후)
-- 목적: 기본 인간 검증
+- 대상: 사람/봇/AI 포함 전원
+- 횟수: 세션당 1회 고정
+- 목적: 입장 관문 검증(기본 인간 검증)
 
-### Escalation VQA (baseline policy)
+### Mid-session rule (fixed policy)
 
-- 삽입 시점: S1/S2/S4/S4R/S5/S5R 중 결제(S6) 이전
-- 트리거: Tier 상승 또는 규칙 적중
-- 목적: 의심 세션에 추가 검증
+- S4/S4R/S5/S5R 진행 중 tier 상승(T1/T2/T3)만으로 추가 VQA를 삽입하지 않음
+- 의심 세션 대응은 `throttle/sandbox/honey/block`로 처리
 
 S6 규칙:
 
@@ -78,13 +79,11 @@ S6 규칙:
   - `session_id`, `challenge_id`, `attempt`, `ts_ms`
 - `VQA_CHALLENGE_FAILED`
   - `session_id`, `challenge_id`, `attempt`, `reason_code`, `ts_ms`
-- `VQA_ESCALATION_TRIGGERED`
-  - `session_id`, `tier_from`, `tier_to`, `trigger_rules`, `ts_ms`
 
 ## 5) 방어 액션 매핑
 
-- `DEF_CHALLENGE_FORCED` -> 403 + `x-defense-action: challenge`
-- Challenge active 중 high-value 재요청 -> 428 + `CHALLENGE_REQUIRED` (app gating)
+- `DEF_CHALLENGE_FORCED` -> 403 + `x-defense-action: challenge` (queue gate 1회에서만 사용)
+- Queue gate challenge active 중 high-value 재요청 -> 428 + `CHALLENGE_REQUIRED` (app gating)
 - `DEF_THROTTLED` -> 200 + `x-defense-action: throttle`
 - `DEF_HONEY_SEAT_INJECTED` -> 200 + `x-defense-action: honey`
 - `DEF_SANDBOXED` -> 200 + `x-defense-action: sandbox`
@@ -104,12 +103,12 @@ S6 규칙:
 2. `VQA_CHALLENGE_ISSUED(inserted_at_stage=S3)`
 3. 통과 후 S4로 복귀
 
-### Scenario B: Escalation before hold
+### Scenario B: Suspicious but no mid-session VQA
 
 1. S4/S5에서 반복 패턴 누적
 2. Tier가 T1 -> T2
-3. `DEF_CHALLENGE_FORCED`
-4. VQA 통과 시 기존 단계로 복귀, 실패 누적 시 차단
+3. `DEF_SANDBOXED` 또는 `DEF_THROTTLED`
+4. 추가 VQA 없이 기존 흐름 유지(필요 시 차단만 수행)
 
 ### Scenario C: Hard block
 
@@ -120,5 +119,5 @@ S6 규칙:
 
 1. `inserted_at_stage`와 `challenge_level` 필드 표준 확정
 2. 챌린지 TTL/최대 시도 횟수 확정
-3. Baseline/Escalation 비율과 UX 영향 지표 동시 추적
+3. "Queue Gate 1회 정책 준수율"과 UX 영향 지표 동시 추적
 4. TTL/max-attempts/난이도는 ENV 또는 정책 스냅샷으로 외부화

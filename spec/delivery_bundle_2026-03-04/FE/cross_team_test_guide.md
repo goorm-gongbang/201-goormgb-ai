@@ -97,7 +97,7 @@ curl -X POST "http://localhost:${TM_AI_DEFENSE_PORT:-8000}/evaluate" \
     "timestamp": 1772500000000,
     "headers": {"x-forwarded-for": "1.2.3.4"},
     "flow_state": "S5",
-    "defense_tier": "T1",
+    "defense_tier": "T2",
     "repetitive_pattern_count": 3,
     "challenge_fail_count": 0,
     "token_mismatch": false
@@ -106,9 +106,9 @@ curl -X POST "http://localhost:${TM_AI_DEFENSE_PORT:-8000}/evaluate" \
 
 기대:
 
-- `allow=false`
-- `action=DEF_CHALLENGE_FORCED`
-- `headers_to_add.x-defense-action=challenge`
+- mid-session(step-up) 기준으로 `DEF_CHALLENGE_FORCED`를 기대하지 않음
+- `action`은 정책 스냅샷에 따라 `DEF_SANDBOXED`/`DEF_THROTTLED`/`DEF_BLOCKED` 중 하나
+- `headers_to_add.x-defense-action`은 `sandbox|throttle|block` 범위에서 확인
 
 ## 6) 회귀 체크리스트
 
@@ -117,7 +117,7 @@ curl -X POST "http://localhost:${TM_AI_DEFENSE_PORT:-8000}/evaluate" \
 3. telemetry audit row 생성
 4. raw trajectory row 생성(옵션)
 5. defense API openapi/health 정상
-6. 차단/챌린지 헤더 규약 유지
+6. Queue 통과 직후 1회 challenge + mid-session no-challenge 규약 유지
 
 ## 7) 실패 시 우선 확인
 

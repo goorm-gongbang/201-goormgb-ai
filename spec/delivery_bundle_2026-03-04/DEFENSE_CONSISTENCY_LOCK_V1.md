@@ -4,7 +4,7 @@
 
 적용 범위:
 - Istio `ext_authz` + Authz Adapter + AI Defense API 구조
-- 티켓팅 보호 경로(S1~S6, challenge overlay 포함)
+- 티켓팅 보호 경로(S1~S6, queue gate challenge 포함)
 
 ---
 
@@ -25,9 +25,10 @@
 | 항목 | 최종 고정값 | 비고 |
 |---|---|---|
 | AI 판정 API 경로 | `POST /evaluate` | Adapter가 호출하는 단일 경로 |
-| Challenge 상태코드 (edge deny) | `403` + `x-defense-action=challenge` | ext_authz deny 응답 |
-| Challenge 상태코드 (app gating) | `428 CHALLENGE_REQUIRED` | challenge active 중 high-value 재요청 차단 시 허용 |
+| Challenge 상태코드 (edge deny) | `403` + `x-defense-action=challenge` | queue gate 1회 VQA 발급 시에만 사용 |
+| Challenge 상태코드 (app gating) | `428 CHALLENGE_REQUIRED` | queue gate challenge active 중 high-value 재요청 차단 |
 | Block 상태코드 | `403` + `x-defense-action=block` | 공통 |
+| VQA 삽입 정책 | `Queue 통과 직후 1회 고정` | 전원 대상(사람/봇/AI), 세션 중 추가 VQA 금지 |
 | 헤더 키 표기 | 소문자 canonical (`x-session-id`, `x-trace-id`, `x-defense-*`) | 프레임워크별 대소문자 normalize 허용 |
 | Evaluate JSON 키 | `snake_case` | 예: `session_id`, `trace_id`, `flow_state` |
 | Redis 필드명 | `snake_case` | 예: `risk_score`, `challenge_fail_count` |
@@ -51,6 +52,10 @@
 - `x-challenge-type` (optional)
 - `x-block-reason` (block 시 optional)
 
+주의:
+- `challenge`는 queue gate 1회 정책에서만 사용
+- tier 상승(T1/T2/T3)만으로 세션 중 추가 challenge를 발동하지 않음
+
 ### 3.3 Multi-action 우선순위
 - primary action 결정 우선순위:
   - `block > challenge > throttle > honey > sandbox > none`
@@ -72,8 +77,8 @@
   - `/evaluate` 판정과 정책 헤더 반환
   - runtime state(예: Redis) 업데이트
 - Backend:
-  - `/challenge/issue`, `/challenge/verify` 실행 책임
-  - challenge active 중 high-value gating(428) 책임
+  - `/challenge/issue`, `/challenge/verify` 실행 책임 (queue gate 1회)
+  - queue gate challenge active 중 high-value gating(428) 책임
 - Cloud(Adapter/Istio):
   - ext_authz 연동, allow/deny 적용, 헤더 전달 책임
 - Frontend:

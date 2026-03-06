@@ -4,6 +4,7 @@ info:
   description: Mock/stub API for cloud ext_authz integration. Deterministic rule-based
     decisions until full defense engine rollout. Contract field names/enums are fixed;
     defaults and policy numeric values are baseline and tunable by environment/policy snapshot.
+    VQA policy v1 is fixed to queue-gate-once (no mid-session step-up challenge).
   version: v1
 x-contract-governance:
   fixed:
@@ -17,6 +18,12 @@ x-contract-governance:
   - policy_version string
   - runtime host/port and path prefix routing
   - strict path prefixes
+x-vqa-policy:
+  fixed_mode: queue_gate_once
+  rules:
+  - all sessions must solve one VQA immediately after queue pass
+  - no additional VQA injection during S4/S4R/S5/S5R by tier escalation
+  - S6 allows block only (no new challenge)
 paths:
   /healthz:
     get:
@@ -253,6 +260,9 @@ components:
             - DEF_SANDBOXED
           - type: 'null'
           title: Action
+          description: |
+            DEF_CHALLENGE_FORCED is reserved for queue-gate one-time VQA issuance.
+            In v1, tier escalation during active session does not emit additional challenge.
         reason:
           anyOf:
           - type: string
@@ -282,6 +292,7 @@ components:
             Response headers to be propagated by adapter/envoy.
             x-defense-action primary values: none|throttle|challenge|honey|sandbox|block
             x-defense-actions optional multi-action list (comma-separated), e.g. "throttle,challenge".
+            challenge is used for queue-gate one-time VQA only in v1.
         decision_id:
           type: string
           title: Decision Id

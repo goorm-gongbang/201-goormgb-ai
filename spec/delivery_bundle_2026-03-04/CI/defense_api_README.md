@@ -4,6 +4,7 @@
 - Fixed: OpenAPI schema (field/type/enum), response header keys, endpoint semantics.
 - Tunable: runtime port/host, policy version string, threshold values in policy engine.
 - Note: 문서의 포트 값(`8000`)은 baseline 예시입니다.
+- VQA policy v1: Queue 통과 직후 1회 고정 challenge, 세션 중 tier 기반 추가 challenge 금지.
 
 ## Files
 - OpenAPI contract: `/Users/jangjihyeon/201-goormgb-ai/spec/delivery_bundle_2026-03-04/CI/openapi-defense.v1.yaml`

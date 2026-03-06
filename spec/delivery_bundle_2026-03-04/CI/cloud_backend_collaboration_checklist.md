@@ -45,6 +45,7 @@
 
 - 마감: 2026-03-05 오전
 - 상태: DONE
+- 정책 잠금: Queue 통과 직후 1회 고정 challenge, 세션 중 tier 기반 추가 challenge 금지
 - 전달물:
   - `spec/delivery_bundle_2026-03-04/FE/vqa_event_defense_scenarios.md`
 
