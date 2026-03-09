@@ -83,10 +83,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run -d --rm \
+          docker run -d \
             --name ai-defense-smoke \
             -p "${SMOKE_PORT}:${CONTAINER_PORT}" \
             "${{ steps.meta.outputs.image_sha_tag }}"
+
+          cleanup() {
+            docker logs ai-defense-smoke >/tmp/ai-defense-smoke.log 2>&1 || true
+            docker rm -f ai-defense-smoke >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
 
           for i in $(seq 1 30); do
             if curl -fsS "http://127.0.0.1:${SMOKE_PORT}/healthz" >/dev/null 2>&1; then
@@ -97,7 +103,7 @@ jobs:
           done
 
           echo "Healthz check failed. Container logs:"
-          docker logs ai-defense-smoke || true
+          cat /tmp/ai-defense-smoke.log || true
           exit 1
 
       - name: Login to GHCR
