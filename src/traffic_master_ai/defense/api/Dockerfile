@@ -1,7 +1,6 @@
 FROM python:3.12-slim
 
 WORKDIR /app
-ENV PYTHONPATH=/app/src
 RUN pip install --no-cache-dir fastapi uvicorn pydantic
 
 COPY src ./src
