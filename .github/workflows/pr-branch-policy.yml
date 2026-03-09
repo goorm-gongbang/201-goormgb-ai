@@ -1,4 +1,4 @@
-name: PR branch policy (dev-only merge, dev->main release)
+name: "PR branch policy (promotion: dev -> staging -> prod)"
 
 on:
   pull_request:
@@ -22,17 +22,28 @@ jobs:
             exit 0
           fi
 
-          # Allow dev -> main only (release)
-          if [ "$BASE" = "main" ]; then
+          # Allow dev -> staging only
+          if [ "$BASE" = "staging" ]; then
             if [ "$HEAD" = "dev" ]; then
-              echo "✅ Allowed: dev -> main."
+              echo "✅ Allowed: dev -> staging."
               exit 0
             fi
-            echo "❌ Blocked: Only dev -> main PRs are allowed."
-            echo "👉 Please retarget this PR to 'dev'."
+            echo "❌ Blocked: Only dev -> staging PRs are allowed."
+            echo "👉 Please merge into 'dev' first, then promote to 'staging'."
             exit 1
           fi
 
-          # Block everything else (e.g., feat -> feat)
-          echo "❌ Blocked: PR base must be 'dev' (or 'main' only from 'dev')."
+          # Allow staging -> prod only
+          if [ "$BASE" = "prod" ]; then
+            if [ "$HEAD" = "staging" ]; then
+              echo "✅ Allowed: staging -> prod."
+              exit 0
+            fi
+            echo "❌ Blocked: Only staging -> prod PRs are allowed."
+            echo "👉 Please merge into 'staging' first, then promote to 'prod'."
+            exit 1
+          fi
+
+          # Block everything else (e.g., feat -> feat, direct -> main)
+          echo "❌ Blocked: PR base must be one of dev/staging/prod."
           exit 1
