@@ -1,0 +1,235 @@
+# Specs/Defense/policy/policy_v1.yaml
+# Traffic-Master Defense Policy SSOT (Runtime-readable + Rollout)
+# v2.0.0-mvp  (patched for MVP decisions: throttle scope, block key, S3 grace)
+
+meta:
+  schema: "policy.v1"
+  policyVersion: "v2.0.0-mvp"
+  createdAt: "2026-03-08T22:10:00+09:00"
+  ownerTeam: "defense-runtime"
+  description: "MVP baseline policy + rollout contract (runtime LLM off, fixed S3, throttle delay, block deny)"
+  precedence_refs:
+    - "Specs/Defense/L0/l0_core.yaml"
+    - "Specs/Defense/L0/l0_defense_policy.yaml"
+    - "Specs/Defense/L1/runtime/contracts.yaml"
+    - "Specs/Defense/L1/runtime/logic.yaml"
+    - "Specs/Defense/L2/observability/defense_observability_ssot.yaml"
+    - "Specs/Defense/L2/optimization/defense_policy_optimization_ssot.yaml"
+
+flags:
+  runtime_llm_enabled: false
+  dynamic_challenge_enabled: false
+  honey_enabled: false
+  gate_enabled: false
+  sandbox_enabled: false
+  s3_challenge_fixed: true
+
+rollout:
+  versioning:
+    format: "v{major}.{minor}.{patch}-{tag?}"
+    rules:
+      - "policy 파라미터 변경 시 patch +1"
+      - "tag는 선택(mvp/canary/hotfix 등)"
+      - "선택된 policyVersion은 x-defense-policy-version 및 decision_audit에 반드시 기록"
+    examples: ["v2.0.0-mvp", "v2.0.1-canary", "v2.0.1"]
+
+  storage_contract:
+    required_capabilities:
+      - "fetch_policy_by_version(version) -> policy doc"
+      - "get_rollout_state() -> rollout_state"
+      - "set_rollout_state(rollout_state) -> persist"
+    recommended_keys_if_redis:
+      - "tm:policy:current_version"
+      - "tm:policy:version:{policyVersion}"
+      - "tm:policy:rollout_state"
+
+  rollout_state:
+    schema:
+      stage: "NONE|CANARY|EXPAND|ROLLED_BACK|FULL"
+      base_policy_version: "string"
+      candidate_policy_version: "string|null"
+      ratio: "float (0..1)"
+      updated_at_ms: "epoch_ms"
+    default:
+      stage: "FULL"
+      base_policy_version: "v2.0.0-mvp"
+      candidate_policy_version: null
+      ratio: 0.0
+
+  assignment:
+    unit: "sessionId"
+    method: "hash_mod"
+    salt_env: "TM_ROLLOUT_SALT"
+    deterministic: true
+    algorithm: |
+      if rollout_state.stage in ["NONE","FULL","ROLLED_BACK"]:
+          use base_policy_version
+      else:
+          h = hash(sessionId, salt) mod 10000
+          if h < ratio*10000:
+              use candidate_policy_version
+          else:
+              use base_policy_version
+    invariants:
+      - "session 동안 policyVersion이 바뀌지 않도록 권장(rollout 변경은 신규 세션부터 반영)."
+
+  steps_default:
+    canary: { ratio: 0.05, duration_seconds: 120 }
+    expand:
+      - { ratio: 0.20, duration_seconds: 180 }
+      - { ratio: 0.50, duration_seconds: 240 }
+      - { ratio: 1.00, duration_seconds: 300 }
+    evaluation:
+      window_seconds: 60
+      dedup_aware: true
+      data_source_ref: "Specs/Defense/L2/observability/defense_observability_ssot.yaml"
+    rollback:
+      immediate: true
+      action:
+        - "stage := ROLLED_BACK"
+        - "ratio := 0"
+        - "candidate_policy_version := null"
+      guardrails:
+        - "block_rate increases > +0.3%p"
+        - "s3_temp_lock_rate increases > +0.5%p"
+        - "avg_throttle_delay_ms increases > +100ms"
+        - "s3_fail_rate increases > +1.0%p"
+        - "internal_error spikes"
+
+parameters:
+  risk:
+    ewma: { alpha: 0.30 }
+    decay:
+      passive_decay_enabled: true
+      passive_decay_after_inactive_seconds: 30
+      passive_decay_multiplier_per_tick: 0.98
+      tick_seconds: 5
+    probation:
+      probation_seconds_after_s3_pass: 45
+
+  tiering:
+    thresholds: { T0_max: 0.20, T1_max: 0.50, T2_max: 0.80 }
+    hysteresis:
+      margin: 0.02
+      downgrade_requires_below_by_margin: true
+
+  turnstile:
+    enabled: true
+    primary_trigger: "S1_ENTRY_CLICKED"
+    secondary_trigger_enabled: false
+    failure_mode: { external_score_on_failure: 0.50 }
+    verify: { timeout_ms: 500, max_retries: 1, cache_ttl_seconds: 600 }
+
+  planner:
+    action_matrix: { T0: "NONE", T1: "THROTTLE", T2: "THROTTLE", T3: "BLOCK" }
+    s3_gate:
+      require_s3_for_states: ["S4", "S5"]
+      deny_http_status: 428
+      deny_reason_code: "CHALLENGE_REQUIRED"
+    s6_guardrail:
+      allow_actions: ["NONE", "BLOCK"]
+
+  throttle:
+    enabled: true
+    enforcement: "ADAPTER_DELAY_INJECTION"
+    delay_ms: { T0: 0, T1: 80, T2: 250, T3: 0 }
+    max_delay_ms: 2000
+    scope:
+      mode: "READ_ONLY_PREFERRED"
+      include_path_prefixes:
+        - "/api/catalog"
+        - "/api/events"
+        - "/api/queue"
+        - "/api/sections"
+        - "/api/blocks"
+        - "/api/areas"
+        - "/api/seatmap"
+        - "/api/seats"
+        - "/api/availability"
+        - "/api/recommend"
+        - "/api/search"
+      exclude_path_prefixes:
+        - "/api/hold"
+        - "/api/order"
+        - "/api/payment"
+        - "/api/confirm"
+        - "/defense/challenge/"
+        - "/health"
+    audit: { eventType: "DEF_THROTTLE_APPLIED" }
+
+  challenge:
+    enabled: true
+    stage: "S3"
+    fixed: true
+    game_id: "BASEBALL_CATCH"
+    ttl_seconds: 15
+    verify_timeout_ms: 200
+    success:
+      catch_radius_px: 48
+      timing_window_ms: 320
+    failure_policy:
+      max_attempts_per_window: 2
+      window_seconds: 60
+      cooldown_ms: { first_fail: 0, second_fail: 2500 }
+      on_exceed_max_attempts:
+        temporary_lock:
+          enabled: true
+          http_status: 429
+          reason_code: "CHALLENGE_TEMPORARILY_LOCKED"
+          halt_seconds: 30
+    grace_period:
+      enabled: true
+      ttl_seconds: 180
+      note: "deny TTL refresh를 쓰지 않는 대신, S3 검증 단계에서만 짧게 상태를 유지"
+    audit:
+      issued_eventType: "S3_CHALLENGE_ISSUED"
+      result_eventType: "S3_CHALLENGE_RESULT"
+      halted_eventType: "S3_CHALLENGE_HALTED"
+
+  block:
+    enabled: true
+    http_status: 403
+    reason_code: "BLOCKED"
+    ttl_seconds: 1800
+    persistence:
+      enabled: true
+      storage_key: "tm:block:{sessionId}"
+      value_fields:
+        blockedAtMs: "blockedAtMs"
+        blockedUntilMs: "blockedUntilMs"
+    audit:
+      decided_eventType: "DEF_BLOCK_DECIDED"
+      enforced_eventType: "DEF_BLOCK_ENFORCED"
+
+  observability:
+    mandatory_audit_events:
+      - "DEF_ORCH_EXECUTED"
+      - "DEF_PLAN_COMPUTED"
+      - "DEF_ANALYZER_EVIDENCE_UPDATED"
+      - "DEF_GUARD_SCORED"
+      - "DEF_THROTTLE_APPLIED"
+      - "DEF_BLOCK_ENFORCED"
+      - "S3_CHALLENGE_RESULT"
+      - "TURNSTILE_VERIFIED"
+
+validation:
+  monotonic_thresholds:
+    rule: "T0_max < T1_max < T2_max < 1.0"
+  constraints:
+    - "parameters.throttle.delay_ms.T2 >= parameters.throttle.delay_ms.T1"
+    - "parameters.challenge.failure_policy.cooldown_ms.second_fail >= parameters.challenge.failure_policy.cooldown_ms.first_fail"
+  reject_if:
+    - "flags.runtime_llm_enabled == true"
+    - "flags.dynamic_challenge_enabled == true"
+  on_reject:
+    action: "DO_NOT_ACTIVATE"
+    note: "문서/정책 파일 자체가 현재 MVP 불변을 위반함. 적용 금지."
+
+closed_loop_checklist:
+  required_for_closed_loop:
+    - "runtime loads: rollout.rollout_state + parameters"
+    - "runtime logs: policyVersion in x-defense-policy-version and decision_audit"
+    - "L2 optimizer reads: decision_audit metrics (dedup-aware)"
+    - "L2 optimizer writes: new policy file with bumped policyVersion"
+    - "rollout canary applies: candidate_policy_version + ratio"
+    - "rollback rule exists and is actionable"

@@ -1,0 +1,44 @@
+version: "0.1"
+scenarios:
+  - id: "SCN-01-rapid-read-scan"
+    description: "Short-window repetitive read API scans"
+    sequence:
+      - eventType: "API_CALL_OBS"
+        flowState: "S1"
+        requestPath: "/api/seatmap"
+        requestMethod: "GET"
+      - eventType: "API_CALL_OBS"
+        flowState: "S1"
+        requestPath: "/api/availability"
+        requestMethod: "GET"
+      - eventType: "API_CALL_OBS"
+        flowState: "S1"
+        requestPath: "/api/search"
+        requestMethod: "GET"
+    expected:
+      min_action: "THROTTLE"
+
+  - id: "SCN-02-s3-fail-burst"
+    description: "Repeated challenge failures inside one window"
+    sequence:
+      - eventType: "S3_RESULT"
+        flowState: "S3"
+        s3Result: "FAIL"
+      - eventType: "S3_RESULT"
+        flowState: "S3"
+        s3Result: "FAIL"
+      - eventType: "S3_RESULT"
+        flowState: "S3"
+        s3Result: "FAIL"
+    expected:
+      max_http_status: 429
+
+  - id: "SCN-03-block-persistence"
+    description: "Terminal-first block persistence"
+    sequence:
+      - eventType: "API_CALL_OBS"
+        flowState: "S2"
+        requestPath: "/api/seatmap"
+        requestMethod: "GET"
+    expected:
+      terminal_if_blocked: true

@@ -1,0 +1,260 @@
+# Specs/Defense/L1/runtime/state.yaml
+# Defense Runtime State SSOT (L1)
+# v1.1.0 — Redis 상태/TTL/read-write contract + writer 책임(권위 문서)
+#
+# 변경(결정 반영):
+# - DENY 응답에서는 tm:sess TTL refresh 하지 않음(Strict Mode)
+# - S3 검증 단계만 tm:grace:s3:{sessionId}로 짧게 유지(Grace Period, 기본 180s)
+# - BLOCK persistence는 tm:block:{sessionId} 별도 키로 분리
+# - heavyBudgetLeft 등 LLM 관련 필드는 required에서 제거(옵션 reserved로 격하)
+
+meta:
+  doc_id: "l1_runtime_state"
+  title: "Defense Runtime State Contract (Redis)"
+  version: "1.1.0"
+  updated_at: "2026-03-09"
+  timezone: "Asia/Seoul"
+  owner_team: "defense-runtime"
+  status: "final"
+  language: "ko"
+
+governance:
+  precedence: "L0 > L1 > L2 > annex"
+  notes:
+    - "L0의 redisContract.requiredFields(필수 필드)와 의미론을 준수한다."
+    - "새 필드는 backward compatible 방식(추가만)으로 도입한다(기존 의미 변경 금지)."
+    - "동시 요청에서 갱신 경합이 생기지 않도록 원자 갱신 규칙을 따른다."
+    - "BLOCK은 terminal-first: tm:block:{sessionId} 존재 시 즉시 BLOCK 우선."
+
+redis:
+  backend: "redis"
+  keyspace:
+    session_key:
+      pattern: "tm:sess:{sessionId}"
+      description: "세션 런타임 주 상태(방어 판단 입력)"
+    block_key:
+      pattern: "tm:block:{sessionId}"
+      description: "차단 persistence 전용 키(별도 TTL). 존재하면 모든 요청은 BLOCK."
+    s3_grace_key:
+      pattern: "tm:grace:s3:{sessionId}"
+      description: "S3 검증 단계 전용 grace 키(deny TTL refresh 없이도 짧게 재시도 UX 보장)"
+    dedup_keys:
+      pattern_examples:
+        - "tm:dedup:*"
+      description: "중복 이벤트 처리(Guard/Analyzer/Turnstile 등)"
+    challenge_keys:
+      pattern_examples:
+        - "tm:chal:{challenge_id}"
+      description: "S3 챌린지 1회성 발급/검증 상태(짧은 TTL)"
+
+ttl:
+  session_state_ttl_seconds:
+    env: "TM_SESSION_STATE_TTL_SECONDS"
+    default: 1800
+    description: "tm:sess:{sessionId} TTL(기본 30분)"
+
+  refresh_policy:
+    # 결정: deny에서는 refresh 중단(Strict)
+    mode: "STRICT_WITH_S3_GRACE"
+    strict_mode:
+      rule: "DENY(403/428/429/409) 응답에서는 tm:sess TTL refresh 하지 않는다."
+      rationale: "deny 트래픽에서 세션 수명 연장을 막아 공격자 재시도 비용을 증가"
+    allow_mode:
+      rule: "ALLOW(통과) 처리 시에만 tm:sess TTL refresh 한다."
+    grace_period:
+      rule: >
+        S3 검증 관련 흐름에서만 tm:grace:s3:{sessionId}를 짧은 TTL로 set/refresh 한다.
+        (tm:sess TTL은 deny에서 연장하지 않음)
+      ttl_seconds_env: "TM_S3_GRACE_TTL_SECONDS"
+      ttl_seconds_default: 180
+      applies_when:
+        - "S3 challenge issued"
+        - "S3 verify attempted"
+        - "DENY=428(CHALLENGE_REQUIRED)"
+        - "DENY=429(CHALLENGE_TEMPORARILY_LOCKED)"
+
+  block_ttl_seconds:
+    env: "TM_BLOCK_TTL_SECONDS"
+    default: 1800
+    description: "tm:block:{sessionId} TTL(기본 30분). block_spec/policy와 정합 유지."
+
+schema:
+  # L0 requiredFields + MVP에서 필요한 optional 필드
+  session_fields:
+    required_fields:
+      flowState:
+        type: "string"
+        enum: ["S0", "S1", "S2", "S3", "S4", "S5", "S6", "SX"]
+        description: "현재 사용자 플로우 상태"
+      riskScore:
+        type: "float"
+        range: [0.0, 1.0]
+        description: "누적 위험 점수(EWMA)"
+      defenseTier:
+        type: "string"
+        enum: ["T0", "T1", "T2", "T3"]
+        description: "riskScore를 threshold+hysteresis로 해석한 티어"
+      probationUntilMs:
+        type: "int"
+        nullable: true
+        description: "probation 종료 시각(epoch_ms). 하향 제한에 사용"
+      challengeFailCount:
+        type: "int"
+        min: 0
+        description: "S3 챌린지 실패 누적 카운터(윈도우 정책은 challenge_spec 참조)"
+      seatTakenStreak:
+        type: "int"
+        min: 0
+        description: "좌석 확보/홀드 성공 연속(입력 이벤트가 있을 때만 갱신)"
+      holdFailStreak:
+        type: "int"
+        min: 0
+        description: "홀드 실패 연속(입력 이벤트가 있을 때만 갱신)"
+      policyVersion:
+        type: "string"
+        description: "현재 적용 중인 방어 정책 버전"
+
+    optional_fields:
+      # MVP에서 유용하지만 L0 requiredFields에 없을 수 있는 필드(추가만 가능)
+      s3Passed:
+        type: "bool"
+        default: false
+        description: "S3 챌린지 통과 여부(서버 플래그). S4/S5 진입 전제 조건."
+      s3PassedAtMs:
+        type: "int"
+        nullable: true
+        description: "S3 통과 시각(epoch_ms)."
+      challengeHaltUntilMs:
+        type: "int"
+        nullable: true
+        description: "S3 시도 초과 시 임시 락 종료 시각(429 정책)."
+      lastStepRisk:
+        type: "float"
+        nullable: true
+        description: "마지막 step risk(s_t) 저장(디버깅용)."
+      lastGuardTsMs:
+        type: "int"
+        nullable: true
+        description: "마지막 Guard 업데이트 시각(epoch_ms, 디버깅용)."
+      lastDecisionAction:
+        type: "string"
+        nullable: true
+        enum: ["NONE", "THROTTLE", "REQUIRE_S3", "BLOCK"]
+        description: "마지막 Planner action(디버깅용)."
+
+      # reserved(비활성): 과거 문서/호환성을 위해 남기되 MVP 필수 아님
+      replanBudgetLeft:
+        type: "int"
+        nullable: true
+        description: "reserved(미사용 가능). 재계획 budget"
+      heavyBudgetLeft:
+        type: "int"
+        nullable: true
+        description: "reserved(미사용). runtime LLM 제거로 현재 MVP에서는 사용하지 않음"
+
+  block_fields:
+    # tm:block:{sessionId} 값 스키마
+    value_schema:
+      blockedAtMs:
+        type: "int"
+        description: "차단 시각(epoch_ms)"
+      blockedUntilMs:
+        type: "int"
+        description: "차단 만료 시각(epoch_ms)"
+      reasonCode:
+        type: "string"
+        nullable: true
+        description: "BLOCKED 등(옵션)"
+      policyVersion:
+        type: "string"
+        nullable: true
+        description: "차단 당시 policyVersion(옵션)"
+
+  s3_grace_fields:
+    # tm:grace:s3:{sessionId} 값 스키마(짧은 TTL)
+    value_schema:
+      graceUntilMs:
+        type: "int"
+        description: "grace 만료 시각(epoch_ms)"
+      lastChallengeId:
+        type: "string"
+        nullable: true
+      attemptsSnapshot:
+        type: "int"
+        nullable: true
+      haltUntilMs:
+        type: "int"
+        nullable: true
+
+writer_responsibility:
+  canonical_owner: "AI Defense Service"
+  writers:
+    guard:
+      can_write:
+        - "tm:sess:{sessionId}.riskScore"
+        - "tm:sess:{sessionId}.defenseTier"
+        - "tm:sess:{sessionId}.lastStepRisk(optional)"
+        - "tm:sess:{sessionId}.lastGuardTsMs(optional)"
+      must_not_write:
+        - "tm:sess:{sessionId}.flowState"
+        - "tm:sess:{sessionId}.challengeFailCount"
+        - "tm:sess:{sessionId}.s3Passed"
+    analyzer:
+      can_write:
+        - "tm:sess:{sessionId}.challengeFailCount"
+        - "tm:sess:{sessionId}.seatTakenStreak"
+        - "tm:sess:{sessionId}.holdFailStreak"
+        - "tm:sess:{sessionId}.probationUntilMs (on S3 PASS)"
+        - "tm:sess:{sessionId}.challengeHaltUntilMs(optional)"
+      must_not_write:
+        - "tm:sess:{sessionId}.riskScore"
+        - "tm:sess:{sessionId}.defenseTier"
+        - "tm:sess:{sessionId}.flowState"
+    orchestrator:
+      can_write:
+        - "tm:sess:{sessionId}.flowState"
+        - "tm:sess:{sessionId}.s3Passed (on S3 PASS verify)"
+        - "tm:sess:{sessionId}.s3PassedAtMs(optional)"
+        - "tm:sess:{sessionId}.lastDecisionAction(optional)"
+      must_not_write:
+        - "tm:sess:{sessionId}.riskScore"
+        - "tm:sess:{sessionId}.defenseTier"
+        - "tm:sess:{sessionId}.challengeFailCount"
+    s3_grace_manager:
+      can_write:
+        - "tm:grace:s3:{sessionId} (set/refresh on S3-related deny/verify)"
+      must_not_write:
+        - "tm:sess:{sessionId} TTL refresh on deny"
+    block_enforcer:
+      can_write:
+        - "tm:block:{sessionId} (create/update, set TTL=TM_BLOCK_TTL_SECONDS)"
+      must_not_write:
+        - "tm:sess:{sessionId}.blocked* (금지: block은 별도 key로 분리)"
+
+atomicity_and_concurrency:
+  requirements:
+    - "동일 sessionId 동시 요청에서도 riskScore 갱신과 카운터 갱신이 꼬이지 않아야 한다."
+    - "권장: riskScore/defenseTier 갱신은 원자적으로 수행(Lua script 또는 WATCH/MULTI)."
+    - "카운터(challengeFailCount 등) 증가는 원자 연산(INCR) 사용 권장."
+  terminal_first:
+    rule: "tm:block:{sessionId} 존재 시, 이후 모든 결정은 BLOCK이 우선한다."
+
+derived_state_rules:
+  s3_gate_rule:
+    description: "S4/S5 진행 전제: s3Passed==true"
+    enforcement: "Planner/Orchestrator가 428(CHALLENGE_REQUIRED)로 회귀(Envoy deny)"
+  probation_rule:
+    description: "probationUntilMs가 현재 시간보다 크면 하향(downgrade)을 제한"
+  s3_halt_rule:
+    description: "challengeHaltUntilMs가 미래면 S3 verify 시도 자체를 잠시 거절(429)"
+  ttl_refresh_rule:
+    description: "ALLOW에서만 tm:sess TTL refresh, DENY에서는 refresh 금지. S3는 grace key로만 보완."
+
+validation:
+  on_read:
+    - "riskScore/defenseTier 범위 검증(클리핑 가능)"
+    - "flowState enum 검증(알 수 없으면 deny 강제하지 말고 audit만 남김)"
+  on_write:
+    - "필드 타입/범위 위반은 clamp 또는 write 거부 + audit"
+
+open_questions_tbd: []
