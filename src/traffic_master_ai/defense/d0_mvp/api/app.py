@@ -13,15 +13,23 @@ from .http_errors import install_contract_exception_handler
 from .runtime import DefenseRuntime
 
 
-def create_app(runtime: Optional[DefenseRuntime] = None) -> FastAPI:
-    """Create D0-MVP API app and register routers."""
+def create_app(
+    runtime: Optional[DefenseRuntime] = None,
+    *,
+    include_admin: bool = True,
+) -> FastAPI:
+    """Create D0-MVP API app and register routers.
+
+    `include_admin=False` keeps online runtime path minimal.
+    """
     app = FastAPI(title="traffic-master-defense-d0-mvp")
     install_contract_exception_handler(app)
     rt = runtime or DefenseRuntime()
     app.include_router(create_evaluate_router(rt))
     app.include_router(create_check_router(rt))
     app.include_router(create_challenge_router(rt))
-    app.include_router(create_admin_console_router(rt))
+    if include_admin:
+        app.include_router(create_admin_console_router(rt))
     return app
 
 

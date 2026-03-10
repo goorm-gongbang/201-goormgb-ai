@@ -1,18 +1,29 @@
-"""FastAPI app for AI Defense runtime API."""
+"""Unified FastAPI app for AI Defense.
+
+Primary runtime logic follows teammate D0-MVP implementation.
+Legacy endpoints are preserved as compatibility routes.
+"""
 
 from __future__ import annotations
 
 import time
+import uuid
+from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
 
+from ..d0_mvp.api.admin_console import create_admin_console_router
+from ..d0_mvp.api.challenge_api import create_challenge_router as create_d0_challenge_router
+from ..d0_mvp.api.check import create_check_router
+from ..d0_mvp.api.runtime import DefenseRuntime as D0DefenseRuntime
+from ..d0_mvp.core.enums import DefenseAction as D0DefenseAction
+from ..d0_mvp.core.enums import FlowState as D0FlowState
+from ..d0_mvp.core.models import CheckRequest as D0CheckRequest
 from .audit import DefenseDecisionAuditLogger
 from .challenge_runtime import ChallengeConfig, ChallengeRuntime
 from .models import (
     ChallengeEventIngestRequest,
     ChallengeEventIngestResponse,
-    RuntimeVqaMarkRequest,
-    RuntimeVqaMarkResponse,
     ChallengeStartRequest,
     ChallengeStartResponse,
     ChallengeVerifyRequest,
@@ -21,22 +32,29 @@ from .models import (
     EvaluateResponse,
     HealthResponse,
     RuntimeStateSnapshot,
+    RuntimeVqaMarkRequest,
+    RuntimeVqaMarkResponse,
 )
-from .policy import DecisionPolicy, PolicyConfig
 from .state import build_runtime_store_from_env
 
 app = FastAPI(
     title="Traffic Master AI Defense API",
     version="v2",
     description=(
-        "Deterministic defense runtime API for ext_authz adapter integration. "
-        "Includes evaluate + challenge start/verify/event contracts."
+        "Unified defense API. D0-MVP runtime is canonical; legacy challenge/runtime "
+        "contracts remain for compatibility."
     ),
 )
+
 _state_store, _state_backend = build_runtime_store_from_env()
-_policy = DecisionPolicy(PolicyConfig.from_env(), _state_store)
 _audit = DefenseDecisionAuditLogger.from_env()
 _challenge_runtime = ChallengeRuntime(ChallengeConfig.from_env())
+_d0_runtime = D0DefenseRuntime()
+
+# Expose teammate runtime routers directly.
+app.include_router(create_check_router(_d0_runtime))
+app.include_router(create_d0_challenge_router(_d0_runtime))
+app.include_router(create_admin_console_router(_d0_runtime))
 
 
 @app.get("/healthz", response_model=HealthResponse, tags=["health"])
@@ -52,14 +70,45 @@ async def readyz() -> HealthResponse:
 @app.get("/runtime/{session_id}", response_model=RuntimeStateSnapshot, tags=["state"])
 async def runtime_state(session_id: str) -> RuntimeStateSnapshot:
     snap = _state_store.get(session_id)
-    if snap is None:
+    if snap is not None:
+        return snap
+
+    d0_state = _d0_runtime.session_state.get(session_id)
+    if d0_state is None:
         raise HTTPException(status_code=404, detail="session not found")
-    return snap
+    policy = _d0_runtime.policy_loader.load(session_id=session_id)
+    bridged = _legacy_snapshot_from_d0_state(
+        session_id=session_id,
+        d0_state=d0_state,
+        policy_version=policy.policy_version,
+        challenge_max_attempts=policy.challenge_max_attempts,
+        now_ms=int(time.time() * 1000),
+    )
+    _state_store.upsert(session_id, bridged)
+    return bridged
 
 
 @app.post("/evaluate", response_model=EvaluateResponse, tags=["decision"])
 async def evaluate(req: EvaluateRequest) -> EvaluateResponse:
-    resp, snap = _policy.evaluate(req)
+    started_at = time.perf_counter()
+    now_ms = int(time.time() * 1000)
+
+    d0_check_req = _legacy_request_to_d0_check(req)
+    d0_eval_req = _d0_runtime.check_request_to_evaluate(d0_check_req)
+    try:
+        out = _d0_runtime.evaluate(d0_eval_req)
+    except Exception as exc:  # noqa: BLE001 - fail-open policy
+        out = _d0_runtime.fail_open_on_unavailable(request=d0_eval_req, error=exc)
+
+    resp = _legacy_response_from_d0(req=req, started_at=started_at, out=out)
+    snap = _legacy_snapshot_from_d0_state(
+        session_id=req.session_id,
+        d0_state=_d0_runtime.session_state.get(req.session_id),
+        policy_version=out.policy.policy_version,
+        challenge_max_attempts=out.policy.challenge_max_attempts,
+        now_ms=now_ms,
+    )
+    _state_store.upsert(req.session_id, snap)
     _audit.log(req, resp, snap)
     return resp
 
@@ -151,10 +200,249 @@ async def runtime_mark_vqa(req: RuntimeVqaMarkRequest) -> RuntimeVqaMarkResponse
         )
 
     _state_store.upsert(req.session_id, next_snap)
+    _sync_mark_to_d0_runtime(req=req, now_ms=now_ms)
     return RuntimeVqaMarkResponse(
         session_id=req.session_id,
         vqa_passed=next_snap.vqa_passed,
         flow_state=next_snap.flow_state,
         defense_tier=next_snap.defense_tier,
         updated_ts_ms=next_snap.updated_ts_ms,
+    )
+
+
+def _legacy_request_to_d0_check(req: EvaluateRequest) -> D0CheckRequest:
+    trace_id = req.trace_id or req.request_id or f"trace-{uuid.uuid4().hex[:12]}"
+    return D0CheckRequest(
+        session_id=req.session_id,
+        trace_id=trace_id,
+        upstream_path=req.path,
+        upstream_method=req.method.upper(),
+        flow_state=_to_d0_flow_state(req.flow_state),
+        original_query=None,
+        client_ip_hash=None,
+        turnstile_token=(req.headers or {}).get("x-turnstile-token"),
+        category=_to_api_category(req.method),
+        status_code=None,
+    )
+
+
+def _legacy_response_from_d0(
+    *,
+    req: EvaluateRequest,
+    started_at: float,
+    out: Any,
+) -> EvaluateResponse:
+    orchestrated = out.orchestrator_result
+    decision = orchestrated.decision
+    action = _legacy_action_from_d0(decision.action)
+    reason = _legacy_reason(orchestrated=orchestrated, decision=decision)
+
+    rule_hits = _collect_rule_hits(out)
+    flow_state_value = (orchestrated.state_to or orchestrated.state_from).value
+    headers = _legacy_headers_from_d0(
+        action=action,
+        tier=decision.tier.value,
+        policy_version=decision.policy_version,
+        throttle_ms=decision.throttle_ms,
+        reason=reason,
+    )
+    latency_ms = max(0, int((time.perf_counter() - started_at) * 1000))
+    return EvaluateResponse(
+        allow=bool(orchestrated.allow),
+        session_id=req.session_id,
+        flow_state=flow_state_value,  # type: ignore[arg-type]
+        defense_tier=decision.tier.value,  # type: ignore[arg-type]
+        action=action,  # type: ignore[arg-type]
+        actions=[action],  # type: ignore[list-item]
+        reason=reason,
+        rule_hits=rule_hits,
+        risk_score=float(out.guard_output.r_new),
+        policy_version=decision.policy_version,
+        headers_to_add=headers,
+        decision_id=f"dec-{uuid.uuid4().hex[:12]}",
+        latency_ms=latency_ms,
+        version="v2",
+    )
+
+
+def _legacy_snapshot_from_d0_state(
+    *,
+    session_id: str,
+    d0_state: Any,
+    policy_version: str,
+    challenge_max_attempts: int,
+    now_ms: int,
+) -> RuntimeStateSnapshot:
+    if d0_state is None:
+        return RuntimeStateSnapshot(updated_ts_ms=now_ms, policy_version=policy_version)
+
+    grace = _d0_runtime.session_state.get_s3_grace(session_id) or {}
+    last_result: Optional[str] = None
+    if bool(getattr(d0_state, "s3_passed", False)):
+        last_result = "PASSED"
+    elif int(getattr(d0_state, "challenge_fail_count", 0)) > 0:
+        last_result = "FAILED"
+
+    return RuntimeStateSnapshot(
+        flow_state=d0_state.flow_state.value,  # type: ignore[arg-type]
+        defense_tier=d0_state.defense_tier.value,  # type: ignore[arg-type]
+        risk_score=float(d0_state.risk_score),
+        challenge_fail_count=int(d0_state.challenge_fail_count),
+        seat_taken_streak=int(d0_state.seat_taken_streak),
+        hold_fail_streak=int(d0_state.hold_fail_streak),
+        heavy_budget_left=2,
+        replan_budget_left=3,
+        probation_until_ms=d0_state.probation_until_ms,
+        policy_version=policy_version,
+        updated_ts_ms=now_ms,
+        vqa_required=not bool(d0_state.s3_passed),
+        vqa_passed=bool(d0_state.s3_passed),
+        vqa_attempt_count=int(d0_state.challenge_fail_count),
+        vqa_retry_limit=max(1, int(challenge_max_attempts)),
+        vqa_last_result=last_result,  # type: ignore[arg-type]
+        active_challenge_id=_opt_str(grace.get("lastChallengeId")),
+        active_challenge_expires_at_ms=_opt_int(grace.get("graceUntilMs")),
+    )
+
+
+def _collect_rule_hits(out: Any) -> list[str]:
+    collected: list[str] = []
+    candidates = (
+        list(getattr(out.guard_output, "rule_hits", ())),
+        list(getattr(out.analyzer_output.evidence_update, "rule_hits", ())),
+        [getattr(out.planner_plan, "reason", None)],
+        [getattr(out.orchestrator_result.decision, "reason", None)],
+        [
+            out.orchestrator_result.reason_code.value
+            if getattr(out.orchestrator_result, "reason_code", None) is not None
+            else None
+        ],
+    )
+    for group in candidates:
+        for item in group:
+            if not item:
+                continue
+            value = str(item)
+            if value not in collected:
+                collected.append(value)
+    return collected
+
+
+def _legacy_reason(*, orchestrated: Any, decision: Any) -> Optional[str]:
+    if getattr(orchestrated, "reason_code", None) is not None:
+        return orchestrated.reason_code.value
+    if getattr(orchestrated, "error", None) is not None and getattr(orchestrated.error, "reason_code", None):
+        return str(orchestrated.error.reason_code)
+    if getattr(decision, "reason", None):
+        return str(decision.reason).upper()
+    return None
+
+
+def _legacy_action_from_d0(action: D0DefenseAction) -> str:
+    if action == D0DefenseAction.REQUIRE_S3:
+        return "CHALLENGE"
+    if action == D0DefenseAction.THROTTLE:
+        return "THROTTLE"
+    if action == D0DefenseAction.BLOCK:
+        return "BLOCK"
+    return "NONE"
+
+
+def _legacy_headers_from_d0(
+    *,
+    action: str,
+    tier: str,
+    policy_version: str,
+    throttle_ms: Optional[int],
+    reason: Optional[str],
+) -> dict[str, str]:
+    headers = {
+        "x-defense-policy-version": policy_version,
+        "x-defense-tier": tier,
+        "x-defense-action": action.lower(),
+        "x-defense-actions": action.lower(),
+    }
+    if throttle_ms is not None:
+        headers["x-throttle-ms"] = str(int(throttle_ms))
+    if action == "CHALLENGE":
+        headers["x-challenge-required"] = "true"
+        headers["x-challenge-type"] = "queue_gate"
+    if action == "BLOCK":
+        headers["x-block-reason"] = (reason or "blocked").lower()
+    return headers
+
+
+def _to_d0_flow_state(value: Optional[str]) -> D0FlowState:
+    if value is None:
+        return D0FlowState.S0
+    normalized = {"S4R": "S4", "S5R": "S5"}.get(value, value)
+    try:
+        return D0FlowState(normalized)
+    except ValueError:
+        return D0FlowState.S0
+
+
+def _to_api_category(method: str) -> str:
+    method_upper = method.upper()
+    if method_upper in {"GET", "HEAD", "OPTIONS"}:
+        return "READ"
+    return "WRITE"
+
+
+def _opt_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _opt_str(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8")
+        except Exception:  # noqa: BLE001 - defensive decode fallback
+            return None
+    text = str(value).strip()
+    return text or None
+
+
+def _sync_mark_to_d0_runtime(*, req: RuntimeVqaMarkRequest, now_ms: int) -> None:
+    session_id = req.session_id
+    existing = _d0_runtime.session_state.get_or_create(session_id)
+    flow_state = _to_d0_flow_state(req.flow_state) if req.flow_state else existing.flow_state
+    if req.vqa_passed:
+        _d0_runtime.session_state.update_by_role(
+            "orchestrator",
+            session_id,
+            {
+                "flowState": flow_state.value,
+                "s3Passed": 1,
+                "s3PassedAtMs": now_ms,
+                "lastDecisionAction": "NONE",
+            },
+            is_allow=True,
+        )
+        _d0_runtime.session_state.update_by_role(
+            "analyzer",
+            session_id,
+            {
+                "challengeFailCount": 0,
+            },
+            is_allow=True,
+        )
+        return
+
+    _d0_runtime.session_state.update_by_role(
+        "orchestrator",
+        session_id,
+        {
+            "flowState": flow_state.value,
+            "s3Passed": 0,
+            "lastDecisionAction": "REQUIRE_S3",
+        },
+        is_allow=False,
     )

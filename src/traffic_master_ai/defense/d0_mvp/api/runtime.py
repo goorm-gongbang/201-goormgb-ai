@@ -143,7 +143,9 @@ class DefenseRuntime:
             audit_logger=self.audit_logger,
             warehouse=self.audit_warehouse,
         )
-        self.dashboard = AdminDashboardService(self.audit_warehouse)
+        self._dashboard: Optional[AdminDashboardService] = None
+        self._audit_summarizer: Optional[AuditSummarizer] = None
+        self._offline_optimizer: Optional[OfflineOptimizer] = None
 
         self.session_state = SessionStateManager(self.redis)
         self.block_state = BlockStateManager(self.redis)
@@ -174,12 +176,30 @@ class DefenseRuntime:
         )
         self.throttle = ThrottleActuator()
         self.block = BlockActuator(self.block_state)
-        self.audit_summarizer = AuditSummarizer()
-        self.offline_optimizer = OfflineOptimizer(
-            warehouse=self.audit_warehouse,
-            policy_loader=self.policy_loader,
-            audit_summarizer=self.audit_summarizer,
-        )
+
+    def dashboard_service(self) -> AdminDashboardService:
+        """Lazily create admin dashboard service.
+
+        Keep online path light by not wiring admin-only services until requested.
+        """
+        if self._dashboard is None:
+            self._dashboard = AdminDashboardService(self.audit_warehouse)
+        return self._dashboard
+
+    def offline_optimizer_service(self) -> OfflineOptimizer:
+        """Lazily create offline optimizer service.
+
+        Offline optimization is not required for online request handling.
+        """
+        if self._offline_optimizer is None:
+            if self._audit_summarizer is None:
+                self._audit_summarizer = AuditSummarizer()
+            self._offline_optimizer = OfflineOptimizer(
+                warehouse=self.audit_warehouse,
+                policy_loader=self.policy_loader,
+                audit_summarizer=self._audit_summarizer,
+            )
+        return self._offline_optimizer
 
     def evaluate(self, request: EvaluateRequest) -> EvaluatePipelineResult:
         with self.session_state.session_lock(request.session_id):

@@ -22,6 +22,12 @@ def create_admin_console_router(runtime: Optional[DefenseRuntime] = None) -> API
     rt = runtime or DefenseRuntime()
     router = APIRouter(prefix="/admin/defense", tags=["defense-admin"])
 
+    def _dashboard():
+        return rt.dashboard_service()
+
+    def _offline_optimizer():
+        return rt.offline_optimizer_service()
+
     def _require_access(role: Optional[str], token: Optional[str]) -> None:
         role_value = role if isinstance(role, str) else None
         token_value = token if isinstance(token, str) else None
@@ -50,7 +56,7 @@ def create_admin_console_router(runtime: Optional[DefenseRuntime] = None) -> API
         window_seconds: int = 300,
     ) -> dict[str, object]:
         _require_access(x_admin_role, x_admin_token)
-        return rt.dashboard.overview(window_seconds=window_seconds)
+        return _dashboard().overview(window_seconds=window_seconds)
 
     @router.get("/integrity")
     def integrity(
@@ -59,7 +65,7 @@ def create_admin_console_router(runtime: Optional[DefenseRuntime] = None) -> API
         window_seconds: int = 300,
     ) -> dict[str, object]:
         _require_access(x_admin_role, x_admin_token)
-        return rt.dashboard.integrity(window_seconds=window_seconds)
+        return _dashboard().integrity(window_seconds=window_seconds)
 
     @router.get("/throttle")
     def throttle(
@@ -68,7 +74,7 @@ def create_admin_console_router(runtime: Optional[DefenseRuntime] = None) -> API
         window_seconds: int = 300,
     ) -> dict[str, object]:
         _require_access(x_admin_role, x_admin_token)
-        return rt.dashboard.throttle_view(window_seconds=window_seconds)
+        return _dashboard().throttle_view(window_seconds=window_seconds)
 
     @router.get("/s3")
     def s3_challenge(
@@ -77,7 +83,7 @@ def create_admin_console_router(runtime: Optional[DefenseRuntime] = None) -> API
         window_seconds: int = 300,
     ) -> dict[str, object]:
         _require_access(x_admin_role, x_admin_token)
-        return rt.dashboard.s3_view(window_seconds=window_seconds)
+        return _dashboard().s3_view(window_seconds=window_seconds)
 
     @router.get("/block")
     def block(
@@ -86,7 +92,7 @@ def create_admin_console_router(runtime: Optional[DefenseRuntime] = None) -> API
         window_seconds: int = 300,
     ) -> dict[str, object]:
         _require_access(x_admin_role, x_admin_token)
-        return rt.dashboard.block_view(window_seconds=window_seconds)
+        return _dashboard().block_view(window_seconds=window_seconds)
 
     @router.get("/sessions")
     def sessions(
@@ -99,7 +105,11 @@ def create_admin_console_router(runtime: Optional[DefenseRuntime] = None) -> API
         _require_access(x_admin_role, x_admin_token)
         if not session_id and not trace_id:
             raise HTTPException(status_code=400, detail="session_id or trace_id is required")
-        return rt.dashboard.session_drilldown(session_id=session_id, trace_id=trace_id, limit=limit)
+        return _dashboard().session_drilldown(
+            session_id=session_id,
+            trace_id=trace_id,
+            limit=limit,
+        )
 
     @router.get("/policy")
     def policy(
@@ -110,9 +120,9 @@ def create_admin_console_router(runtime: Optional[DefenseRuntime] = None) -> API
         return {
             "warehouse": rt.audit_warehouse.metadata(),
             "auditLog": str(rt.audit_logger.file_path),
-            "current": rt.dashboard.policy_status(),
+            "current": _dashboard().policy_status(),
             "availableVersions": rt.policy_store.list_policy_versions(),
-            "rolloutState": rt.offline_optimizer.current_rollout_state(),
+            "rolloutState": _offline_optimizer().current_rollout_state(),
             "pipeline": {
                 "collector": rt.audit_collector.status(),
                 "warehouse": rt.audit_warehouse.metadata(),
@@ -137,7 +147,7 @@ def create_admin_console_router(runtime: Optional[DefenseRuntime] = None) -> API
     ) -> dict[str, object]:
         _require_access(x_admin_role, x_admin_token)
         return {
-            "latestSummary": rt.offline_optimizer.latest_summary(),
+            "latestSummary": _offline_optimizer().latest_summary(),
         }
 
     return ensure_route_handler_alias(router)
