@@ -1,0 +1,380 @@
+# annex/challenge_spec.yaml
+# Traffic-Master Defense — S3 Challenge(VQA) Spec (Annex)
+# v0.2.0 — SDD(Spec Driven Development) 용도: 사람이/AI가 그대로 구현 가능한 수준의 상세 정의 포함
+#
+# 범위:
+# - S3(3번째 단계)에서만 실행되는 고정형 VQA(미니게임) 챌린지의 "발급/검증/상태/실패 처리"를 정의한다.
+# - 런타임 LLM 미사용(Heavy Judge 없음), 동적 문항 생성 없음(문항은 사전 제작/시드 기반).
+# - 실패 처리 정책 포함(재시도/쿨다운/세션 처리/장애 처리).
+#
+# 참고(타 서비스 관행):
+# - 티켓팅 서비스들은 반복/과도한 행동(빠른 클릭/새로고침 등)에 대해 "일시적 제한/차단"이 걸릴 수 있다고 안내한다.  [oai_citation:0‡axssupportuk.axs.com](https://axssupportuk.axs.com/hc/en-gb/articles/14183854434460-The-website-has-identified-me-as-a-bot?utm_source=chatgpt.com)
+# - Turnstile은 자동 재시도(retry=auto) 같은 UX 옵션과 서버 검증 타임아웃/캐시 권고가 있다.  [oai_citation:1‡Cloudflare Docs](https://developers.cloudflare.com/turnstile/get-started/client-side-rendering/widget-configurations/?utm_source=chatgpt.com)
+#
+# 우선순위:
+# - L0(l0_core.yaml, l0_defense_policy.yaml) > L1(runtime/*.yaml) > annex/*.yaml|md
+
+meta:
+  doc_id: "annex_challenge_spec"
+  title: "S3 Challenge(VQA) Spec — 고정 단계 미니게임(야구공 캐치)"
+  version: "0.2.0"
+  updated_at: "2026-03-08"
+  timezone: "Asia/Seoul"
+  owner_team: "defense-runtime"
+  status: "final-draft"
+  language: "ko"
+  precedence_note: "L0 > L1 > annex"
+
+glossary:
+  terms:
+    challenge: "Challenge(보안퀴즈: 사용자 검증용 미니게임)"
+    vqa: "VQA(시각/동작 기반 미니게임 검증)"
+    seed: "seed(시드: 문제/궤적/타이밍을 결정하는 난수)"
+    challenge_id: "challenge_id(챌린지 식별자: 1회성 발급 ID)"
+    verify: "verify(검증: 서버가 제출값이 정답 조건을 만족하는지 판정)"
+    pass: "PASS(통과)"
+    fail: "FAIL(실패)"
+    cooldown: "cooldown(쿨다운: 재시도 전 대기 시간)"
+    fp: "FP(False Positive: 오탐, 정상 사용자를 잘못 제재)"
+    fail_open: "FAIL_OPEN(실패 시 진행 허용)"
+    fail_close: "FAIL_CLOSE(실패 시 진행 차단)"
+    ewma: "EWMA(지수이동평균: riskScore 누적 갱신 방식)"
+    hysteresis: "hysteresis(티어 출렁임 방지 완충)"
+    probation: "probation(관찰 유예 기간: 하향 완화 지연)"
+    reason_code: "reasonCode(사유 코드: 표준 오류 코드)"
+    ext_authz: "ext_authz(Envoy 외부 인가 필터)"
+    adapter: "Adapter(Envoy가 호출하는 /check/* 서비스)"
+    decision_audit: "decision_audit.jsonl(감사 로그, JSONL)"
+
+scope:
+  in_scope:
+    - "S3 고정 챌린지 실행 규칙(갑툭튀 금지)"
+    - "챌린지 발급/검증 API 계약"
+    - "서버 시드 기반 정답 판정(클라이언트 정답 노출 금지)"
+    - "실패 처리 정책(재시도/쿨다운/누적/세션 처리)"
+    - "장애 처리(검증 서버/외부 의존 장애 시)"
+    - "Redis 상태 및 decision_audit 로깅 계약"
+  out_of_scope:
+    - "동적 문항 생성(런타임 생성)"
+    - "런타임 LLM 판정"
+    - "Honey(함정 좌석/블럭), GATE(확정(write)만 금지), Sandbox(격리 경로)"
+    - "토큰 미스매치/세션 바인딩 검증(백엔드 베이스라인 책임)"
+    - "대규모 운영 ETL/오브젝트 스토리지 파이프라인(운영 단계)"
+
+design_principles:
+  - "S3(3번째 단계) 고정: 예측 가능한 UX(갑툭튀 금지)"
+  - "정상 사용자 FP 비용 최소화: '실패=즉시 차단' 금지"
+  - "공격자 ROI 붕괴: 자동화는 반복 시도 비용이 증가하도록 설계"
+  - "서버 검증(결정적): seed/정답 조건은 서버에서만 계산"
+  - "외부 장애 시 사용자 탈락 체감 방지: 가능하면 FAIL_OPEN 성격(단, 정책적으로 S3는 통과 필수이므로 '검증 불가'는 별도 처리 필요)"
+
+architecture:
+  flow_position:
+    fixed_stage: "S3"
+    entry: "S2 -> S3"
+    success_exit: "S3 -> S4"
+    failure_state: "S3 유지(재시도/쿨다운) 또는 S3 진행 불가 안내"
+  integration_with_envoy:
+    # ext_authz 기반 MVP에서, S3 진입/검증 요청의 처리 방식
+    deny_status_for_required_challenge:
+      http_status: 428
+      reason_code: "CHALLENGE_REQUIRED"
+      note: "S3 진입 시 '검증 필요'를 나타내는 표준 코드로 사용"
+    deny_status_for_block:
+      http_status: 403
+      reason_code: "BLOCKED"
+    note: >
+      428은 '갑툭튀 챌린지'가 아니라, S3 고정 단계에서 '아직 통과하지 않았음'을 표현하는 용도다.
+      (즉, S3 외부에서 임의로 428을 남발하지 않는다.)
+
+game_definition:
+  game_id: "BASEBALL_CATCH"
+  description: "오른쪽 글러브를 공 도착 지점(궤적)에 위치시키고, 타이밍 바의 빨간 영역에 맞춰 캐치"
+  timeline:
+    ready_go_total_seconds: 2.0
+    play_duration_seconds: 3.0
+  input_model:
+    # 구현 단순화를 위해 '캐치 시도 1회'를 기본으로 한다.
+    glove_movement: "drag"
+    catch_trigger: "tap_or_click"
+    max_catch_attempts_per_round: 1
+  success_condition:
+    type: "AND"
+    spatial:
+      description: "캐치 순간 glove 좌표가 목표 좌표 반경 내"
+      radius_px:
+        env: "TM_CHALLENGE_CATCH_RADIUS_PX"
+        default: 48
+      viewport_normalization: true
+      note: "좌표는 화면 크기 차이를 보정하기 위해 정규화(0..1)로 서버 전송 권장"
+    temporal:
+      description: "캐치 순간이 타이밍 바 빨간 영역(window) 내"
+      red_window_ms:
+        env: "TM_CHALLENGE_TIMING_WINDOW_MS"
+        default: 320
+      note: "초기엔 넉넉하게(오탐 감소). 운영 데이터로 조정."
+  difficulty_guardrails:
+    - "모바일/저사양 기기에서 실패율이 과도하게 높아지지 않게 파라미터 보수적으로 시작"
+    - "판정은 서버가 하되, 프론트 렌더링 프레임 드랍에 민감하지 않도록 허용 오차 확보"
+
+server_side_contract:
+  # Challenge는 서버가 seed를 발급하고 서버가 판정한다.
+  issue_endpoint:
+    method: "POST"
+    path: "/defense/challenge/issue"
+    request:
+      required_headers:
+        - "X-Session-Id"
+        - "X-Trace-Id"
+      body:
+        optional:
+          - "flowState"
+          - "clientViewport: {w:int, h:int}"
+    response:
+      status: 200
+      body:
+        required:
+          - "challenge_id"
+          - "game_id"
+          - "issued_at_ms"
+          - "expires_at_ms"
+          - "seed_commitment"
+          - "public_params"
+        schema:
+          challenge_id: "string"
+          game_id: "string"
+          issued_at_ms: "epoch_ms"
+          expires_at_ms: "epoch_ms"
+          seed_commitment: "string"
+          public_params:
+            ready_go_total_seconds: "float"
+            play_duration_seconds: "float"
+            catch_radius_px: "int"
+            timing_window_ms: "int"
+      notes:
+        - "seed는 클라이언트에 직접 노출하지 않는다."
+        - "seed_commitment는 서버가 seed를 사후에 바꾸지 않았음을 증명(선택)"
+  verify_endpoint:
+    method: "POST"
+    path: "/defense/challenge/verify"
+    request:
+      required_headers:
+        - "X-Session-Id"
+        - "X-Trace-Id"
+      body:
+        required:
+          - "challenge_id"
+          - "client_answer"
+        schema:
+          challenge_id: "string"
+          client_answer:
+            catch_ts_ms: "epoch_ms"
+            glove_pos_norm: "{x:float,y:float}  # 0..1"
+            catch_triggered: "bool"
+            client_viewport: "{w:int,h:int} | optional"
+    response:
+      status: 200
+      body:
+        required:
+          - "result"
+          - "reason_code"
+          - "server_verdict"
+        schema:
+          result: "PASS|FAIL"
+          reason_code: "CHALLENGE_PASSED|CHALLENGE_FAILED|CHALLENGE_EXPIRED|CHALLENGE_INVALID"
+          server_verdict:
+            score_components:
+              spatial_ok: "bool"
+              temporal_ok: "bool"
+              spatial_dist: "float | optional"
+              temporal_delta_ms: "int | optional"
+    anti_replay:
+      rule: "challenge_id는 1회성(verify 성공/실패 후 즉시 폐기)"
+    timeouts:
+      verify_timeout_ms:
+        env: "TM_CHALLENGE_VERIFY_TIMEOUT_MS"
+        default: 200
+  expiry:
+    ttl_seconds:
+      env: "TM_CHALLENGE_TTL_SECONDS"
+      default: 15
+    rationale: "티켓팅에서 너무 길면 UX 손해, 너무 짧으면 네트워크 변동에 취약"
+
+failure_handling_policy:
+  # "다른 티켓팅 서비스"의 관행(반복 행동 시 일시 제한)과 UX 공정성을 함께 반영.
+  # 반복/과도 행동에 일시 제한이 걸릴 수 있다는 안내는 AXS에서도 확인된다.  [oai_citation:2‡axssupportuk.axs.com](https://axssupportuk.axs.com/hc/en-gb/articles/14183854434460-The-website-has-identified-me-as-a-bot?utm_source=chatgpt.com)
+  # Turnstile 쪽도 실패 시 자동 재시도/재시도 간격 같은 UX 옵션이 존재한다.  [oai_citation:3‡Cloudflare Docs](https://developers.cloudflare.com/turnstile/get-started/client-side-rendering/widget-configurations/?utm_source=chatgpt.com)
+  goals:
+    - "실패가 곧 차단(403)이 되지 않도록(오탐 피해 최소화)"
+    - "무한 재시도 방지(공격자에게 무료 시도 제공 금지)"
+    - "재시도는 짧은 쿨다운으로 비용을 부여(ROI 붕괴)"
+  attempts:
+    max_attempts_per_stage_s3:
+      env: "TM_CHALLENGE_MAX_ATTEMPTS"
+      default: 2
+    window_seconds:
+      env: "TM_CHALLENGE_ATTEMPT_WINDOW_SECONDS"
+      default: 60
+    counters:
+      redis_field: "challengeFailCount" # L0 requiredFields에 존재
+      note: "S3 내 실패 누적 카운터"
+  policy:
+    on_first_fail:
+      action: "ALLOW_RETRY"
+      cooldown_ms:
+        env: "TM_CHALLENGE_COOLDOWN_MS_1"
+        default: 0
+      response_to_client:
+        http_status: 200
+        body_reason_code: "CHALLENGE_FAILED"
+      notes:
+        - "즉시 1회 재시도 허용"
+    on_second_fail_within_window:
+      action: "COOLDOWN_AND_RETRY"
+      cooldown_ms:
+        env: "TM_CHALLENGE_COOLDOWN_MS_2"
+        default: 2500
+      response_to_client:
+        http_status: 200
+        body_reason_code: "CHALLENGE_FAILED"
+      notes:
+        - "짧은 쿨다운 후 재시도만 가능(무한 시도 방지)"
+        - "이 상태에서 S4 진입/확정 행동은 불가(아직 S3 미통과)"
+    on_exceed_max_attempts:
+      action: "TEMPORARY_S3_HALT"
+      halt_seconds:
+        env: "TM_CHALLENGE_HALT_SECONDS"
+        default: 30
+      response_to_client:
+        http_status: 429
+        body_reason_code: "CHALLENGE_TEMPORARILY_LOCKED"
+      notes:
+        - "하드 블락(403)로 가지 않고, 짧은 기간 S3 재시도를 지연"
+        - "티켓팅에서 과도한 제한은 탈락 체감이므로 halt는 보수적으로(초 단위) 운영"
+        - "반복 실패/과도한 클릭은 티켓팅 서비스에서 일시 제한을 유발할 수 있다는 일반 안내와 정합.  [oai_citation:4‡axssupportuk.axs.com](https://axssupportuk.axs.com/hc/en-gb/articles/14183854434460-The-website-has-identified-me-as-a-bot?utm_source=chatgpt.com)"
+  service_failure:
+    # 검증 서비스/네트워크 장애 시
+    on_verify_timeout_or_error:
+      mode: "FAIL_OPEN_WITH_AUDIT"
+      server_behavior:
+        - "challenge 결과를 'UNKNOWN'으로 처리"
+        - "사용자에게는 재시도 안내(짧은 쿨다운)만 제공"
+        - "차단(403)로 보내지 않는다"
+      response:
+        http_status: 200
+        body_reason_code: "CHALLENGE_VERIFY_UNAVAILABLE"
+      notes:
+        - "외부/내부 장애가 정상 사용자 탈락으로 이어지지 않게 함"
+        - "운영에서 장애가 지속되면 S3 자체를 비활성화하는 플래그는 별도 운영 절차로"
+
+state_and_storage:
+  redis:
+    key_pattern: "tm:sess:{sessionId}"
+    required_fields_ref: "L0 redisContract.requiredFields"
+    updates:
+      on_issue:
+        - "flowState := S3 (Orchestrator 책임)"
+      on_pass:
+        - "challengeFailCount := 0 (권장 초기화)"
+        - "probationUntilMs := now + TM_S3_PROBATION_SECONDS*1000 (probation(관찰 유예 기간))"
+      on_fail:
+        - "challengeFailCount += 1"
+      on_halt:
+        - "challengeHaltUntilMs := now + halt_seconds*1000 (옵션 필드, backward compatible)"
+    ttl:
+      ref: "TM_SESSION_STATE_TTL_SECONDS (기본 1800)"
+  challenge_store:
+    backend: "redis"
+    key_prefix: "tm:chal"
+    key_schema: "challenge_id"
+    ttl_seconds_ref: "TM_CHALLENGE_TTL_SECONDS (기본 15)"
+    value_schema:
+      game_id: "string"
+      seed: "string"
+      issued_at_ms: "epoch_ms"
+      expires_at_ms: "epoch_ms"
+      session_id: "string"
+      used: "bool"
+
+orchestration_rules:
+  # S3 고정 단계 강제 규칙
+  must_pass_before_s4:
+    rule: "S3 PASS 토큰(또는 서버 상태 플래그)이 없으면 S4 진입 불가"
+    enforcement:
+      - "ext_authz/Adapter가 428(CHALLENGE_REQUIRED) 반환 가능"
+      - "또는 S4 관련 요청이 오면 BE가 428/redirect 처리(아키텍처에 따라)"
+  no_surprise_challenge:
+    rule: "S3 외 단계에서 '갑툭튀'로 챌린지를 요구하지 않는다"
+    notes:
+      - "S3는 고정 관문이며, 다른 단계는 tier/throttle로만 처리(현재 MVP 방향)"
+
+audit_logging:
+  destination: "logs/decision_audit.jsonl"
+  event_types:
+    - "S3_CHALLENGE_ISSUED"
+    - "S3_CHALLENGE_RESULT"
+    - "S3_CHALLENGE_HALTED"
+  schema_extension:
+    challenge:
+      challenge_id: "string"
+      game_id: "string"
+      result: "PASS|FAIL|UNKNOWN"
+      reason_code: "string"
+      attempts_in_window: "int"
+      cooldown_ms: "int"
+      verify_latency_ms: "int"
+  notes:
+    - "원본 입력 스트림/PII 금지"
+    - "정답 판정의 핵심 근거(spatial_ok/temporal_ok)는 디버깅 목적 범위에서만 기록"
+
+mvp_defaults:
+  stage: "S3 fixed"
+  game_id: "BASEBALL_CATCH"
+  max_attempts: 2
+  cooldown_ms_first: 0
+  cooldown_ms_second: 2500
+  halt_seconds_after_exceed: 30
+  challenge_ttl_seconds: 15
+  verify_timeout_ms: 200
+
+acceptance_tests:
+  - id: "C-1"
+    name: "S3 issue/verify 정상 통과"
+    steps:
+      - "issue로 challenge_id 발급"
+      - "정답 조건에 맞는 client_answer 제출"
+    pass_criteria:
+      - "verify result=PASS"
+      - "Redis challengeFailCount reset(권장)"
+      - "probationUntilMs 설정"
+  - id: "C-2"
+    name: "1회 실패 후 재시도 허용"
+    steps:
+      - "오답 제출"
+    pass_criteria:
+      - "result=FAIL, reason_code=CHALLENGE_FAILED"
+      - "challengeFailCount +1"
+      - "재시도 가능"
+  - id: "C-3"
+    name: "2회 실패 시 쿨다운"
+    steps:
+      - "연속 오답 2회"
+    pass_criteria:
+      - "2회차 이후 cooldown 적용(>=2500ms)"
+  - id: "C-4"
+    name: "최대 시도 초과 시 임시 정지(429)"
+    steps:
+      - "window 내 max_attempts 초과"
+    pass_criteria:
+      - "429 + CHALLENGE_TEMPORARILY_LOCKED"
+      - "haltUntilMs 기록(옵션)"
+  - id: "C-5"
+    name: "verify 장애 시 FAIL_OPEN_WITH_AUDIT"
+    steps:
+      - "verify 타임아웃 유도"
+    pass_criteria:
+      - "result=UNKNOWN 또는 CHALLENGE_VERIFY_UNAVAILABLE"
+      - "차단(403)로 가지 않음"
+      - "audit에 장애 기록"
+
+open_questions_tbd: []

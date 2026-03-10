@@ -1,0 +1,275 @@
+# Specs/Defense/L1/runtime/events.yaml
+# Defense Runtime Events SSOT (L1)
+# v1.0.0 — eventType/enum/payload의 권위 문서(바로 개발 가능)
+#
+# 목적
+# - 방어 런타임에서 사용되는 이벤트(eventType)의 이름/스키마/발생 시점/생산자·소비자·dedup 규칙을 고정한다.
+# - contracts.yaml(헤더/403/428/바디), state.yaml(Redis), logic.yaml(파이프라인), actuators.yaml(집행)과 결합하여
+#   SDD로 즉시 구현 가능하게 한다.
+#
+# 우선순위: L0 > L1 > L2 > annex
+
+meta:
+  doc_id: "l1_runtime_events"
+  title: "Defense Runtime Events (L1)"
+  version: "1.0.0"
+  updated_at: "2026-03-08"
+  timezone: "Asia/Seoul"
+  owner_team: "defense-runtime"
+  status: "draft"
+  language: "ko"
+
+governance:
+  precedence: "L0 > L1 > L2 > annex"
+  naming_rules:
+    - "eventType은 UPPER_SNAKE_CASE"
+    - "eventType은 중복 금지(동일 의미를 다른 이름으로 만들지 않음)"
+    - "payload 키는 lowerCamelCase"
+  compatibility_rules:
+    - "새 필드는 optional로 추가 후 rollout"
+    - "required 필드는 하위 호환 깨짐 → version bump 필요"
+  linkage:
+    required_headers_ref: "Specs/Defense/L1/runtime/contracts.yaml#headers.required_in_all_defense_paths"
+    common_context_ref: "common_context.schema"
+
+# =========================================
+# 공통 컨텍스트(모든 이벤트에 공통으로 붙는 최소 메타)
+# =========================================
+common_context:
+  schema:
+    required:
+      - name: "eventType"
+        type: "string"
+        enum_ref: "event_catalog.eventTypes"
+      - name: "tsMs"
+        type: "int"
+        format: "epoch_ms"
+      - name: "flowState"
+        type: "string"
+        enum: ["S0", "S1", "S2", "S3", "S4", "S5", "S6", "SX"]
+    optional:
+      - name: "requestPath"
+        type: "string"
+        nullable: true
+      - name: "requestMethod"
+        type: "string"
+        nullable: true
+      - name: "clientViewport"
+        type: "object"
+        nullable: true
+        schema:
+          required: ["w", "h"]
+          properties:
+            w: { type: "int" }
+            h: { type: "int" }
+      - name: "source"
+        type: "string"
+        nullable: true
+        description: "producer 식별(예: FE, ADAPTER, AI_RUNTIME)"
+  required_headers:
+    - "X-Session-Id"
+    - "X-Trace-Id"
+
+# =========================================
+# dedup 규칙(이벤트 처리 중복 방지)
+# - 실제 키 저장은 state.yaml / annex/*_spec.yaml과 일치해야 함
+# =========================================
+dedup:
+  key_schema: "traceId|eventType|floor(tsMs/tsBucketMs)"
+  tsBucketMs:
+    env: "TM_DEDUP_TS_BUCKET_MS"
+    default: 200
+  ttlSeconds:
+    env: "TM_DEDUP_TTL_SECONDS"
+    default: 600
+  behavior:
+    - "동일 dedup key는 AI 런타임에서 no-op 처리(카운터/리스크 중복 누적 금지)"
+    - "audit에는 dedup.isDuplicate=true로 기록"
+
+# =========================================
+# 이벤트 카탈로그(권위 리스트)
+# =========================================
+event_catalog:
+  # eventType의 authoritative list
+  eventTypes:
+    # 1) 상태 전이/진입
+    - FLOW_STATE_TRANSITION
+    # 2) 사용자의 핵심 클릭/행동(관찰용)
+    - HIGH_VALUE_CLICK
+    # 3) S3 VQA 결과
+    - S3_RESULT
+    # 4) (선택) API 호출 관측(탐색/스캔 압력)
+    - API_CALL_OBS
+    # 5) Turnstile
+    - TURNSTILE_TRIGGERED
+    - TURNSTILE_VERIFIED
+
+  # 각 eventType별 최소 payload 스키마(정확히 이대로 보내야 함)
+  payloadSchemas:
+    FLOW_STATE_TRANSITION:
+      description: "flowState 전이 이벤트"
+      producers: ["AI_RUNTIME", "FE"]
+      consumers: ["AI_RUNTIME", "AUDIT"]
+      allowed_flowStates: ["S0", "S1", "S2", "S3", "S4", "S5", "S6", "SX"]
+      required_fields:
+        fromState:
+          type: "string"
+          enum: ["S0", "S1", "S2", "S3", "S4", "S5", "S6", "SX"]
+        toState:
+          type: "string"
+          enum: ["S0", "S1", "S2", "S3", "S4", "S5", "S6", "SX"]
+      optional_fields:
+        transitionCause:
+          type: "string"
+          nullable: true
+          description: "예: USER_NAV, VERIFY_PASS, TIMEOUT, ABORT"
+      notes:
+        - "전이 불변 규칙은 L0가 권위. 본 이벤트는 관측/감사용."
+        - "invalid transition은 orchestrator가 별도 이벤트로 audit에 기록(DEF_INVALID_TRANSITION)."
+
+    HIGH_VALUE_CLICK:
+      description: "핵심 클릭/행동 관찰 이벤트(확정(write) 집행이 아님)"
+      producers: ["FE"]
+      consumers: ["AI_RUNTIME"]
+      allowed_flowStates: ["S1", "S2", "S3", "S4", "S5"]
+      required_fields:
+        tag:
+          type: "string"
+          enum:
+            - SECTION_SELECT
+            - SEAT_SELECT
+            - HOLD_CLICK
+            - PAYMENT_INIT_CLICK
+            - CONFIRM_CLICK
+      optional_fields:
+        targetId:
+          type: "string"
+          nullable: true
+          description: "좌석ID/블럭ID 등(있으면). PII 금지."
+      notes:
+        - "이 이벤트는 riskScore를 직접 결정하지 않음(Guard가 feature summary로 점수화)."
+        - "Planner는 tag를 evidence로만 사용."
+
+    S3_RESULT:
+      description: "S3 고정 VQA 결과"
+      producers: ["AI_RUNTIME", "BE"]
+      consumers: ["AI_RUNTIME", "AUDIT"]
+      allowed_flowStates: ["S3"]
+      required_fields:
+        result:
+          type: "string"
+          enum: ["PASS", "FAIL", "UNKNOWN"]
+      optional_fields:
+        reasonCode:
+          type: "string"
+          nullable: true
+          enum:
+            - CHALLENGE_PASSED
+            - CHALLENGE_FAILED
+            - CHALLENGE_EXPIRED
+            - CHALLENGE_INVALID
+            - CHALLENGE_VERIFY_UNAVAILABLE
+      notes:
+        - "S3 PASS 표현은 state.yaml의 s3Passed 플래그로 반영(Writer: Orchestrator)."
+
+    API_CALL_OBS:
+      description: "API 호출 관측(탐색/스캔 압력 측정용)"
+      producers: ["FE", "ADAPTER", "BE"]
+      consumers: ["AI_RUNTIME"]
+      allowed_flowStates: ["S1", "S2", "S3", "S4", "S5"]
+      required_fields:
+        path:
+          type: "string"
+        method:
+          type: "string"
+          enum: ["GET", "POST", "PUT", "DELETE", "PATCH"]
+      optional_fields:
+        category:
+          type: "string"
+          nullable: true
+          enum: ["READ", "WRITE", "HIGH_VALUE"]
+        statusCode:
+          type: "int"
+          nullable: true
+      notes:
+        - "MVP에서는 producer를 FE로 둘지 Adapter/BE로 둘지 결정 필요(TBD)."
+        - "Throttle endpoint scoping에 참고로 사용 가능."
+
+    TURNSTILE_TRIGGERED:
+      description: "Turnstile 실행 트리거(관측용)"
+      producers: ["FE", "ADAPTER"]
+      consumers: ["AI_RUNTIME", "AUDIT"]
+      allowed_flowStates: ["S1", "S2", "S3"]
+      required_fields:
+        triggerId:
+          type: "string"
+          enum: ["S1_ENTRY_CLICKED", "S2_TO_S3_PRECHECK"]
+      optional_fields:
+        widgetMode:
+          type: "string"
+          nullable: true
+          enum: ["MANAGED", "INVISIBLE", "NON_INTERACTIVE"]
+      notes:
+        - "실제 verify 결과는 TURNSTILE_VERIFIED로 전달."
+        - "secondary trigger(S2->S3)는 기본 OFF(turnstile_spec)."
+
+    TURNSTILE_VERIFIED:
+      description: "Turnstile 서버 검증 결과"
+      producers: ["ADAPTER", "BE"]
+      consumers: ["AI_RUNTIME", "AUDIT"]
+      allowed_flowStates: ["S1", "S2", "S3"]
+      required_fields:
+        externalScore:
+          type: "float"
+          range: [0.0, 1.0]
+          semantics: "1.0 human-likely, 0.0 bot-likely"
+        verifyStatus:
+          type: "string"
+          enum: ["OK", "TIMEOUT", "ERROR", "INVALID_TOKEN", "MISSING_TOKEN"]
+      optional_fields:
+        verifyLatencyMs:
+          type: "int"
+          nullable: true
+        cached:
+          type: "bool"
+          nullable: true
+      notes:
+        - "검증 실패는 FAIL_OPEN 성격으로 externalScore=0.5로 정규화 가능(turnstile_spec)."
+        - "Guard 입력 features.turnstile_score로 반영."
+
+# =========================================
+# audit eventType (decision_audit.jsonl) 표준
+# - runtime_event_types와 다를 수 있음(감사 이벤트는 더 세분화)
+# =========================================
+audit_event_catalog:
+  eventTypes:
+    - DEF_GUARD_SCORED
+    - DEF_ANALYZER_EVIDENCE_UPDATED
+    - DEF_PLAN_COMPUTED
+    - DEF_ORCH_EXECUTED
+    - DEF_INVALID_TRANSITION
+    - DEF_THROTTLE_APPLIED
+    - DEF_BLOCK_DECIDED
+    - DEF_BLOCK_ENFORCED
+    - S3_CHALLENGE_ISSUED
+    - S3_CHALLENGE_RESULT
+    - S3_CHALLENGE_HALTED
+    - TURNSTILE_TRIGGERED
+    - TURNSTILE_VERIFIED
+  minimum_fields:
+    # decision_audit 최소 스키마는 L0가 권위이며, 여기서는 eventType만 고정
+    ref: "Specs/Defense/L0/l0_core.yaml (decision_audit 최소 스키마)"
+
+mapping_rules:
+  # runtime_event → audit_event 대응(필수는 아님, 권장)
+  recommended_audit_emissions:
+    - when: "eventType == TURNSTILE_VERIFIED"
+      emit_audit: ["TURNSTILE_VERIFIED"]
+    - when: "eventType == S3_RESULT"
+      emit_audit: ["S3_CHALLENGE_RESULT"]
+    - when: "Planner action == THROTTLE"
+      emit_audit: ["DEF_THROTTLE_APPLIED"]
+    - when: "Planner action == BLOCK"
+      emit_audit: ["DEF_BLOCK_ENFORCED"]
+
+open_questions_tbd: []

@@ -1,0 +1,194 @@
+# annex/orchestrator_spec.yaml
+# Traffic-Master Defense — Orchestrator Spec (Annex)
+# v1.0.0 — SDD
+#
+# Orchestrator의 역할(현 설계 기준):
+# - Planner가 선택한 action을 "실행 순서"와 "상태 전이"로 반영한다.
+# - S3 고정 단계 규칙을 깨지 않도록 flowState 전이를 보장한다.
+# - terminal-first 원칙을 지키고, invalid transition은 무시 + audit.
+#
+# 확정:
+# - S3는 고정 단계(overlay처럼 임의 삽입 금지)
+# - S6 신규 개입 금지(차단만 허용)
+# - Block은 Envoy deny + Redis 상태 기록(권장)
+# - Throttle은 Adapter 지연 삽입
+# - Honey/GATE/Sandbox 없음
+
+meta:
+  doc_id: "annex_orchestrator_spec"
+  title: "Orchestrator Spec — State Transition & Execution Order"
+  version: "1.0.0"
+  updated_at: "2026-03-08"
+  timezone: "Asia/Seoul"
+  owner_team: "defense-runtime"
+  status: "final"
+  language: "ko"
+
+glossary:
+  terms:
+    flow_state: "flowState(플로우 상태: S0~S6,SX)"
+    terminal: "Terminal(종단 상태: 더 이상 진행 불가)"
+    terminal_first: "terminal-first(종단 우선 처리)"
+    invalid_transition: "invalid transition(불가능 전이)"
+    s3_fixed: "S3 고정(3번째 단계 고정 관문)"
+    idempotency: "idempotency(멱등성: 동일 요청 재전송 시 동일 결과)"
+
+scope:
+  in_scope:
+    - "flowState 전이 규칙 적용"
+    - "Planner action을 실행 플랜으로 변환"
+    - "terminal-first 및 invalid transition 처리"
+    - "Redis flowState/flags 업데이트(Writer 범위 명시)"
+    - "audit 로깅"
+  out_of_scope:
+    - "riskScore/tier 계산(Guard)"
+    - "증거/카운터 계산(Analyzer)"
+    - "실제 throttle 집행(Adapter)"
+    - "VQA 게임 로직(challenge_spec.yaml)"
+    - "차단 결정 근거(Planner/Policy)"
+
+canonical_state_machine:
+  states: ["S0", "S1", "S2", "S3", "S4", "S5", "S6", "SX"]
+  allowed_transitions:
+    - "S0->S1"
+    - "S1->S2"
+    - "S2->S3"
+    - "S3->S4"
+    - "S4->S5"
+    - "S5->S6"
+    - "S6->SX"
+    # 예외: abort/timeout 등으로 SX로
+    - "S1->SX"
+    - "S2->SX"
+    - "S3->SX"
+    - "S4->SX"
+    - "S5->SX"
+  invariants:
+    - "S3는 반드시 S2 다음에 위치한다(고정 관문)."
+    - "S6에서는 신규 마찰(Throttle/Require_S3 등) 삽입 금지, Block만 허용."
+    - "SX 이후 상태 변경 금지(terminal)."
+
+inputs:
+  required_headers:
+    - "X-Session-Id"
+    - "X-Trace-Id"
+  current_state:
+    source: "Redis tm:sess:{sessionId}"
+    fields:
+      - "flowState"
+      - "defenseTier"
+      - "riskScore"
+      - "probationUntilMs"
+      - "blocked|optional"
+  planner_output:
+    fields_ref: "annex/planner_spec.yaml.outputs.plan"
+
+writer_responsibility:
+  canonical_writer: "AI Defense Service (Orchestrator stage)"
+  writes:
+    - "flowState"
+    - "s3_passed_flag (옵션: 별도 플래그/토큰 방식)"
+    - "terminal reason (옵션)"
+  does_not_write:
+    - "riskScore (Guard 책임)"
+    - "challengeFailCount (Analyzer 책임)"
+    - "throttle ms (Adapter 집행)"
+
+execution_order:
+  # Orchestrator가 수행하는 처리 순서
+  steps:
+    - id: "E1_TERMINAL_FIRST"
+      rule: "blocked==true or planner.action==BLOCK -> terminal 처리 우선"
+    - id: "E2_VALIDATE_TRANSITION"
+      rule: "요청이 요구하는 next state가 allowed_transitions에 있는지 검사"
+    - id: "E3_APPLY_S3_FIXED_RULE"
+      rule: "S4/S5 요청인데 S3 미통과면 REQUIRE_S3로 강제(Planner가 이미 결정했어야 함)"
+    - id: "E4_COMMIT_STATE"
+      rule: "유효 전이면 flowState 갱신 및 TTL 갱신"
+    - id: "E5_EMIT_AUDIT"
+      rule: "결정/전이/거절 모두 decision_audit 기록"
+
+invalid_transition_policy:
+  behavior:
+    - "불가능 전이 시 상태는 변경하지 않는다."
+    - "요청은 기본적으로 allow/deny는 Planner 결과에 따르되, invalid이면 400 또는 409를 반환할 수 있음(TBD)"
+    - "MVP에서는 단순화를 위해: invalid 전이는 409(CONFLICT) 반환 권장"
+  http_on_invalid:
+    status: 409
+    reason_code: "INVALID_TRANSITION"
+    message_ko: "허용되지 않는 진행 단계입니다."
+  audit:
+    event_type: "DEF_INVALID_TRANSITION"
+
+s3_pass_contract:
+  # S3 통과를 표현하는 방식(둘 중 하나를 택해 구현)
+  mode: "server_flag" # default
+  server_flag:
+    redis_field: "s3Passed"
+    type: "bool"
+    set_on: "S3 verify PASS"
+    ttl_align_with_session: true
+  token_mode_optional:
+    description: "S3 PASS 토큰을 발급해 S4 진입 시 제출하게 하는 방식(운영 단계 고려)"
+    enabled: false
+
+state_commit:
+  redis:
+    key_pattern: "tm:sess:{sessionId}"
+    ttl_seconds_env: "TM_SESSION_STATE_TTL_SECONDS"
+    ttl_default: 1800
+    update_rules:
+      - "flowState는 유효 전이일 때만 변경"
+      - "deny(BLOCK/REQUIRE_S3)인 경우 flowState는 그대로 유지(S3 고정 유지 포함)"
+      - "SX로 전이 시 terminal 기록(옵션)"
+  block_integration:
+    note: "BLOCK은 block_spec에 따라 persisted block 상태 기록을 수행(권장: AI 서비스가 기록)."
+
+outputs:
+  orchestrated_plan:
+    schema:
+      allow: "bool"
+      http_status: "int|optional"
+      reason_code: "string|optional"
+      headers:
+        x-defense-tier: "string"
+        x-defense-action: "string"
+        x-defense-policy-version: "string"
+      state_transition:
+        from: "string"
+        to: "string|optional"
+        applied: "bool"
+      notes: "string|optional"
+
+audit_logging:
+  destination: "logs/decision_audit.jsonl"
+  event_types:
+    - "DEF_ORCH_EXECUTED"
+    - "DEF_INVALID_TRANSITION"
+  fields:
+    serverDecision:
+      action: "string"
+      riskTier: "string"
+      transition:
+        from: "string"
+        to: "string|optional"
+        applied: "bool"
+      http:
+        status: "int|optional"
+        reasonCode: "string|optional"
+
+acceptance_tests:
+  - id: "OR-1"
+    name: "terminal-first: blocked 세션은 무조건 403"
+    pass_criteria:
+      - "blocked==true -> allow=false, 403"
+  - id: "OR-2"
+    name: "S3 고정: S4에서 s3Passed=false면 428(REQUIRE_S3)"
+    pass_criteria:
+      - "S4 요청 + s3Passed=false -> 428"
+      - "flowState 변경 없음"
+  - id: "OR-3"
+    name: "유효 전이만 commit"
+    pass_criteria:
+      - "allowed transition이면 flowState 갱신"
+      - "invalid transition이면 409 + audit"

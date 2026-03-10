@@ -1,0 +1,150 @@
+# Specs/Defense/L0/l0_sdd_guide.yaml
+# Defense Agent SDD Guide (Meta-SSOT)
+# v1.0.0 — 사람이랑 AI가 “문서를 어떻게 읽고, 어디를 수정해야 하는지”를 동일하게 따르도록 하는 규칙
+
+meta:
+  doc_id: "l0_sdd_guide"
+  title: "Defense Agent SDD Guide — 문서 위계/역할/사용 순서"
+  version: "1.0.0"
+  updated_at: "2026-03-08"
+  timezone: "Asia/Seoul"
+  owner: "defense-runtime"
+  status: "final"
+  language: "ko"
+  scope_note: >
+    본 문서는 '문서 사용법/위계'를 정의하는 메타-SSOT이다.
+    기능 정책(전이/TTL/멱등/reasonCode 등)은 l0_core.yaml / l0_defense_policy.yaml이 권위 문서다.
+
+hierarchy:
+  precedence_order:
+    - level: "L0"
+      name: "Addendum SSOT (불변 법전)"
+      authoritative: true
+      conflict_resolution: "L0가 우선. L1/L2/Annex를 수정한다."
+    - level: "L1"
+      name: "Runtime SSOT (구현 계약)"
+      authoritative: true
+      conflict_resolution: "L1이 우선. Annex를 수정한다."
+    - level: "L2"
+      name: "Observability/Optimization SSOT (운영/사후 루프)"
+      authoritative: true
+      conflict_resolution: >
+        L2는 L1/L0의 불변을 침범할 수 없다.
+        변경은 allowlist/rollout/rollback 규칙 내에서만 가능하다.
+    - level: "Annex"
+      name: "상세 설계/근거/예시"
+      authoritative: false
+      conflict_resolution: "Annex는 설명서. 상위 문서와 충돌하면 Annex를 수정한다."
+
+levels:
+  L0:
+    purpose: >
+      방어 시스템 전체에 적용되는 불변 규칙/공통 계약을 정의한다.
+      어떤 구현/문서도 L0를 임의로 재정의할 수 없다.
+    defines:
+      - "FlowState 불변 전이 및 전역 가드레일(S6 신규 개입 금지 등)"
+      - "TTL/만료 기준(hold/payment 등)과 멱등성(Idempotency) 원칙"
+      - "reasonCode 표준 및 HTTP 매핑"
+      - "decision_audit 최소 스키마 및 필수 로깅 요구"
+      - "Redis 상태 필드의 의미(semantic) 및 최소 보장"
+    must_not_define:
+      - "구체적인 런타임 액션 매트릭스(이는 L1)"
+      - "특정 엔드포인트별 구현 세부(이는 L1/Annex)"
+      - "운영 튜닝/최적화 실행 조건(이는 L2)"
+  L1:
+    purpose: >
+      방어 런타임의 '구현 계약(contracts)' SSOT.
+      누가 무엇을 읽고/쓰고/반환/집행하는지의 진실을 정의한다.
+    defines:
+      - "헤더/요청/응답/에러 바디 계약(x-defense-*, 403/428 등)"
+      - "events enum 및 runtime 이벤트 매핑"
+      - "Redis read/write contract + writer 책임"
+      - "Guard→Analyzer→Planner→Orchestrator 처리 순서 및 I/O"
+      - "Actuators 계약(Challenge/Throttle/Block)"
+      - "Enforcement(Envoy/ext_authz/Adapter) 집행 계약"
+    must_not_define:
+      - "L0 불변(전이/멱등/reasonCode/TTL) 재정의"
+      - "사후 최적화 정책(이는 L2)"
+  L2:
+    purpose: >
+      런타임 결과(decision_audit)를 기반으로 증거/지표를 정의하고,
+      정책 최적화(튜닝/롤아웃/롤백)를 수행하는 운영 SSOT.
+    defines:
+      - "observability: 필수 이벤트 subset, trace key, KPI 집계 규칙"
+      - "optimization: allowlist 기반 정책 패치, 실행 트리거(로그 개수 기반 등), rollout/rollback"
+    must_not_define:
+      - "런타임 불변 규칙 변경(L0 침범 금지)"
+      - "런타임 계약 변경(L1 침범 금지; 변경이 필요하면 L1 수정)"
+  Annex:
+    purpose: >
+      L1 계약을 구현 가능하게 만드는 상세 설명서.
+      알고리즘/근거/예시/엣지케이스/의사코드/파라미터 튜닝 가이드 포함.
+    defines:
+      - "guard_spec/turnstile_spec/throttle_spec/block_spec/challenge_spec 등 상세"
+    must_not_define:
+      - "L1과 충돌하는 계약(필드명/enum/HTTP 매핑 등)"
+
+runtime_structure:
+  # 너희가 선택한 C 구조(파일 수 축소) 기준
+  L1_runtime_files:
+    - path: "Specs/Defense/L1/runtime/index.yaml"
+      role: "runtime SSOT 인덱스(권위 파일 목록/참조 경로/버전)"
+      authoritative: true
+    - path: "Specs/Defense/L1/runtime/contracts.yaml"
+      role: "헤더/요청/응답/에러 바디 계약(403/428, x-defense-*)"
+      authoritative: true
+    - path: "Specs/Defense/L1/runtime/events.yaml"
+      role: "이벤트/시그널 enum 권위 리스트"
+      authoritative: true
+    - path: "Specs/Defense/L1/runtime/state.yaml"
+      role: "Redis 상태 필드/TTL/read-write contract + writer 책임"
+      authoritative: true
+    - path: "Specs/Defense/L1/runtime/logic.yaml"
+      role: "Guard→Analyzer→Planner→Orchestrator 로직 계약(요약본)"
+      authoritative: true
+    - path: "Specs/Defense/L1/runtime/actuators.yaml"
+      role: "Challenge/Throttle/Block 실행 계약(요약본)"
+      authoritative: true
+  annex_files:
+    - "Specs/Defense/annex/guard_spec.yaml"
+    - "Specs/Defense/annex/turnstile_spec.yaml"
+    - "Specs/Defense/annex/throttle_spec.yaml"
+    - "Specs/Defense/annex/block_spec.yaml"
+    - "Specs/Defense/annex/challenge_spec.yaml"
+    - "Specs/Defense/annex/analyzer_spec.yaml"
+    - "Specs/Defense/annex/planner_spec.yaml"
+    - "Specs/Defense/annex/orchestrator_spec.yaml"
+
+sdd_usage:
+  # 사람이/AI가 실제로 구현할 때 따르는 절차
+  implementation_check_order:
+    - step: 1
+      action: "L1 contracts/state/events/logic/actuators를 먼저 읽고 구현 계약을 확정"
+    - step: 2
+      action: "L0(l0_core/l0_defense_policy)의 불변 규칙과 충돌 여부 확인"
+    - step: 3
+      action: "Annex에서 상세 알고리즘/예시/파라미터를 확인하여 구현 디테일을 채움"
+    - step: 4
+      action: "충돌 발생 시 수정 규칙 적용(L0 우선, L1 우선, Annex는 설명서)"
+  conflict_rules:
+    - rule: "L0 ↔ L1 충돌 시 L1 수정"
+    - rule: "L1 ↔ Annex 충돌 시 Annex 수정(또는 L1을 더 명확히)"
+    - rule: "L2가 L0/L1을 침범하면 L2 수정(allowlist/guardrail로 제한)"
+  review_checklist:
+    - "HTTP 403/428 및 reasonCode가 L0 표준과 일치하는가?"
+    - "Redis writer 책임이 중복되지 않는가?"
+    - "S3 고정 챌린지 규칙이 깨지지 않는가?"
+    - "Throttle 집행 위치(Adapter delay)가 문서와 일치하는가?"
+    - "decision_audit 최소 스키마 누락이 없는가?"
+
+ai_reading_guidance:
+  # AI가 문서를 읽고 작업할 때의 규칙(자동화/에이전트용)
+  doc_selection:
+    - "정책/불변 질문 → L0"
+    - "런타임 필드/헤더/HTTP 계약 → L1/contracts"
+    - "Redis 필드 의미/TTL/writer 책임 → L1/state + L0 의미"
+    - "행동/알고리즘/엣지케이스 → Annex"
+    - "운영 튜닝/집계/롤아웃 → L2"
+  output_expectations:
+    - "새 기능/변경 제안은 반드시 어떤 레벨 문서를 수정해야 하는지 함께 제시"
+    - "새 규칙을 L0에 넣을지, L1에 넣을지 근거를 함께 제시"

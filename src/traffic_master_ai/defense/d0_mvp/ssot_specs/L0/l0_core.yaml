@@ -1,0 +1,263 @@
+apiVersion: "v1"
+kind: "L0-Core"
+metadata:
+  title: "Traffic-Master Ticketing MVP Global Invariant Law"
+  version: "1.0.1"
+  updatedAt: "2026-03-09"
+  authority: "Highest precedence over all Stage, Defense, and Feature SSOT documents"
+  description: >
+    Global invariant rules extracted from the Ticketing MVP codebase.
+    All subsystems (Frontend, Backend, Defense, Infra, Testing)
+    MUST comply with this document.
+    In case of conflict, this document prevails.
+
+# ============================================================
+# 1. GLOBAL IDENTIFIERS & TIME
+# ============================================================
+
+identifiers:
+  sessionId:
+    type: "string"
+    format: "UUID | ULID"
+    required: true
+    uniquenessScope: "active_session"
+
+  traceId:
+    type: "string"
+    format: "ULID"
+    required: true
+    description: "Used for cross-system tracing (audit, logs, observability)."
+
+  requestId:
+    type: "string"
+    format: "UUID | ULID"
+    required: true
+
+time:
+  canonicalUnit: "epoch_ms"
+  sourceOfTruth: "server"
+  rule: "Client timestamps are advisory only."
+
+# ============================================================
+# 2. GLOBAL FLOW STATE MACHINE
+# ============================================================
+
+flowState:
+  description: "Canonical ticketing lifecycle."
+
+  states:
+    S0: "Start / Initial"
+    S1: "Entry Clicked"
+    S2: "Queue Passed"
+    S3: "Security Verification (Fixed Stage)"
+    S4: "Section Selected"
+    S5: "Seat Held / Confirmed"
+    S6: "Payment Initiated"
+    SX: "Terminal State"
+
+  invariantTransitions:
+    - S0 -> S1: "FLOW_START"
+    - S1 -> S2: "STAGE_1_ENTRY_CLICKED"
+    - S2 -> S3: "STAGE_2_QUEUE_PASSED"
+    - S3 -> S4: "STAGE_3_CHALLENGE_PASSED"
+    - S4 -> S5: "STAGE_4_SECTION_SELECTED"
+    - S5 -> S6: "STAGE_5_CONFIRM_CLICKED"
+    - S6 -> SX: "STAGE_6_PAYMENT_COMPLETED"
+    - S6 -> S5: "TXN_ROLLBACK"
+    - ANY -> SX: "On Failure or Abort"
+
+  invariants:
+    - id: GI-1
+      rule: >
+        Once flowState == SX,
+        no further state transition is allowed.
+        Only logging and response serialization permitted.
+
+    - id: GI-2
+      rule: >
+        In S6 (Payment Stage),
+        no new verification or friction mechanisms
+        may be inserted except immediate BLOCK.
+
+    - id: GI-3
+      rule: >
+        S3 is a fixed security verification stage in the userflow.
+        Entry to S4 requires a successful S3 verification result.
+
+# ============================================================
+# 3. EXPIRY & TTL RULES
+# ============================================================
+
+expiry:
+  seatHold:
+    ttl_ms: 300000
+    description: "5 minutes hold duration"
+    atomicity: "All seats succeed or none"
+    invariant: "Partial hold is prohibited"
+
+  paymentWindow:
+    ttl_ms: 300000
+    description: "Payment window after hold"
+    invariant: "expiresAt must be computed server-side"
+
+timeoutPolicy:
+  maxRetryPerState: 3
+  abortFailureCode: "F_TIMEOUT"
+
+# ============================================================
+# 4. IDEMPOTENCY
+# ============================================================
+
+idempotency:
+  requiredEndpoints:
+    - "POST /api/holds"
+    - "POST /api/payments"
+
+  headerName: "Idempotency-Key"
+  scope: "session + endpoint"
+
+  ttlPolicy:
+    envKey: "TM_IDEMPOTENCY_TTL_SECONDS"
+    defaultSeconds: 600
+
+  behavior:
+    duplicateWithinTTL: "Return identical cached response without re-executing logic"
+    missingKey:
+      httpStatus: 400
+      reasonCode: "MISSING_IDEMPOTENCY_KEY"
+
+# ============================================================
+# 5. CONCURRENCY & ATOMICITY
+# ============================================================
+
+concurrency:
+  singleActiveHold:
+    scope: "Per session"
+    rule: >
+      A session may not have more than ONE active seat hold at a time.
+      Attempting another hold returns ALREADY_HAS_ACTIVE_HOLD.
+
+  holdAtomicity:
+    rule: >
+      Seat hold must be atomic.
+      Either all seats are reserved or none are reserved.
+
+# ============================================================
+# 6. API PROTOCOL STANDARD
+# ============================================================
+
+apiProtocol:
+  successResponse:
+    format:
+      status: "OK"
+      payload: "Endpoint-specific fields"
+
+  errorResponse:
+    format:
+      status: "FAIL"
+      reasonCode: "string"
+      message: "string"
+
+  reasonCodes:
+    mapping:
+      HELD_BY_OTHERS:
+        httpStatus: 409
+
+      EXPIRED:
+        httpStatus: 410
+
+      BLOCKED:
+        httpStatus: 403
+
+      CHALLENGE_REQUIRED:
+        httpStatus: 428
+
+      PAYMENT_FAILED:
+        httpStatus: 502
+
+      INVALID_HOLD:
+        httpStatus: 400
+
+      NOT_FOUND:
+        httpStatus: 404
+
+      VALIDATION_ERROR:
+        httpStatus: 400
+
+      INTERNAL_ERROR:
+        httpStatus: 500
+
+      MISSING_IDEMPOTENCY_KEY:
+        httpStatus: 400
+
+  invariant:
+    - "All error responses MUST include reasonCode."
+    - "All terminal responses MUST specify terminalReason (DONE | BLOCKED | ABORT)."
+
+# ============================================================
+# 7. OBSERVABILITY (GLOBAL)
+# ============================================================
+
+observability:
+  decisionAudit:
+    filename: "logs/decision_audit.jsonl"
+    format: "JSONL"
+    appendOnly: true
+    timestampFormat: "epoch_ms"
+
+    requiredFields:
+      tsMs: "epoch_ms"
+      traceId: "string"
+      sessionId: "string"
+      flowState: "string"
+      eventType: "string"
+      requestId: "string"
+      serverDecision:
+        riskTier: "string"
+        action: "string"
+        policyVersion: "string | null"
+      result:
+        status: "string"
+        httpStatus: "int | null"
+        reasonCode: "string | null"
+
+    piiPolicy:
+      rule: "No raw personal data allowed"
+
+# ============================================================
+# 8. SECURITY BASELINE
+# ============================================================
+# NOTE:
+# - Token mismatch / session binding is handled by Backend/Platform security in MVP.
+# - Defense Agent does NOT implement or depend on this rule directly.
+security:
+  scopeNote: "Platform security baseline (out of Defense Agent MVP scope)."
+  sessionBinding:
+    rule: >
+      Session token binding and mismatch detection are handled by backend.
+      Defense Agent MVP does not implement this logic.
+
+# ============================================================
+# 9. TEST & DEBUG HOOKS
+# ============================================================
+
+testing:
+  activationFlag:
+    header: "TM_TEST_MODE"
+    default: false
+
+  allowedHeaders:
+    X-TM-QueueWaitMs:
+      description: "Override queue wait delay"
+
+    X-TM-HoldFailRate:
+      description: "Simulate hold failure probability (0.0-1.0)"
+
+    X-TM-PaymentFailRate:
+      description: "Simulate payment failure probability (0.0-1.0)"
+
+    X-TM-ForceChallenge:
+      description: "Force challenge flow in test mode"
+
+  invariant:
+    - "Test hooks MUST NOT be active in production by default."

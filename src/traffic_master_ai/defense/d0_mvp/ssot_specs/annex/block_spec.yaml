@@ -1,0 +1,99 @@
+# Specs/Defense/annex/block_spec.yaml
+# Traffic-Master Defense — Block(차단) Spec (Annex)
+# v0.2.0 — tm:block:{sessionId} 분리 + contracts/events 표준 정합
+
+meta:
+  doc_id: "annex_block_spec"
+  title: "Block(차단) Spec — Envoy ext_authz Deny + Redis Persistence + Audit"
+  version: "0.2.0"
+  updated_at: "2026-03-09"
+  timezone: "Asia/Seoul"
+  owner_team: "traffic-master-ai"
+  status: "final"
+  language: "ko"
+  precedence_note: "L0 > L1 > annex"
+
+scope:
+  in_scope:
+    - "Block 집행(Envoy deny + Redis 기록 + audit)"
+    - "Block 응답 코드/헤더/바디(reasonCode 포함)"
+    - "Block 상태 지속성 및 TTL"
+  out_of_scope:
+    - "Block 결정 로직(Planner/Policy)"
+    - "Token mismatch 검증 로직(Backend)"
+
+actors_and_responsibilities:
+  ai_defense_service:
+    role: "판정(Decision) + persistence canonical writer"
+    responsibilities:
+      - "evaluate 결과로 action=BLOCK 반환(정책에 의해)"
+      - "권장: Redis에 tm:block:{sessionId} 상태를 기록(원자성 보장)"
+  adapter:
+    role: "집행(Enforcement) 경유"
+    responsibilities:
+      - "AI /evaluate가 BLOCK이면 ext_authz deny(403)를 구성"
+  envoy:
+    role: "차단 실행자(PEP)"
+    responsibilities:
+      - "deny 응답이면 upstream 전달 없이 FE에 즉시 응답"
+
+block_decision_contract:
+  reference: "Specs/Defense/L1/runtime/contracts.yaml#schemas.DefenseDecision"
+  required_headers:
+    - "x-defense-tier"
+    - "x-defense-action=BLOCK"
+    - "x-defense-policy-version"
+  optional_headers:
+    - "x-defense-block-ttl-seconds"
+
+block_enforcement:
+  http_response:
+    status_code: 403
+    reason_code: "BLOCKED"
+    body_schema_ref: "Specs/Defense/L1/runtime/contracts.yaml#schemas.ErrorResponse"
+    message_default_ko: "요청이 차단되었습니다."
+  response_headers_required:
+    - "x-defense-tier"
+    - "x-defense-action"
+    - "x-defense-policy-version"
+
+persistence:
+  enabled_default: true
+  storage:
+    backend: "redis"
+    key: "tm:block:{sessionId}"
+    ttl_seconds_env: "TM_BLOCK_TTL_SECONDS"
+    ttl_seconds_default: 1800
+  value_schema:
+    blockedAtMs: "epoch_ms"
+    blockedUntilMs: "epoch_ms"
+    reasonCode: "string|null"
+    policyVersion: "string|null"
+  writer_responsibility:
+    canonical_writer: "AI Defense Service"
+    rule: "Block persistence는 AI Defense Service가 수행(단일 writer)."
+  read_path_rule:
+    - "요청 처리 시작 시 tm:block:{sessionId} 존재하면 /evaluate 없이 즉시 BLOCK 반환 가능(최적화)."
+
+dedup_and_idempotency:
+  dedup_key:
+    format: "traceId + eventType + floor(tsMs / ts_bucket_ms)"
+    ts_bucket_ms_env: "TM_DEDUP_TS_BUCKET_MS"
+    ts_bucket_ms_default: 200
+  behavior:
+    - "동일 traceId 반복 호출은 항상 동일 deny(403 + BLOCKED) 반환"
+    - "blocked 상태가 있으면 결과가 흔들리지 않도록 terminal-first 적용"
+
+audit_logging:
+  destination: "logs/decision_audit.jsonl"
+  required_core_fields_ref: "L0-Core observability.decisionAudit.requiredFields"
+  extension_fields_ref: "L0-Defense-Policy observability.decisionAuditExtension.optionalFields"
+  event_types:
+    - "DEF_BLOCK_DECIDED"
+    - "DEF_BLOCK_ENFORCED"
+  fields_hint:
+    block:
+      ttl_seconds: "int"
+      storage_key: "tm:block:{sessionId}"
+
+open_questions_tbd: []

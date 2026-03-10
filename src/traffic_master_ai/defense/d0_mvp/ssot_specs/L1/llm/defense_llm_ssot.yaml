@@ -1,0 +1,392 @@
+# Specs/Defense/L1/llm/defense_llm_ssot.yaml
+# Traffic-Master Defense — LLM SSOT (L1/llm)
+# v1.0.1 — SDD용 “LLM 사용 계약” 권위 문서(런타임 섹션 제거, 오프라인 전용)
+#
+# 핵심(최신 결정 반영):
+# - 런타임 LLM(Heavy Judge) 금지: Guard/Analyzer/Planner/Orchestrator 경로에서 LLM 호출 금지.
+# - Dynamic Challenge(문항 생성) 금지: S3 VQA는 고정형(사전 제작/시드 기반)이며 LLM 생성/판정 없음.
+# - LLM은 “사후 분석/정책 튜닝(Offline/Async)”에서만 사용 가능.
+# - 실행 트리거는 시간 기반이 아니라 “로그 개수(샘플 수)” 기반.
+#
+# 문서 범위:
+# - 오프라인 LLM 실행 조건, 입력 데이터 최소화, 출력 스키마, allowlist 패치, 롤아웃/롤백, 안전장치.
+#
+# 우선순위:
+# - L0(l0_core.yaml, l0_defense_policy.yaml) > L1(runtime/*.yaml, 본 문서) > L2 > annex
+
+meta:
+  doc_id: "defense_llm_ssot"
+  title: "Traffic-Master Defense LLM SSOT — Offline Only"
+  version: "1.0.1"
+  updated_at: "2026-03-08"
+  timezone: "Asia/Seoul"
+  hierarchy:
+    level: "L1/llm"
+    sits_under:
+      - "Specs/Defense/L0/l0_core.yaml"
+      - "Specs/Defense/L0/l0_defense_policy.yaml"
+      - "Specs/Defense/L0/l0_sdd_guide.yaml"
+    referenced_by:
+      - "Specs/Defense/L2/observability/defense_observability_ssot.yaml"
+      - "Specs/Defense/L2/optimization/defense_policy_optimization_ssot.yaml"
+  owners:
+    - team: "traffic-master-ai"
+      role: "Defense LLM (Offline) Architecture"
+  principles:
+    - "LLM은 런타임 의존성이 아니다(offline only)."
+    - "LLM은 정책/로그 분석에만 쓰며, 사용자 요청 경로에 직접 영향 주지 않는다."
+    - "동적 챌린지 생성/LLM 판정 금지(S3 고정 VQA 유지)."
+    - "출력은 schema-validated JSON만 허용. invalid면 즉시 NO_CHANGE."
+    - "입력 데이터는 privacy-safe(PII/원문/DOM/원시 궤적 금지) + audit 기반 요약만 사용."
+    - "정책 변경은 allowlist + canary rollout + rollback 조건을 반드시 가진다."
+
+enablement:
+  runtime_llm:
+    enabled: false
+    prohibited_use_cases:
+      - "HEAVY_JUDGE"
+      - "DYNAMIC_CHALLENGE_GENERATION"
+      - "RUNTIME_DECISION_OVERRIDE"
+    enforcement_note: >
+      런타임 LLM 호출은 L1/runtime/logic.yaml과 충돌한다.
+      런타임 경로에서 LLM 호출이 필요해지면 L0/L1 설계 변경(새 레벨/새 액터) 절차를 거쳐야 한다.
+  offline_llm:
+    enabled: true
+    allowed_use_cases:
+      - "EFFECT_EVALUATOR (policy patch proposal)"
+      - "AUDIT_SUMMARIZER (human-readable report)"
+    non_goals:
+      - "정책 패치의 자동 적용(apply)은 수행하지 않는다(제안만)."
+      - "allowlist 밖 변경 제안 금지."
+
+# =============================================================================
+# 1) PROVIDER / MODEL (OFFLINE)
+# =============================================================================
+llm_provider:
+  provider: "OpenAI"
+  transport:
+    protocol: "REST"
+    hard_timeout_ms_env: "TM_OFFLINE_LLM_TIMEOUT_MS"
+    hard_timeout_default_ms: 2500
+  retry:
+    enabled: true
+    max_retries: 1
+    backoff_ms: 100
+    retry_on: ["5xx", "timeout"]
+    never_retry_on: ["schema_invalid", "4xx"]
+  safety:
+    response_format: "json"
+    max_output_tokens_env: "TM_OFFLINE_LLM_MAX_OUTPUT_TOKENS"
+    max_output_tokens_default: 1200
+  models:
+    default_model_env: "TM_OFFLINE_LLM_MODEL"
+    default_model: "gpt-5-mini"
+    allowed_models:
+      - "gpt-5-mini"
+      - "gpt-5.1-mini"
+      - "gpt-4.1-mini"
+
+# =============================================================================
+# 2) INPUT POLICY — DATA MINIMIZATION (OFFLINE)
+# =============================================================================
+data_minimization:
+  allowed_sources:
+    - "decision_audit.jsonl (aggregated metrics + sampled traces)"
+    - "rollout metadata(policyVersion, canary ratio)"
+  forbidden:
+    - "raw_mouse_points[]"
+    - "raw_key_events[]"
+    - "full_dom_html"
+    - "css_selectors"
+    - "user_text_inputs"
+    - "email/phone/address"
+    - "full IP address"
+  payload_limits:
+    max_bytes_env: "TM_OFFLINE_LLM_INPUT_MAX_BYTES"
+    max_bytes_default: 8000
+    behavior_if_exceeded:
+      action: "TRUNCATE_AND_FLAG"
+      audit_field: "offline_llm.input_truncated"
+      rule: "Drop optional aggregates first; keep window_meta + core outcome metrics"
+  sampling_policy:
+    max_sample_traces_env: "TM_OFFLINE_LLM_MAX_SAMPLE_TRACES"
+    max_sample_traces_default: 50
+    sampling_priority:
+      - "BLOCKED traces"
+      - "S3 fail bursts"
+      - "high throttle delay applied"
+    dedup_key: "traceId"
+
+# =============================================================================
+# 3) TRIGGERS — LOG COUNT BASED
+# =============================================================================
+offline_triggers:
+  trigger_unit: "audit_event_count"
+  effect_evaluator:
+    enabled: true
+    thresholds:
+      min_events_total_env: "TM_EVAL_MIN_EVENTS_TOTAL"
+      min_events_total_default: 2000
+      min_unique_sessions_env: "TM_EVAL_MIN_UNIQUE_SESSIONS"
+      min_unique_sessions_default: 200
+      min_events_by_type:
+        DEF_THROTTLE_APPLIED:
+          env: "TM_EVAL_MIN_THROTTLE_EVENTS"
+          default: 100
+        S3_CHALLENGE_RESULT:
+          env: "TM_EVAL_MIN_S3_EVENTS"
+          default: 100
+    cooldown:
+      cooldown_seconds_env: "TM_EVAL_COOLDOWN_SECONDS"
+      cooldown_seconds_default: 600
+  audit_summarizer:
+    enabled: true
+    thresholds:
+      min_events_total_env: "TM_SUM_MIN_EVENTS_TOTAL"
+      min_events_total_default: 500
+    cooldown:
+      cooldown_seconds_env: "TM_SUM_COOLDOWN_SECONDS"
+      cooldown_seconds_default: 300
+
+# =============================================================================
+# 4) OFFLINE MODULES
+# =============================================================================
+modules:
+  effect_evaluator:
+    enabled: true
+    purpose: "audit 집계 기반 정책 패치 후보를 생성(제안)한다."
+    outputs_are_advisory_only: true
+    input_contract:
+      required_aggregates:
+        window_meta:
+          - "window_start_ms"
+          - "window_end_ms"
+          - "policy_version"
+          - "ab_group(optional)"
+        traffic:
+          - "unique_sessions"
+          - "unique_traces"
+          - "event_counts_by_type"
+        defense_outcomes:
+          - "tier_distribution"
+          - "action_distribution"
+          - "block_rate"
+          - "require_s3_rate"
+          - "throttle_applied_rate"
+          - "avg_throttle_delay_ms"
+          - "s3_pass_rate"
+          - "s3_fail_rate"
+          - "s3_temp_lock_rate"
+        integrity:
+          - "dedup_duplicate_rate"
+          - "missing_feature_rate"
+    json_output_schema:
+      schema_name: "EffectEvaluatorPatchProposalV1"
+      json_schema:
+        type: "object"
+        additionalProperties: false
+        required:
+          [
+            "proposal_id",
+            "base_policy_version",
+            "patches",
+            "rationale",
+            "rollback_conditions",
+          ]
+        properties:
+          proposal_id: { type: "string" }
+          base_policy_version: { type: "string" }
+          patches:
+            type: "array"
+            minItems: 1
+            maxItems: 12
+            items:
+              type: "object"
+              additionalProperties: false
+              required: ["path", "op", "value", "why"]
+              properties:
+                path: { type: "string" }
+                op: { type: "string", enum: ["set", "inc", "dec"] }
+                value: {}
+                why: { type: "string", maxLength: 280 }
+          rationale: { type: "string", maxLength: 1200 }
+          confidence: { type: "number", minimum: 0.0, maximum: 1.0 }
+          rollback_conditions:
+            type: "array"
+            minItems: 1
+            maxItems: 12
+            items: { type: "string", maxLength: 200 }
+          notes: { type: "string", maxLength: 600 }
+
+    allowlist_policy_patch:
+      allowed_paths:
+        - "risk.alpha"
+        - "tier.thresholds.T0_max"
+        - "tier.thresholds.T1_max"
+        - "tier.thresholds.T2_max"
+        - "tier.hysteresis.margin"
+        - "risk.probation_seconds"
+        - "planner.throttle_delay_ms.T1"
+        - "planner.throttle_delay_ms.T2"
+        - "challenge.max_attempts"
+        - "challenge.cooldown_ms.first"
+        - "challenge.cooldown_ms.second"
+        - "challenge.halt_seconds"
+      forbidden_paths:
+        - "l0.*"
+        - "reasonCodes.*"
+        - "flowState.transitions.*"
+        - "state.required_fields.*"
+        - "runtime_llm.*"
+        - "challenge.dynamic_generation.*"
+
+    safety_guards:
+      patch_constraints:
+        planner.throttle_delay_ms:
+          T1: { min: 0, max: 200 }
+          T2: { min: 100, max: 600 }
+        tier.thresholds:
+          enforce_monotonic: true
+        challenge.max_attempts: { min: 1, max: 3 }
+        challenge.halt_seconds: { min: 0, max: 120 }
+
+    rollback_policy_template:
+      default_rollback_conditions:
+        - "s3_temp_lock_rate increases > +0.5%p"
+        - "block_rate increases > +0.3%p"
+        - "avg_throttle_delay_ms increases > +100ms"
+        - "s3_fail_rate increases > +1.0%p"
+        - "dedup_duplicate_rate spikes > +2.0%p"
+
+    system_prompt:
+      name: "traffic-master-defense-effect-evaluator-v2-offline-only"
+      content: |
+        You are the Traffic-Master Defense Effect Evaluator (OFFLINE).
+        Analyze aggregated decision_audit metrics and propose small, reversible policy parameter changes.
+
+        Hard rules:
+        - Runtime LLM is disabled. Do not propose runtime LLM usage.
+        - Do NOT propose dynamic challenge generation. S3 challenge is fixed.
+        - Only propose patches within the provided allowlist paths.
+        - Do not modify L0 invariants (reason codes, flow transitions, idempotency, TTL invariants).
+        - Prefer minimal, reversible changes with explicit rollback conditions.
+        - Output MUST be valid JSON matching the schema.
+
+        If signals are inconclusive, recommend no change or output low confidence.
+
+  audit_summarizer:
+    enabled: true
+    purpose: "audit 집계 결과를 사람이 읽기 쉬운 요약으로 변환(의사결정 보조)."
+    outputs_are_non_binding: true
+    output_format: "markdown"
+    input_contract:
+      required_aggregates:
+        - "window_start_ms"
+        - "window_end_ms"
+        - "policy_version"
+        - "tier_distribution"
+        - "action_distribution"
+        - "s3_pass_rate"
+        - "s3_temp_lock_rate"
+        - "block_rate"
+        - "avg_throttle_delay_ms"
+    system_prompt:
+      name: "traffic-master-defense-audit-summarizer-v1"
+      content: |
+        Summarize the given aggregated defense audit metrics for engineers.
+        Keep it concise and factual. Highlight notable deltas and possible causes.
+        Avoid speculation. Do not propose changes outside the allowlist.
+
+# =============================================================================
+# 5) OFFLINE SAFETY — BUDGET / CONCURRENCY / CIRCUIT BREAKER
+# =============================================================================
+offline_controls:
+  budgets:
+    per_run:
+      max_calls_env: "TM_OFFLINE_LLM_MAX_CALLS_PER_RUN"
+      max_calls_default: 2
+    global:
+      qps_limit_env: "TM_OFFLINE_LLM_QPS_LIMIT"
+      qps_limit_default: 5
+      concurrency_limit_env: "TM_OFFLINE_LLM_CONCURRENCY_LIMIT"
+      concurrency_limit_default: 2
+    exhaustion_behavior:
+      action: "SKIP_OFFLINE_LLM"
+      note: "예산 소진 시 해당 실행은 건너뛰고 패치 제안 없음"
+  circuit_breaker:
+    enabled: true
+    window_seconds_env: "TM_OFFLINE_LLM_CB_WINDOW_SECONDS"
+    window_seconds_default: 300
+    thresholds:
+      timeout_rate_disable_env: "TM_OFFLINE_LLM_CB_TIMEOUT_RATE_DISABLE"
+      timeout_rate_disable_default: 0.20
+      error_rate_disable_env: "TM_OFFLINE_LLM_CB_ERROR_RATE_DISABLE"
+      error_rate_disable_default: 0.20
+    disable_duration_seconds_env: "TM_OFFLINE_LLM_CB_DISABLE_SECONDS"
+    disable_duration_seconds_default: 900
+    when_disabled:
+      behavior: "SKIP_OFFLINE_LLM"
+
+# =============================================================================
+# 6) VALIDATION / FALLBACK
+# =============================================================================
+validation_and_fallback:
+  schema_validation:
+    required: true
+    on_invalid:
+      action: "DROP_OUTPUT"
+      fallback: "NO_CHANGE"
+  guardrails:
+    - "allowlist 밖 path 포함 시 전체 무효"
+    - "patch_constraints 위반 시 전체 무효"
+  fallback:
+    on_any_failure:
+      [
+        "timeout",
+        "error",
+        "schema_invalid",
+        "budget_exhausted",
+        "circuit_breaker_open",
+      ]
+    action: "NO_CHANGE"
+
+# =============================================================================
+# 7) AUDIT — OFFLINE LLM 로깅(선택)
+# =============================================================================
+audit_contract_additions:
+  offline_llm_event_types:
+    - OFFLINE_LLM_RUN_STARTED
+    - OFFLINE_LLM_RUN_FINISHED
+    - OFFLINE_LLM_PATCH_PROPOSED
+    - OFFLINE_LLM_SKIPPED
+  fields:
+    offline_llm:
+      model: "string"
+      latency_ms: "int"
+      tokens_in: "int"
+      tokens_out: "int"
+      skipped_reason: "string|null"
+      input_truncated: "bool|null"
+      proposal_id: "string|null"
+      base_policy_version: "string|null"
+      patches_count: "int|null"
+      confidence: "float|null"
+
+mvp_defaults:
+  runtime_llm_enabled: false
+  dynamic_challenge_enabled: false
+  offline_effect_evaluator_enabled: true
+  trigger_mode: "log_count_based"
+  default_policy_parameters:
+    risk:
+      alpha: 0.30
+      probation_seconds: 45
+    tier:
+      thresholds: { T0_max: 0.2, T1_max: 0.5, T2_max: 0.8 }
+      hysteresis_margin: 0.02
+    planner:
+      throttle_delay_ms: { T1: 80, T2: 250 }
+    challenge:
+      max_attempts: 2
+      cooldown_ms: { first: 0, second: 2500 }
+      halt_seconds: 30

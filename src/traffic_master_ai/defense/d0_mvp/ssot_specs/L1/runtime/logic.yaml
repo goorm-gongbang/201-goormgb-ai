@@ -1,0 +1,332 @@
+# Specs/Defense/L1/runtime/logic.yaml
+# Defense Runtime Logic SSOT (L1)
+# v1.0.0 — Guard→Analyzer→Planner→Orchestrator 파이프라인 “구현 계약” 권위 문서
+#
+# 목적:
+# - 방어 런타임이 어떤 순서로 무엇을 계산하고, 어떤 상태를 읽고/쓰며,
+#   어떤 응답(allow/deny + x-defense-*)을 만들어 내는지의 “진실”을 고정한다.
+# - Annex(상세 스펙)에서 이미 정의된 알고리즘을 L1 수준의 “요약 계약”으로 내려앉힌다.
+#
+# 전제(MVP 확정):
+# - Runtime LLM 없음, PyOD 런타임 없음
+# - Honey/GATE/Sandbox 없음
+# - S3 Challenge(VQA)는 고정 단계
+# - Throttle은 Adapter Delay Injection
+# - Block은 Envoy ext_authz deny(403) + persistence 권장
+#
+# 우선순위: L0 > L1 > L2 > annex
+
+meta:
+  doc_id: "l1_runtime_logic"
+  title: "Defense Runtime Logic (L1) — Pipeline & Decisions"
+  version: "1.0.0"
+  updated_at: "2026-03-08"
+  timezone: "Asia/Seoul"
+  owner_team: "defense-runtime"
+  status: "draft"
+  language: "ko"
+
+governance:
+  precedence: "L0 > L1 > L2 > annex"
+  authoritative_links:
+    contracts: "Specs/Defense/L1/runtime/contracts.yaml"
+    events: "Specs/Defense/L1/runtime/events.yaml"
+    state: "Specs/Defense/L1/runtime/state.yaml"
+    actuators: "Specs/Defense/L1/runtime/actuators.yaml"
+  invariants_ref:
+    l0_core: "Specs/Defense/L0/l0_core.yaml"
+    l0_policy: "Specs/Defense/L0/l0_defense_policy.yaml"
+  mvp_assumptions:
+    runtime_llm_enabled: false
+    honey_enabled: false
+    gate_enabled: false
+    sandbox_enabled: false
+    s3_challenge_fixed: true
+    throttle_enforcement: "Adapter delay injection"
+    block_enforcement: "Envoy ext_authz deny(403) + persistence recommended"
+
+pipeline:
+  order:
+    - GUARD
+    - ANALYZER
+    - PLANNER
+    - ORCHESTRATOR
+  notes:
+    - "각 단계는 동일 요청(/evaluate)을 처리하는 내부 파이프라인 단계로 동작한다."
+    - "실제 집행은 Adapter/Envoy(actuators.yaml)에 의해 수행되며, AI 런타임은 헤더/결정만 제공한다."
+
+inputs:
+  evaluate_request:
+    ref: "Specs/Defense/L1/runtime/contracts.yaml#ai_evaluate"
+  required_headers_ref: "Specs/Defense/L1/runtime/contracts.yaml#headers.required_in_all_defense_paths"
+  required_context:
+    - "event.eventType"
+    - "event.tsMs"
+    - "event.flowState"
+    - "context.policyVersion"
+  optional_context:
+    - "event.requestPath"
+    - "event.requestMethod"
+    - "event.s3Result"
+    - "context.features (feature summary)"
+    - "context.meta (envoy/adapter meta)"
+
+deduplication:
+  # 런타임 파이프라인 공통 dedup(중복 처리)
+  # - Guard/Analyzer/Turnstile annex에서도 dedup을 정의하지만, L1에서는 공통 원칙만 고정한다.
+  key_schema_ref: "Specs/Defense/L1/runtime/events.yaml#dedup.key_schema"
+  ts_bucket_ms_env: "TM_DEDUP_TS_BUCKET_MS"
+  ts_bucket_ms_default: 200
+  ttl_seconds_env: "TM_DEDUP_TTL_SECONDS"
+  ttl_seconds_default: 600
+  behavior:
+    - "동일 dedup key면 Guard/Analyzer 업데이트는 no-op(중복 누적 금지)."
+    - "Planner/Orchestrator는 현재 state 기반으로 idempotent한 결정만 반환."
+    - "audit에는 dedup.isDuplicate=true 기록."
+
+state_interaction:
+  redis_key: "tm:sess:{sessionId}"
+  read_before_pipeline:
+    required_fields_ref: "Specs/Defense/L1/runtime/state.yaml#schema.session_fields.required_fields"
+    optional_fields_ref: "Specs/Defense/L1/runtime/state.yaml#schema.session_fields.optional_fields"
+    fields_minimum:
+      - "flowState"
+      - "riskScore"
+      - "defenseTier"
+      - "probationUntilMs"
+      - "challengeFailCount"
+      - "s3Passed(optional)"
+      - "challengeHaltUntilMs(optional)"
+      - "blocked(optional)"
+      - "policyVersion"
+  write_after_pipeline:
+    writer_responsibility_ref: "Specs/Defense/L1/runtime/state.yaml#writer_responsibility"
+    atomicity:
+      rule: >
+        동일 sessionId에 대해 Guard riskScore 갱신과 Analyzer 카운터 갱신이 섞여도
+        상태가 깨지지 않도록 원자 갱신을 보장해야 한다.
+      recommended: ["Lua script", "WATCH/MULTI", "INCR for counters"]
+
+guard:
+  # Guard는 riskScore(EWMA) 및 tier 산출의 권위 주체
+  purpose: "step risk 계산 + EWMA 누적 + tier 산출"
+  inputs:
+    external_score_source:
+      - "TURNSTILE_VERIFIED.externalScore (있으면)"
+      - "features.turnstile_score (있으면)"
+      - "없으면 0.5 (중립)"
+    telemetry_features_source: "context.features (feature summary)"
+  algorithm_ref: "Specs/Defense/annex/guard_spec.yaml"
+  outputs:
+    writes_to_state:
+      - "riskScore"
+      - "defenseTier"
+      - "lastStepRisk(optional)"
+      - "lastGuardTsMs(optional)"
+    to_next_stage:
+      - "tier"
+      - "riskScore"
+      - "rule_hits"
+      - "missing_flags"
+  tier_thresholds:
+    # L0 기준을 그대로 재선언(참조 용)
+    T0: [0.0, 0.2]
+    T1: [0.2, 0.5]
+    T2: [0.5, 0.8]
+    T3: [0.8, 1.0]
+  audit:
+    emit: "DEF_GUARD_SCORED"
+    include_breakdown: true
+
+analyzer:
+  # Analyzer는 증거/카운터 업데이트 담당(결정적 룰 기반, 모델 추론 없음)
+  purpose: "evidence update + counter update + planner summary"
+  algorithm_ref: "Specs/Defense/annex/analyzer_spec.yaml"
+  inputs:
+    from_guard:
+      - "tier"
+      - "riskScore"
+    from_event:
+      - "eventType"
+      - "flowState"
+      - "requestPath/method(optional)"
+      - "s3Result(optional)"
+    from_state:
+      - "challengeFailCount"
+      - "holdFailStreak"
+      - "seatTakenStreak"
+      - "probationUntilMs"
+  outputs:
+    writes_to_state:
+      - "challengeFailCount (S3 FAIL)"
+      - "probationUntilMs (S3 PASS)"
+      - "challengeHaltUntilMs(optional, attempts exceeded)"
+      - "holdFailStreak / seatTakenStreak (입력 이벤트가 있을 때만)"
+    to_next_stage:
+      - "evidence_summary_for_planner"
+  audit:
+    emit: "DEF_ANALYZER_EVIDENCE_UPDATED"
+
+planner:
+  # Planner는 tier/flowState/evidence를 기반으로 action을 선택
+  purpose: "action 선택(NONE/THROTTLE/REQUIRE_S3/BLOCK)"
+  algorithm_ref: "Specs/Defense/annex/planner_spec.yaml"
+  action_enum_ref: "Specs/Defense/L1/runtime/contracts.yaml#headers.defense_response_headers.x-defense-action"
+  invariants:
+    - "S3 고정: S4/S5에서 s3Passed=false면 REQUIRE_S3(428)로 회귀"
+    - "S6 신규 개입 금지: S6에서는 NONE 또는 BLOCK만"
+    - "blocked=true면 무조건 BLOCK(terminal-first)"
+  default_rules_mvp:
+    # 세부 값은 ‘적정값’으로 확정(요청에 따라 여기서 고정)
+    # (1) 이미 차단된 세션
+    - when: "state.blocked == true"
+      then: { action: "BLOCK", reason: "persisted_block" }
+    # (2) terminal
+    - when: "state.flowState == SX"
+      then: { action: "NONE", reason: "terminal_no_replan" }
+    # (3) S3 고정 gate
+    - when: "(state.flowState in [S4,S5]) and (state.s3Passed != true)"
+      then:
+        action: "REQUIRE_S3"
+        reason: "s3_not_passed"
+        deny_http_status: 428
+        deny_reason_code: "CHALLENGE_REQUIRED"
+    # (4) S6 제약
+    - when: "state.flowState == S6"
+      then: { action: "NONE", reason: "no_new_intervention_in_s6" }
+    # (5) tier 기반 기본
+    - when: "guard.tier == T0"
+      then: { action: "NONE", reason: "tier_t0" }
+    - when: "guard.tier == T1"
+      then: { action: "THROTTLE", reason: "tier_t1_delay" }
+    - when: "guard.tier == T2"
+      then: { action: "THROTTLE", reason: "tier_t2_delay" }
+    - when: "guard.tier == T3"
+      then: { action: "BLOCK", reason: "tier_t3_block" }
+  throttle_parameters:
+    # Adapter가 sleep할 기본값(contracts.yaml/actuators.yaml과 정합)
+    tier_default_delay_ms:
+      T0: 0
+      T1: 80
+      T2: 250
+      T3: 0
+    max_delay_ms_env: "TM_THROTTLE_MAX_DELAY_MS"
+    max_delay_ms_default: 2000
+  audit:
+    emit: "DEF_PLAN_COMPUTED"
+
+orchestrator:
+  # Orchestrator는 terminal-first, 전이 유효성, 상태 커밋을 담당
+  purpose: "execution order + state transition + response shaping"
+  algorithm_ref: "Specs/Defense/annex/orchestrator_spec.yaml"
+  terminal_first:
+    rules:
+      - "state.blocked==true → allow=false(403)"
+      - "planner.action==BLOCK → allow=false(403) + persistence(권장)"
+  transition_validation:
+    allowed_transitions:
+      - "S0->S1"
+      - "S1->S2"
+      - "S2->S3"
+      - "S3->S4"
+      - "S4->S5"
+      - "S5->S6"
+      - "S6->SX"
+      - "S1->SX"
+      - "S2->SX"
+      - "S3->SX"
+      - "S4->SX"
+      - "S5->SX"
+    invalid_transition_policy:
+      http_status: 409
+      reason_code: "INVALID_TRANSITION"
+      message_ko: "허용되지 않는 진행 단계입니다."
+      audit_event: "DEF_INVALID_TRANSITION"
+      behavior: "상태 변경 없음 + deny"
+  s3_pass_commit:
+    # S3 verify PASS 시 Orchestrator가 s3Passed를 true로 기록
+    redis_field: "s3Passed"
+    set_on_event: "S3_RESULT(PASS)"
+  response_shaping:
+    # Orchestrator는 최종 DefenseDecision을 헤더로 직렬화
+    headers_required:
+      - "x-defense-tier"
+      - "x-defense-action"
+      - "x-defense-policy-version"
+    headers_optional:
+      - "x-defense-throttle-ms (action=THROTTLE)"
+      - "x-defense-block-ttl-seconds (action=BLOCK)"
+    deny_responses:
+      REQUIRE_S3:
+        http_status: 428
+        reason_code: "CHALLENGE_REQUIRED"
+      BLOCK:
+        http_status: 403
+        reason_code: "BLOCKED"
+      INVALID_TRANSITION:
+        http_status: 409
+        reason_code: "INVALID_TRANSITION"
+  audit:
+    emit: "DEF_ORCH_EXECUTED"
+
+enforcement_integration:
+  # AI 런타임 결정이 실제로 적용되는 지점(집행)
+  adapter_behavior:
+    throttle_delay:
+      when: "x-defense-action == THROTTLE"
+      do: "sleep(x-defense-throttle-ms or tier default) then allow"
+      audit: "DEF_THROTTLE_APPLIED"
+  envoy_behavior:
+    deny:
+      when: "x-defense-action in [BLOCK, REQUIRE_S3] or INVALID_TRANSITION"
+      do: "deny with status + ErrorResponse + x-defense-* headers"
+
+outputs:
+  # /evaluate 최종 응답(내부적으로 DefenseDecision) — contracts.yaml 참조
+  defense_decision:
+    schema_ref: "Specs/Defense/L1/runtime/contracts.yaml#schemas.DefenseDecision"
+    header_projection:
+      tier_to_header: "x-defense-tier"
+      action_to_header: "x-defense-action"
+      policy_version_to_header: "x-defense-policy-version"
+      throttle_ms_to_header: "x-defense-throttle-ms"
+      block_ttl_to_header: "x-defense-block-ttl-seconds"
+
+defaults_mvp:
+  policy_version: "v2.0-mvp"
+  dedup_ts_bucket_ms: 200
+  dedup_ttl_seconds: 600
+  throttle_delay_ms:
+    T1: 80
+    T2: 250
+  block_ttl_seconds: 1800
+  invalid_transition_http: 409
+
+acceptance_tests:
+  - id: "LG-1"
+    name: "T1/T2는 THROTTLE 헤더 반환"
+    pass_criteria:
+      - "x-defense-action=THROTTLE"
+      - "x-defense-throttle-ms 존재 또는 tier 기본값 적용"
+  - id: "LG-2"
+    name: "S4/S5에서 s3Passed=false면 428(REQUIRE_S3)"
+    pass_criteria:
+      - "http_status=428"
+      - "reasonCode=CHALLENGE_REQUIRED"
+  - id: "LG-3"
+    name: "T3는 BLOCK(403)"
+    pass_criteria:
+      - "http_status=403"
+      - "reasonCode=BLOCKED"
+  - id: "LG-4"
+    name: "invalid transition은 409"
+    pass_criteria:
+      - "http_status=409"
+      - "reasonCode=INVALID_TRANSITION"
+  - id: "LG-5"
+    name: "dedup된 이벤트는 risk/counter 중복 누적 없음"
+    pass_criteria:
+      - "dedup.isDuplicate=true"
+      - "riskScore/challengeFailCount가 추가로 변하지 않음"
+
+open_questions_tbd: []
