@@ -1,0 +1,14 @@
+server:
+  port: 8080
+
+trafficmaster:
+  audit:
+    log-path: "logs/decision_audit.jsonl"
+  test-mode:
+    enabled: ${TM_TEST_MODE:false}
+
+spring:
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+    default-property-inclusion: non_null

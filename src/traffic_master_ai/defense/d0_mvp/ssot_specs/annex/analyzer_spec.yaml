@@ -1,0 +1,221 @@
+# annex/analyzer_spec.yaml
+# Traffic-Master Defense — Analyzer Spec (Annex)
+# v1.0.0 — SDD (사람/AI가 그대로 구현 가능한 계약)
+#
+# Analyzer의 역할(현 설계 기준):
+# - Guard가 산출/누적한 riskScore(EWMA(지수이동평균)) 및 tier를 "그대로 신뢰"하되,
+# - 이벤트/상태 기반의 증거(evidence) 및 런타임 카운터(연속 실패/스캔성 호출 등)를 업데이트하고,
+# - Planner가 액션을 선택할 수 있도록 "증거 요약"을 만든다.
+#
+# 전제(확정):
+# - 런타임 LLM 없음, PyOD 런타임 사용 안 함(OFF)
+# - Honey/GATE/Sandbox 없음
+# - Challenge(VQA)는 S3 고정(별도 challenge_spec.yaml)
+# - Throttle은 Adapter Delay Injection(별도 throttle_spec.yaml)
+# - Block은 Envoy deny + Redis persistence(별도 block_spec.yaml)
+#
+# 우선순위: L0 > L1 > annex
+
+meta:
+  doc_id: "annex_analyzer_spec"
+  title: "Analyzer Spec — Evidence & Counter Update (Deterministic)"
+  version: "1.0.0"
+  updated_at: "2026-03-08"
+  timezone: "Asia/Seoul"
+  owner_team: "defense-runtime"
+  status: "final"
+  language: "ko"
+
+glossary:
+  terms:
+    ewma: "EWMA(지수이동평균: riskScore 누적 갱신)"
+    hysteresis: "hysteresis(티어 출렁임 방지 완충: 상향/하향 기준 분리)"
+    probation: "probation(관찰 유예 기간: 하향 완화 지연)"
+    fp: "FP(False Positive: 오탐)"
+    dedup: "dedup(중복 제거: 재전송/중복 이벤트로 인한 중복 누적 방지)"
+    evidence: "evidence(증거: 정책에 영향을 주는 정량/정성 신호 묶음)"
+
+scope:
+  in_scope:
+    - "이벤트 단위 증거(evidence) 생성/갱신"
+    - "Redis 런타임 카운터 업데이트(예: challengeFailCount, seatTakenStreak, holdFailStreak)"
+    - "정상/공격 의심 패턴을 '가벼운 룰'로 요약(rule_hits)"
+    - "Planner 입력용 evidence_summary 작성"
+  out_of_scope:
+    - "riskScore(EWMA) 계산(Guard 책임)"
+    - "tier 계산(Guard 책임, 또는 L1에서 정의된 tiering 모듈 책임)"
+    - "액션 선택(Planner 책임)"
+    - "상태 전이(flowState) 확정(Orchestrator 책임)"
+    - "Throttle/Block 집행(Actuator/Adapter/Envoy 책임)"
+    - "LLM/PyOD 추론"
+
+inputs:
+  required_headers:
+    - "X-Session-Id"
+    - "X-Trace-Id"
+  event:
+    # Guard/Orchestrator에서 올라오는 이벤트 타입(표준화된 runtime 이벤트)
+    event_type_enum:
+      - "FLOW_STATE_TRANSITION"
+      - "HIGH_VALUE_CLICK"
+      - "S3_RESULT"
+      - "API_CALL_OBS" # (옵션) Adapter/BE가 전달하는 호출 메타
+    fields:
+      event_type: "string"
+      event_ts_ms: "epoch_ms"
+      flow_state: "S0|S1|S2|S3|S4|S5|S6|SX"
+      request_path: "string|optional"
+      request_method: "string|optional"
+      high_value_tag: "string|optional" # 예: HOLD_CREATE, PAYMENT_INIT 등
+      s3_result: "PASS|FAIL|UNKNOWN|optional"
+  feature_summary:
+    # FE 센서 요약 (Guard에서 이미 사용한 값 포함 가능)
+    # Analyzer는 raw trajectory를 다루지 않는다.
+    allowed_fields:
+      - "turnstile_score"
+      - "tremorStdDev"
+      - "linearityRatio"
+      - "avgVelocity"
+      - "dwellTime"
+      - "pathRatio"
+    missing_policy: "neutral_and_flag" # 결측 시 중립값 + missing_flags 기록
+  session_state_snapshot:
+    # Redis에서 읽어오는 현재 상태 (L0 requiredFields + optional)
+    redis_key: "tm:sess:{sessionId}"
+    required_fields_ref: "L0 redisContract.requiredFields"
+    fields_used:
+      - "flowState"
+      - "riskScore"
+      - "defenseTier"
+      - "probationUntilMs"
+      - "challengeFailCount"
+      - "seatTakenStreak"
+      - "holdFailStreak"
+      - "policyVersion"
+      - "blocked|optional"
+      - "blockedUntilMs|optional"
+
+deduplication:
+  purpose: "동일 trace/event 중복으로 카운터가 부풀지 않도록 방지"
+  key_schema: "trace_id|event_type|floor(event_ts_ms / ts_bucket_ms)"
+  ts_bucket_ms:
+    env: "TM_DEDUP_TS_BUCKET_MS"
+    default: 200
+  store:
+    backend: "redis"
+    key_prefix: "tm:dedup:analyzer"
+    ttl_seconds:
+      env: "TM_DEDUP_TTL_SECONDS"
+      default: 600
+  behavior_on_duplicate:
+    - "evidence/counter 업데이트를 수행하지 않는다(no-op)."
+    - "audit에 dedup.is_duplicate=true 기록."
+
+derived_signals:
+  # Analyzer가 추가로 계산하는 파생 신호(가벼운 룰)
+  # 이 신호들은 riskScore를 직접 변경하지 않고, Planner가 정책에 사용할 evidence로만 제공한다.
+  signals:
+    rapid_high_value_click:
+      description: "짧은 시간 내 HIGH_VALUE_CLICK 반복"
+      window_ms:
+        env: "TM_RAPID_HV_WINDOW_MS"
+        default: 1500
+      threshold:
+        env: "TM_RAPID_HV_THRESHOLD"
+        default: 3
+      output: "bool"
+    excessive_read_scanning:
+      description: "탐색/조회(read)성 API가 짧은 시간에 과도 반복"
+      window_ms:
+        env: "TM_SCAN_WINDOW_MS"
+        default: 2000
+      threshold:
+        env: "TM_SCAN_THRESHOLD"
+        default: 8
+      output: "bool"
+    s3_fail_burst:
+      description: "S3 실패가 짧은 시간에 누적"
+      window_seconds:
+        env: "TM_S3_FAIL_BURST_WINDOW_S"
+        default: 60
+      threshold:
+        env: "TM_S3_FAIL_BURST_THRESHOLD"
+        default: 2
+      output: "bool"
+
+redis_updates:
+  # Analyzer가 쓸 수 있는 필드(Writer 책임 범위)
+  writer_responsibility:
+    canonical_writer: "AI Defense Service (Analyzer stage)"
+    note: "flowState/riskScore는 Guard/Orchestrator가 관리. Analyzer는 카운터/증거만 업데이트."
+  fields:
+    challengeFailCount:
+      on_s3_fail: "+=1"
+      on_s3_pass: "reset to 0 (권장)"
+    seatTakenStreak:
+      # MVP에서는 실제 좌석점유 성공/실패 신호가 부족할 수 있음 → 입력 이벤트가 있을 때만 갱신
+      on_hold_success: "+=1"
+      on_hold_fail: "reset to 0"
+    holdFailStreak:
+      on_hold_fail: "+=1"
+      on_hold_success: "reset to 0"
+    probationUntilMs:
+      # probation(관찰 유예 기간)은 S3 PASS 이후 설정(Policy)
+      on_s3_pass:
+        set_to: "now + TM_S3_PROBATION_SECONDS*1000"
+        default_seconds_env: "TM_S3_PROBATION_SECONDS"
+        default_seconds: 45
+
+outputs:
+  evidence_update:
+    schema:
+      rule_hits: "list[string]"
+      missing_flags: "list[string]"
+      derived_signals:
+        rapid_high_value_click: "bool"
+        excessive_read_scanning: "bool"
+        s3_fail_burst: "bool"
+      counters_snapshot:
+        challengeFailCount: "int"
+        seatTakenStreak: "int"
+        holdFailStreak: "int"
+      notes: "string|optional"
+  evidence_summary_for_planner:
+    # Planner가 액션 선택에 쓰는 요약(짧고 결정적)
+    schema:
+      flow_state: "string"
+      tier: "T0|T1|T2|T3"
+      in_probation: "bool"
+      s3_passed: "bool"
+      s3_failed_recently: "bool"
+      scan_pressure: "LOW|MED|HIGH"
+      hv_click_pressure: "LOW|MED|HIGH"
+      counters:
+        challengeFailCount: "int"
+        holdFailStreak: "int"
+
+audit_logging:
+  destination: "logs/decision_audit.jsonl"
+  event_types:
+    - "DEF_ANALYZER_EVIDENCE_UPDATED"
+  fields:
+    serverDecision:
+      evidence:
+        rule_hits: "list[string]"
+        derived_signals: "object"
+        counters_snapshot: "object"
+    dedup:
+      is_duplicate: "bool"
+      dedup_key: "string"
+
+acceptance_tests:
+  - id: "AN-1"
+    name: "S3 FAIL 시 challengeFailCount 증가 + evidence_update 생성"
+    pass_criteria:
+      - "challengeFailCount 증가"
+      - "evidence_update.rule_hits에 S3_FAIL 기록"
+  - id: "AN-2"
+    name: "dedup 이벤트는 no-op"
+    pass_criteria:
+      - "중복 이벤트에서 카운터 불변"
+      - "audit dedup.is_duplicate=true"

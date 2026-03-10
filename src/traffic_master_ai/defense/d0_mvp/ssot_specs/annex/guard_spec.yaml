@@ -1,0 +1,284 @@
+# Specs/Defense/annex/guard_spec.yaml
+# Traffic-Master Defense — Guard Double-Hybrid Filter Spec (완성본)
+# v1.3.2 — SDD(Spec Driven Development) 용도: 사람이/AI가 그대로 구현 가능한 수준의 정의 포함
+#
+# 포함: normalize, is_unnatural, is_linear_path, 결측치/클리핑, dedup 트리거,
+#      Redis writer 책임, T2 action 수정(=tier만 산출, challenge 강제하지 않음)
+#
+# 주의: 본 문서는 Annex(상세 스펙)이다.
+#       최종 권위는 L0(l0_core.yaml, l0_defense_policy.yaml) > L1(runtime/*.yaml) > annex/*.yaml
+#       tier thresholds, EWMA alpha, hysteresis/probation은 L0와 일치해야 한다.
+
+meta:
+  spec:
+    name: "guard_double_hybrid_filter"
+    version: "1.3.2"
+    owner: "defense-runtime"
+    status: "final"
+    updated_at: "2026-03-09"
+    timezone: "Asia/Seoul"
+    description: >
+      Guard 모듈은 외부 봇 점수(Turnstile)와 내부 행동 텔레메트리(Feature Summary)를 결합하여
+      이벤트 단위 step risk(s_t)를 산출하고, EWMA(지수이동평균)로 riskScore(R_t)를 업데이트한다.
+      Guard는 "티어(tier) 산출 + 증거(evidence) 기록"이 주 역할이며,
+      실제 액션(THROTTLE/BLOCK/REQUIRE_S3)은 Planner/Orchestrator가 결정한다.
+      (Guard는 액션을 직접 반환하지 않는다)
+
+goals:
+  - "평균 판정 지연 10ms 이내(가드 단계에서 산술/룰 기반 연산만 수행)"
+  - "FP(False Positive, 오탐) 최소화: 단일 이벤트로 즉시 차단 금지, 누적(EWMA) 기반"
+  - "공격자 ROI 붕괴에 기여: riskScore를 안정적으로 누적하여 후속 정책(Throttle/VQA/Block)의 입력 제공"
+  - "설명 가능성: score breakdown과 rule_hits를 audit에 남겨 재현 가능"
+
+non_goals:
+  - "런타임 LLM(Heavy Judge) 호출"
+  - "동적 챌린지 생성"
+  - "고가치 API 게이트/차단 집행"
+  - "정교한 시퀀스 모델(LSTM 등) 런타임 추론"
+
+interfaces:
+  inputs:
+    external_score:
+      source: "cloudflare_turnstile"
+      field: "features.turnstile_score"
+      range: [0.0, 1.0]
+      semantics: "1.0=human-likely, 0.0=bot-likely"
+      missing_policy: "fallback_neutral"
+    telemetry_features:
+      source: "frontend sensor.ts feature summary"
+      required_keys:
+        - "tremorStdDev"
+        - "linearityRatio"
+        - "avgVelocity"
+        - "dwellTime"
+        - "pathRatio"
+      schema:
+        tremorStdDev: { type: "float", range: [0.0, "+inf"], unit: "px" }
+        linearityRatio: { type: "float", range: [0.0, 1.0] }
+        avgVelocity: { type: "float", range: [0.0, "+inf"], unit: "px/s" }
+        dwellTime: { type: "float", range: [0.0, "+inf"], unit: "ms" }
+        pathRatio:
+          type: "float"
+          range: [1.0, "+inf"]
+          formula: "totalDist / max(linearDist, eps)"
+  outputs:
+    guard_output:
+      fields:
+        s_int: "float (0..1)"
+        s_ext_botlikeness: "float (0..1)"
+        s_t: "float (0..1)"
+        r_prev: "float (0..1)"
+        r_new: "float (0..1)"
+        tier: "T0|T1|T2|T3"
+        rule_hits: "list[str]"
+        missing_flags: "list[str]"
+      semantics: >
+        Guard는 tier와 score breakdown을 산출한다.
+        Guard는 'REQUIRE_S3/THROTTLE/BLOCK' 같은 액션을 직접 반환하지 않는다.
+
+runtime_triggers:
+  trigger_events:
+    - id: "FLOW_STATE_TRANSITION"
+      description: "flowState 전이 이벤트"
+    - id: "HIGH_VALUE_CLICK"
+      description: "좌석/블럭 선택, hold 버튼 클릭 등 핵심 클릭"
+    - id: "S3_RESULT"
+      description: "S3 고정 VQA 결과(PASS/FAIL)"
+  max_events_per_minute:
+    env: "TM_FEATURE_SUMMARY_MAX_EPM"
+    default: 12
+  event_ts_bucket_ms:
+    env: "TM_DEDUP_TS_BUCKET_MS"
+    default: 200
+
+deduplication:
+  purpose: "재전송/중복 로그로 risk 누적 및 KPI 왜곡을 방지"
+  key:
+    # 표준 표기: traceId/eventType/tsMs (L0/L1/L2 정합)
+    format: "traceId + eventType + floor(tsMs / ts_bucket_ms)"
+  store:
+    backend: "redis"
+    key_prefix: "tm:dedup"
+    ttl_seconds:
+      env: "TM_DEDUP_TTL_SECONDS"
+      default: 600
+  behavior_on_duplicate:
+    - "동일 dedup key면 Guard는 s_t 계산/리스크 누적을 수행하지 않는다(no-op)."
+    - "audit에는 dedup.isDuplicate=true로 기록한다."
+    - "rule_hits에 DUPLICATE_EVENT_SKIPPED를 추가한다."
+  audit_fields:
+    dedup:
+      isDuplicate: "bool"
+      dedupKey: "string"
+
+missing_handling:
+  general:
+    - "NaN/Inf는 결측으로 취급"
+  external_score:
+    on_missing: 0.5
+    missing_flag: "MISSING_EXT_SCORE"
+  telemetry_features:
+    on_missing:
+      default_strategy: "neutral"
+      neutral_value_policy:
+        tremorStdDev: "use_norm_mid(0.5)"
+        linearityRatio: 0.5
+        avgVelocity: "use_unnatural_mid(0.5)"
+        dwellTime: "use_norm_mid(0.5)"
+        pathRatio: 1.2
+    missing_flags_prefix: "MISSING_"
+
+  clipping:
+    # 클리핑은 missing_flags가 아니라 rule_hits로 남긴다(CLIPPED_*).
+    tremorStdDev: { min: 0.0, max: 6.0 }
+    linearityRatio: { min: 0.0, max: 1.0 }
+    avgVelocity: { min: 0.0, max: 4000.0 }
+    dwellTime: { min: 0.0, max: 2000.0 }
+    pathRatio: { min: 1.0, max: 3.0 }
+
+math_defs:
+  eps: { value: 1e-6 }
+
+  normalize:
+    definition: |
+      normalize(x; min, max) =
+        clamp((x - min) / (max - min), 0.0, 1.0)
+    clamp:
+      definition: "clamp(v, lo, hi) = max(lo, min(v, hi))"
+
+  is_unnatural_velocity:
+    description: "avgVelocity 크기만으로 bot-likeness 연속 점수를 부여(MVP)."
+    params: { v_low: 50.0, v_high: 1500.0 }
+    formula: |
+      if v <= v_low: score = 0.0
+      else if v >= v_high: score = 1.0
+      else score = (v - v_low) / (v_high - v_low)
+    output_range: [0.0, 1.0]
+
+  is_linear_path:
+    description: "linearityRatio가 높고 pathRatio가 1에 가까우면 1로 판정."
+    params: { linearity_threshold: 0.92, pathRatio_threshold: 1.10 }
+    formula: |
+      is_linear_path =
+        1 if (linearityRatio >= linearity_threshold AND pathRatio <= pathRatio_threshold)
+        else 0
+    output_range: [0, 1]
+
+internal_score:
+  name: "S_int (internal bot-likeness)"
+  range: [0.0, 1.0]
+  weights:
+    tremorStdDev: 0.35
+    linearityRatio: 0.25
+    avgVelocity: 0.15
+    dwellTime: 0.15
+    is_linear_path: 0.10
+
+  feature_transforms:
+    tremorStdDev_to_botlikeness: { formula: "1 - normalize(tremorStdDev;0,6)" }
+    linearityRatio_to_botlikeness: { formula: "linearityRatio" }
+    avgVelocity_to_botlikeness:
+      { formula: "is_unnatural_velocity(avgVelocity)" }
+    dwellTime_to_botlikeness: { formula: "1 - normalize(dwellTime;0,2000)" }
+    is_linear_path_to_botlikeness:
+      { formula: "is_linear_path(linearityRatio, pathRatio)" }
+
+  formula: |
+    S_int =
+      0.35 * (1 - normalize(tremorStdDev;0,6)) +
+      0.25 * (linearityRatio) +
+      0.15 * is_unnatural_velocity(avgVelocity) +
+      0.15 * (1 - normalize(dwellTime;0,2000)) +
+      0.10 * is_linear_path(linearityRatio, pathRatio)
+
+external_score_handling:
+  name: "S_ext_botlikeness"
+  definition: "S_ext_botlikeness = 1 - external_score"
+
+risk_combination:
+  step_risk_formula: "s_t = 0.3 * S_ext_botlikeness + 0.7 * S_int"
+  range: [0.0, 1.0]
+
+risk_accumulation:
+  algorithm: "EWMA"
+  canonical_formula: "R_t = (1 - alpha) * R_{t-1} + alpha * s_t"
+  alpha:
+    env: "TM_RISK_ALPHA"
+    default: 0.30
+  constraints:
+    - "R_t는 항상 [0,1]로 clamp"
+
+decay_and_probation:
+  passive_decay:
+    trigger: "no interaction for 30 seconds"
+    behavior: "riskScore decreases gradually (policy-defined; must respect L0 invariants)"
+  verification_decay:
+    trigger: "S3 PASS"
+    formula_hint: "R_t := max(R_min, R_t * 0.5)"
+    note: "R_min은 L0 riskModel.scoreRange 및 policy baseline을 따른다."
+  probation:
+    duration_seconds:
+      env: "TM_S3_PROBATION_SECONDS"
+      default: 45
+    effect:
+      - "probation 동안 tier 하향은 hysteresis downgrade 조건에 의해 제한된다."
+
+tier_mapping:
+  ranges:
+    T0: [0.0, 0.2]
+    T1: [0.2, 0.5]
+    T2: [0.5, 0.8]
+    T3: [0.8, 1.0]
+
+redis_writer_responsibility:
+  decision: >
+    Guard 로직은 AI Defense Service 내부에서 실행되고,
+    Redis의 riskScore/defenseTier 최종 갱신은 AI Defense Service가 단일-writer로 수행한다.
+  storage:
+    key_pattern: "tm:sess:{sessionId}"
+  atomicity:
+    rule: "동일 sessionId 동시 요청에서도 riskScore 갱신은 원자적으로 수행해야 한다."
+
+audit_logging:
+  destination: "logs/decision_audit.jsonl"
+  required_core_fields_ref: "L0-Core observability.decisionAudit.requiredFields(tsMs 포함)"
+  extension_fields_ref: "L0-Defense-Policy observability.decisionAuditExtension.optionalFields"
+  guard_fields:
+    guard:
+      s_int: "float"
+      s_ext_botlikeness: "float"
+      s_t: "float"
+      r_prev: "float"
+      r_new: "float"
+      rule_hits: "list[str]"
+      missing_flags: "list[str]"
+    dedup:
+      isDuplicate: "bool"
+      dedupKey: "string"
+
+rule_hits_catalog:
+  - "DUPLICATE_EVENT_SKIPPED"
+  - "MISSING_EXT_SCORE"
+  - "MISSING_TREMOR"
+  - "MISSING_LINEARITY"
+  - "MISSING_VELOCITY"
+  - "MISSING_DWELL"
+  - "MISSING_PATHRATIO"
+  - "CLIPPED_TREMOR"
+  - "CLIPPED_VELOCITY"
+  - "CLIPPED_DWELL"
+  - "CLIPPED_PATHRATIO"
+  - "LINEAR_PATH_DETECTED"
+  - "HIGH_VELOCITY_UNNATURAL"
+
+performance:
+  latency_budget_ms: { target_p50: 5, hard_limit: 10 }
+  implementation_notes:
+    - "산술 + 비교 연산만 수행(학습 모델 추론 없음)"
+    - "dedup Redis 조회는 1회(존재 여부)로 제한"
+
+mvp_compatibility_notes:
+  - "S3는 고정 단계. Guard는 S3를 유발하지 않고 결과 이벤트(S3_RESULT)를 입력으로 받는다."
+  - "Token mismatch는 Backend 책임. Guard 입력 신호로 요구하지 않는다."
+
+open_questions_tbd: []

@@ -1,0 +1,186 @@
+# annex/planner_spec.yaml
+# Traffic-Master Defense — Planner Spec (Annex)
+# v1.0.0 — SDD
+#
+# Planner의 역할(현 설계 기준):
+# - Guard가 계산한 tier(=riskScore 해석) + Analyzer evidence_summary + 현재 flowState를 입력으로
+#   "현재 요청에 대한 액션(action)"을 선택한다.
+#
+# 확정된 액션 범위(MVP):
+# - NONE
+# - THROTTLE (Adapter Delay Injection; tier별 ms는 throttle_spec.yaml)
+# - BLOCK (403, block_spec.yaml)
+# - CHALLENGE는 S3 고정 단계에서만 발생(요청이 S4로 가려는데 S3 미통과면 428로 회귀시키는 의미의 'REQUIRE_S3')
+#
+# Honey/GATE/Sandbox 없음, 런타임 LLM 없음.
+
+meta:
+  doc_id: "annex_planner_spec"
+  title: "Planner Spec — Action Selection (NONE/THROTTLE/BLOCK/REQUIRE_S3)"
+  version: "1.0.0"
+  updated_at: "2026-03-08"
+  timezone: "Asia/Seoul"
+  owner_team: "defense-runtime"
+  status: "final"
+  language: "ko"
+
+glossary:
+  terms:
+    tier: "Tier(티어: T0~T3)"
+    hysteresis: "hysteresis(티어 출렁임 방지 완충)"
+    probation: "probation(관찰 유예 기간)"
+    fp: "FP(False Positive: 오탐)"
+    require_s3: "REQUIRE_S3(S3 통과 요구: S3 고정 관문 미통과 시 428 반환)"
+    throttle: "Throttle(스로틀: Adapter 지연 삽입)"
+    block: "Block(차단: 403 + 지속 상태)"
+
+scope:
+  in_scope:
+    - "tier/flowState/evidence 기반 액션 선택"
+    - "S3 고정 규칙 강제(미통과 시 REQUIRE_S3)"
+    - "S6 신규 개입 금지 준수(차단만 허용)"
+    - "BLOCK은 결정타 근거 기반 또는 정책상 허용 케이스에서만"
+  out_of_scope:
+    - "riskScore 계산(Guard)"
+    - "증거 계산(Analyzer)"
+    - "상태 전이 적용(Orchestrator)"
+    - "Throttle 집행(Adapter)"
+    - "VQA 게임 로직(challenge_spec.yaml)"
+
+inputs:
+  from_guard:
+    tier: "T0|T1|T2|T3"
+    riskScore: "float|optional"
+  from_analyzer:
+    evidence_summary_for_planner:
+      fields_ref: "annex/analyzer_spec.yaml.outputs.evidence_summary_for_planner"
+  from_state:
+    flowState: "S0|S1|S2|S3|S4|S5|S6|SX"
+    s3_passed_flag:
+      # 구현 선택: 서버 상태 플래그로 S3 통과 여부 확인
+      type: "bool"
+      source: "Redis/session context"
+      default: false
+    blocked_flag:
+      type: "bool"
+      default: false
+
+actions:
+  enum:
+    - "NONE"
+    - "THROTTLE"
+    - "BLOCK"
+    - "REQUIRE_S3" # 428 반환(챌린지 고정 단계로 유도)
+  semantics:
+    REQUIRE_S3:
+      http_status: 428
+      reason_code: "CHALLENGE_REQUIRED"
+      note: "갑툭튀 챌린지가 아니라, S3 고정 단계 미통과 상태에서의 표준 회귀"
+
+policy_invariants:
+  - id: "P1_S6_NO_NEW_INTERVENTION"
+    rule: "flowState == S6 -> only {NONE,BLOCK} allowed"
+  - id: "P2_SX_NO_REPLAN"
+    rule: "flowState == SX -> action must be NONE (or maintain already-blocked)"
+  - id: "P3_S3_FIXED_GATE"
+    rule: "S4/S5 진입 요청은 s3_passed_flag==true 를 전제"
+    enforcement_action: "REQUIRE_S3"
+  - id: "P4_BLOCK_PRECEDENCE"
+    rule: "blocked_flag==true -> action=BLOCK (idempotent)"
+
+decision_rules:
+  # 우선순위: 이미 차단 > 종단 > S3 고정 > S6 제한 > tier 기반
+  priority_order:
+    - "ALREADY_BLOCKED"
+    - "TERMINAL_SX"
+    - "REQUIRE_S3_FOR_S4_PLUS"
+    - "S6_RESTRICTION"
+    - "TIER_BASED_DEFAULT"
+
+  rules:
+    - id: "R0_ALREADY_BLOCKED"
+      when: "blocked_flag == true"
+      then:
+        action: "BLOCK"
+        reason: "persisted_block"
+    - id: "R1_TERMINAL_SX"
+      when: "flowState == SX"
+      then:
+        action: "NONE"
+        reason: "terminal_no_replan"
+    - id: "R2_REQUIRE_S3_FOR_S4_S5"
+      when: "(flowState in [S4,S5]) and (s3_passed_flag == false)"
+      then:
+        action: "REQUIRE_S3"
+        reason: "s3_not_passed"
+    - id: "R3_S6_RESTRICTION"
+      when: "flowState == S6"
+      then:
+        action: "NONE"
+        reason: "no_new_intervention_in_s6"
+        note: "S6에서 신규 개입 금지(차단만 허용). 차단은 별도 결정타 규칙에서만."
+    - id: "R4_TIER_DEFAULT"
+      when: "tier == T0"
+      then: { action: "NONE", reason: "tier_t0" }
+    - id: "R5_TIER_T1"
+      when: "tier == T1"
+      then:
+        action: "THROTTLE"
+        reason: "tier_t1_light_throttle"
+        note: "지연 ms는 throttle_spec의 tier별 값 사용"
+    - id: "R6_TIER_T2"
+      when: "tier == T2"
+      then:
+        action: "THROTTLE"
+        reason: "tier_t2_throttle"
+        note: "애매 케이스는 block 대신 throttle로 ROI 붕괴(MVP 정책)"
+    - id: "R7_TIER_T3"
+      when: "tier == T3"
+      then:
+        action: "BLOCK"
+        reason: "tier_t3_block"
+        note: "MVP에서는 결정타 근거 체계가 단순하므로 T3는 block로 처리(운영에서 조정 가능)."
+
+  fp_safety_notes:
+    - "T1/T2에서 BLOCK을 금지하고 THROTTLE로만 처리하면 FP 피해를 낮출 수 있다."
+    - "T3=BLOCK은 강경하지만 MVP 단순화 목적이며, 운영 단계에서는 결정타 근거 기반으로 좁힐 수 있다."
+
+outputs:
+  plan:
+    schema:
+      action: "NONE|THROTTLE|BLOCK|REQUIRE_S3"
+      reason: "string"
+      tier: "string"
+      headers:
+        x-defense-tier: "string"
+        x-defense-action: "string"
+        x-defense-policy-version: "string"
+      deny_if_applicable:
+        http_status: "int|optional"
+        reason_code: "string|optional"
+
+audit_logging:
+  destination: "logs/decision_audit.jsonl"
+  event_types:
+    - "DEF_PLAN_COMPUTED"
+  fields:
+    serverDecision:
+      riskTier: "string"
+      action: "string"
+      plan_reason: "string"
+
+acceptance_tests:
+  - id: "PL-1"
+    name: "S4 요청인데 S3 미통과면 REQUIRE_S3(428)"
+    pass_criteria:
+      - "action=REQUIRE_S3"
+      - "http_status=428"
+  - id: "PL-2"
+    name: "T1/T2는 THROTTLE"
+    pass_criteria:
+      - "tier=T1 -> THROTTLE"
+      - "tier=T2 -> THROTTLE"
+  - id: "PL-3"
+    name: "T3는 BLOCK"
+    pass_criteria:
+      - "tier=T3 -> BLOCK"

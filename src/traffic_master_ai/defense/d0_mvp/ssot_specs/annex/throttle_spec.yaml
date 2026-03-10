@@ -1,0 +1,259 @@
+# annex/throttle_spec.yaml
+# Traffic-Master Defense — Throttle(스로틀: 속도/빈도 제한) 상세 스펙
+# Spec Driven Development (SDD) 용도: 사람이 읽고 합의 → 구현자가 그대로 개발 가능해야 함.
+# 본 문서는 "Annex(상세 설계/근거/예시)"이며, L1 runtime 계약(yaml)과 충돌 시 L1/L0가 우선한다.
+#
+# 현재 MVP 결정사항(사용자 확정):
+# - Runtime LLM(대형 추론) 미사용
+# - Honey(허니) / GATE(부분 제한) / FE Notification(알림 UI) 미사용
+# - Throttle 집행은 "Adapter에서 지연 삽입(Delay Injection)"으로 구현
+# - Hard Rate Limit(사실상 차단 수준) 미사용
+# - VQA(보안퀴즈)는 S3 고정이며, Throttle은 VQA와 별개로 적용
+# - Token mismatch 등 세션 바인딩 검증은 Backend 책임(Throttle 스펙 범위 밖)
+#
+# 목표:
+# - 공격자 ROI 붕괴(공격 효율 감소) + 정상 사용자 UX 공정성 유지
+# - MVP에서 “정책 → 집행 → 로그” 전체 루프가 재현 가능하게 구현
+
+meta:
+  doc_id: "annex_throttle_spec"
+  title: "Throttle(스로틀) Spec — Adapter Delay Injection"
+  version: "0.1.0"
+  updated_at: "2026-03-08"
+  timezone: "Asia/Seoul"
+  owner_team: "traffic-master-ai"
+  status: "draft"
+  language: "ko"
+  applies_to:
+    - "Envoy ext_authz"
+    - "Adapter(/check/*)"
+    - "AI Defense Service(/evaluate)"
+    - "Decision Audit(JSONL)"
+  precedence_note: "L0(l0_core.yaml, l0_defense_policy.yaml) > L1(runtime/*.yaml) > annex/*.yaml|md"
+
+glossary:
+  terms:
+    throttle: "Throttle(스로틀: 속도/빈도 제한)"
+    delay_injection: "Delay Injection(지연 삽입: 요청을 일정 시간 지연 후 통과)"
+    rate_limit: "Rate Limit(레이트 리밋: 초당/분당 요청 횟수 제한)"
+    fp: "FP(False Positive: 오탐, 정상 사용자를 봇으로 오판)"
+    tier: "Tier(티어: 위험 점수 해석 결과)"
+    risk_score: "riskScore(위험 점수: 0~1 연속값)"
+    envoy_ext_authz: "Envoy ext_authz(외부 인가 필터)"
+    adapter: "Adapter(어댑터: Envoy ext_authz가 호출하는 /check 서비스)"
+    ai_evaluate: "AI /evaluate(방어 판정 API)"
+
+scope:
+  in_scope:
+    - "Throttle을 '지연 삽입(Delay Injection)'으로 구현하는 방법"
+    - "Tier(T1/T2)에 따라 Adapter가 sleep(ms)을 수행하고 allow를 반환하는 동작"
+    - "Throttle 파라미터(지연 ms)와 적용 범위(엔드포인트/경로 분기) 정의"
+    - "결과를 decision_audit(JSONL)에 기록하는 규칙"
+  out_of_scope:
+    - "Hard Rate Limit(차단과 유사한 강제 레이트리밋) 구현"
+    - "FE 알림/팝업 등 Notification UI"
+    - "GATE(확정(write)만 금지) 정책"
+    - "Honey(함정 좌석/블럭) 정책"
+    - "Token mismatch/세션 바인딩 검증(Backend 보안 베이스라인 책임)"
+    - "WAF/CDN 레벨 제어"
+  non_goals:
+    - "대규모 트래픽에서의 최적 튜닝(운영 단계 최적화는 L2에서 다룸)"
+    - "고급 공격자(vision LLM 등) 완전 차단"
+
+design_principles:
+  - "MVP에서는 구현 단순성이 최우선이며, 재현 가능해야 한다."
+  - "Throttle은 차단(BLOCK)이 아니라 효율 저하(ROI 붕괴) 목적이다."
+  - "FP(오탐) 피해를 최소화하기 위해 T1은 약하게, T2는 중간 강도로 시작한다."
+  - "Throttle은 '집행(enforcement)'이 핵심이며, AI는 판정만 한다."
+  - "S3 VQA(보안퀴즈)는 고정 단계이며, Throttle은 그 전후 어디서든 적용 가능하나 MVP에서는 탐색(read) 위주로 적용한다."
+
+architecture:
+  request_flow:
+    steps:
+      - "1) FE 요청 → Envoy"
+      - "2) Envoy ext_authz → Adapter /check/*"
+      - "3) Adapter → AI /evaluate"
+      - "4) AI가 tier/action(+throttle_ms)을 결정하여 Adapter에 반환"
+      - "5) Adapter는 tier/action을 기반으로 (필요 시) 지연 삽입 후 CheckResponse 반환"
+      - "6) allow면 Envoy가 BE로 전달, deny면 Envoy가 FE에 403/428 + x-defense-* 반환"
+      - "7) 실행 증적은 decision_audit(JSONL)에 기록"
+  enforcement_location:
+    chosen: "Adapter (Delay Injection)"
+    rationale:
+      - "MVP에서 구현이 가장 단순하며 인프라 변경을 최소화한다."
+      - "세션 단위 판정 결과(tier/action)를 가장 가까운 곳에서 즉시 집행할 수 있다."
+
+throttle_model:
+  types:
+    - id: "THROTTLE_DELAY"
+      name: "Delay Injection(지연 삽입)"
+      enabled: true
+      description: "Adapter가 allow 반환 전에 sleep(ms)을 수행하여 요청 전달을 지연한다."
+    - id: "THROTTLE_RATE_LIMIT"
+      name: "Rate Limit(레이트 리밋)"
+      enabled: false
+      description: "MVP에서 hard rate limit은 사용하지 않는다. (추후 운영 단계에서 별도 검토)"
+  notes:
+    - "MVP에서는 THROTTLE_DELAY만 사용한다."
+
+policy_inputs:
+  # AI /evaluate가 판단에 사용하는 입력(여기서는 throttle 관점 최소만)
+  required_headers:
+    - "X-Session-Id"
+    - "X-Trace-Id"
+  optional_context:
+    - "flowState"
+    - "endpoint_category (read/write/high_value)"
+    - "current_tier (AI 내부 계산 결과)"
+    - "riskScore (AI 내부 계산 결과)"
+  forbidden:
+    - "개인정보/원문 입력/원시 마우스 궤적 등 (L0 데이터 최소화 정책 준수)"
+
+decision_outputs:
+  # AI /evaluate가 Adapter에 반환해야 하는 최소 필드
+  headers_to_envoy:
+    x-defense-tier: "T0|T1|T2|T3"
+    x-defense-action: "NONE|THROTTLE|CHALLENGE|BLOCK"
+    x-defense-policy-version: "string"
+  throttle_fields:
+    # Adapter가 집행할 지연값(ms). 없으면 0으로 간주.
+    x-defense-throttle-ms:
+      type: "int"
+      required_when: "x-defense-action == THROTTLE"
+      semantics: "Adapter sleep duration in milliseconds"
+      constraints:
+        min: 0
+        max: 2000
+  deny_behavior:
+    # Throttle spec에서는 deny 자체는 다루지 않지만, 통합 흐름 이해를 위해 포함
+    block_http_status: 403
+    challenge_http_status: 428
+
+mvp_parameters:
+  # 사용자 확정: tier별 지연 삽입(ms)
+  delay_by_tier_ms:
+    T0: 0
+    T1: 80
+    T2: 250
+    # T3는 Throttle로 지연하지 않고, 정책적으로 BLOCK/CHALLENGE 등으로 처리(본 스펙 범위 밖)
+    T3: 0
+  apply_tiers:
+    - "T1"
+    - "T2"
+  apply_action_gate:
+    required_action: "THROTTLE"
+  tuning_guideline:
+    - "T1은 정상 UX 보존을 우선(50~120ms 범위에서 시작)."
+    - "T2는 반복 탐색 효율 붕괴 목적(200~350ms 범위에서 조정)."
+    - "티켓팅 특성상 과도한 지연은 사실상 탈락 체감이므로 상한을 보수적으로 유지."
+
+endpoint_application:
+  # MVP에서 Throttle을 어디에 적용할지(중요). '없는 척' 금지: 확정/미확정 구분.
+  # 현재 상태: 적용 범위는 아직 팀 합의 필요 → TBD로 남기되, 구현자가 바로 채울 수 있게 템플릿 제공.
+  status: "TBD"
+  principle:
+    - "기본은 read(탐색/조회) 계열에만 적용"
+    - "write(hold/pay/confirm) 계열은 Throttle로 해결하지 않음(본 MVP에서는 GATE도 폐기)"
+  categories:
+    read_candidate_paths_tbd:
+      description: "탐색/조회 성격의 엔드포인트(예: 블럭 리스트, seatmap, availability, 추천 조회 등)"
+      match_strategy: "prefix_or_regex"
+      examples:
+        - "/api/sections*"
+        - "/api/seatmap*"
+        - "/api/availability*"
+        - "/api/recommend*"
+    write_excluded_paths_tbd:
+      description: "확정 행동(write) 성격의 엔드포인트(hold/pay/confirm). MVP에서 Throttle 적용 제외."
+      examples:
+        - "POST /api/holds"
+        - "POST /api/payments"
+        - "POST /api/confirm"
+  required_decision_before_implementation:
+    - "Throttle 적용 대상 경로 목록 확정(read 리스트)"
+    - "write 제외 경로 목록 확정"
+    - "Envoy ext_authz가 호출하는 /check/*에 원 요청 path/method가 전달되는지 확인"
+    - "Adapter에서 원 요청 metadata(path/method)를 받아 조건 분기 가능한지 확인"
+
+adapter_enforcement:
+  # Adapter가 실제로 수행해야 할 집행 로직(개발 지침 수준)
+  algorithm:
+    - step: "1) /check 요청 수신"
+      details:
+        - "원 요청의 sessionId/traceId/path/method를 확보한다(TBD: ext_authz 전달 형식)."
+    - step: "2) AI /evaluate 호출"
+      details:
+        - "입력: sessionId, traceId, flowState(optional), path/method(optional)"
+        - "출력: x-defense-tier, x-defense-action, x-defense-throttle-ms(optional)"
+    - step: "3) Throttle 조건 확인"
+      details:
+        - "x-defense-action == THROTTLE AND tier in {T1,T2} 이면 지연 삽입"
+        - "지연 값은 우선 x-defense-throttle-ms를 사용"
+        - "x-defense-throttle-ms가 없으면 mvp_parameters.delay_by_tier_ms[tier] 사용"
+    - step: "4) sleep(ms) 수행"
+      details:
+        - "Adapter thread/worker가 ms 동안 대기 후 다음 단계 진행"
+        - "MVP에서는 단순 sleep 허용(고성능 최적화는 운영 단계)"
+    - step: "5) Envoy CheckResponse 반환"
+      details:
+        - "allow=true + x-defense-* 헤더 포함"
+        - "deny인 경우(403/428)는 별도 스펙(오케스트레이션/정책)에서 정의"
+  constraints:
+    - "sleep은 요청 처리 타임아웃과 충돌하지 않아야 한다(TBD: ext_authz timeout 예산)."
+    - "sleep이 길어져 ext_authz가 timeout되면 오히려 불안정해질 수 있으므로 상한을 둔다(기본 2000ms)."
+  timeouts_tbd:
+    envoy_ext_authz_timeout_ms: "TBD"
+    adapter_internal_timeout_ms: "TBD"
+    ai_evaluate_timeout_ms: "TBD"
+
+observability:
+  decision_audit_logging:
+    file: "logs/decision_audit.jsonl"
+    append_only: true
+    required_min_fields:
+      - "ts"
+      - "traceId"
+      - "sessionId"
+      - "flowState"
+      - "eventType"
+      - "requestId"
+      - "serverDecision.riskTier"
+      - "serverDecision.action"
+      - "result.status"
+      - "result.reasonCode"
+    throttle_extension_fields:
+      # Throttle 집행 사실을 재현 가능하게 남긴다.
+      event_type_values:
+        - "DEF_THROTTLE_APPLIED"
+      fields:
+        throttle:
+          tier: "string"
+          delay_ms: "int"
+          applied: "bool"
+          endpoint_path: "string|optional"
+          endpoint_method: "string|optional"
+    notes:
+      - "MVP에서는 'applied=true + delay_ms'가 기록되면 충분하다."
+      - "dedup(중복 trace) 정책은 별도 문서에서 다루되, audit에서는 traceId로 유니크 집계가 가능해야 한다."
+
+testing_plan:
+  mvp_acceptance:
+    - id: "A1_DELAY_APPLIED_T1"
+      description: "T1 판정 시 Adapter가 80ms 지연을 삽입하고 allow를 반환한다."
+      steps:
+        - "AI /evaluate를 강제로 T1/THROTTLE로 응답하도록 구성"
+        - "Adapter에서 실제 응답 지연(>=80ms)을 확인"
+        - "decision_audit에 DEF_THROTTLE_APPLIED 기록 확인"
+    - id: "A2_DELAY_APPLIED_T2"
+      description: "T2 판정 시 Adapter가 250ms 지연을 삽입하고 allow를 반환한다."
+    - id: "A3_NO_DELAY_T0"
+      description: "T0에서는 지연이 삽입되지 않는다."
+    - id: "A4_ENDPOINT_FILTERING_TBD"
+      description: "Throttle 적용 대상 경로(read)에서만 delay가 적용된다(경로 목록 확정 후)."
+    - id: "A5_TIMEOUT_BUDGET_TBD"
+      description: "ext_authz timeout 예산 내에서 delay가 안정적으로 동작한다(예산 확정 후)."
+
+open_questions_tbd: []
+
+change_log:
+  - "v0.1.0: MVP 결정(Delay Injection only, Adapter sleep, tier별 80/250ms) 반영. Hard rate limit/FE notification/GATE/Honey/runtime LLM 제외."

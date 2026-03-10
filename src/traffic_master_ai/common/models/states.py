@@ -12,7 +12,9 @@ class FlowState(str, Enum):
     - S2: Queue & Entry
     - S3: Security Verification
     - S4: Section Selection
+    - S4R: Recommend Receive (recommend mode)
     - S5: Seat Selection
+    - S5R: Recommend Accept (recommend mode)
     - S6: Transaction Monitor
     - SX: Terminal state
     """
@@ -21,7 +23,9 @@ class FlowState(str, Enum):
     S2 = "S2"
     S3 = "S3"
     S4 = "S4"
+    S4R = "S4R"
     S5 = "S5"
+    S5R = "S5R"
     S6 = "S6"
     SX = "SX"
 
@@ -35,7 +39,15 @@ class FlowState(str, Enum):
 
     def can_be_last_non_security(self) -> bool:
         """Check if this state can be the last non-security state before S3."""
-        return self in (FlowState.S1, FlowState.S2, FlowState.S4, FlowState.S5, FlowState.S6)
+        return self in (
+            FlowState.S1,
+            FlowState.S2,
+            FlowState.S4,
+            FlowState.S4R,
+            FlowState.S5,
+            FlowState.S5R,
+            FlowState.S6,
+        )
 
 
 class TerminalReason(str, Enum):

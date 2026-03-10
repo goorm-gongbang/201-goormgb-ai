@@ -1,0 +1,188 @@
+# Specs/Defense/L1/runtime/index.yaml
+# Defense Runtime SSOT Index (L1)
+# v1.0.0 — Spec Driven Development(SSD)용 “권위 선언/라우터”
+#
+# 목적:
+# - L1/runtime에서 어떤 파일이 authoritative(구현자가 반드시 따라야 하는 계약)인지 선언한다.
+# - 문서 위계(L0/L1/L2/annex)와 충돌 해결 규칙을 명시한다.
+# - 개발자가 런타임을 구현/수정할 때 “어디를 고쳐야 하는지”를 즉시 알 수 있게 한다.
+
+meta:
+  doc_id: "l1_runtime_index"
+  title: "Defense Runtime Index (L1) — Authoritative File Map"
+  version: "1.0.0"
+  updated_at: "2026-03-08"
+  timezone: "Asia/Seoul"
+  owner_team: "defense-runtime"
+  status: "draft"
+  language: "ko"
+
+governance:
+  sdd_purpose: >
+    본 문서는 L1/runtime의 SSOT 인덱스이며,
+    방어 런타임 구현/리뷰/테스트 시 가장 먼저 확인해야 하는 “권위 파일 목록”이다.
+  precedence:
+    # 문서 충돌 시 우선순위
+    order:
+      - "L0 (Addendum SSOT: 불변 법전)"
+      - "L1 (Runtime SSOT: 구현 계약)"
+      - "L2 (Observability/Optimization SSOT: 운영/사후 루프)"
+      - "Annex (상세 설계/근거/예시)"
+    conflict_rules:
+      - "L0 ↔ L1 충돌: L1을 수정한다."
+      - "L1 ↔ Annex 충돌: Annex를 수정한다(또는 L1을 더 명확히)."
+      - "L2는 L0/L1 불변을 침범할 수 없다(allowlist 내에서만)."
+  editing_rules:
+    - "새로운 헤더/필드/HTTP 매핑을 추가할 때는 contracts.yaml을 먼저 수정한다."
+    - "Redis 필드를 추가/변경할 때는 state.yaml을 먼저 수정한다(L0 의미론과 충돌 금지)."
+    - "런타임 로직(Guard→Analyzer→Planner→Orchestrator)의 I/O/책임 변경은 logic.yaml을 먼저 수정한다."
+    - "실행(Challenge/Throttle/Block) 동작의 계약 변경은 actuators.yaml을 먼저 수정한다."
+    - "이벤트/시그널 enum 추가는 events.yaml에서만 한다."
+
+assumptions:
+  current_mvp_decisions:
+    # 현재까지 확정된 MVP 설계(인덱스 차원에서 명시)
+    runtime_llm_enabled: false
+    honey_enabled: false
+    gate_enabled: false
+    sandbox_enabled: false
+    s3_challenge_fixed: true
+    throttle_enforcement: "Adapter Delay Injection"
+    block_enforcement: "Envoy ext_authz deny(403) + persistence recommended"
+    token_mismatch_in_scope: false
+
+authoritative_files:
+  # L1/runtime SSOT 파일 목록(권위 선언)
+  # 구현자는 아래 파일을 기준으로 개발해야 한다.
+  files:
+    - path: "Specs/Defense/L1/runtime/contracts.yaml"
+      role: "헤더/요청/응답/에러 바디 계약(403/428, x-defense-*)"
+      authoritative_for:
+        - "HTTP status & error response schema"
+        - "x-defense-* headers"
+        - "X-Session-Id / X-Trace-Id required headers"
+      primary_consumers:
+        - "Envoy/Adapter"
+        - "AI /evaluate"
+        - "FE(응답 헤더 기반 UI 분기)"
+    - path: "Specs/Defense/L1/runtime/events.yaml"
+      role: "이벤트/시그널 enum authoritative list"
+      authoritative_for:
+        - "event_type values"
+        - "audit event names"
+        - "stage transition events"
+      primary_consumers:
+        - "FE sensor/event mapper"
+        - "AI runtime logging"
+        - "L2 aggregation"
+    - path: "Specs/Defense/L1/runtime/state.yaml"
+      role: "Redis 상태 필드/TTL/read-write contract + writer 책임"
+      authoritative_for:
+        - "tm:sess:{sessionId} fields"
+        - "TTL rules"
+        - "canonical writer responsibilities (Guard/Analyzer/Orchestrator)"
+      primary_consumers:
+        - "AI runtime service"
+        - "Backend/Adapter (read-only usage)"
+    - path: "Specs/Defense/L1/runtime/logic.yaml"
+      role: "Guard→Analyzer→Planner→Orchestrator 로직 계약(요약본)"
+      authoritative_for:
+        - "pipeline order"
+        - "each module I/O boundary"
+        - "dedup trigger points"
+        - "tier→action mapping (high-level)"
+      primary_consumers:
+        - "AI runtime service implementers"
+        - "reviewers (design correctness)"
+    - path: "Specs/Defense/L1/runtime/actuators.yaml"
+      role: "Challenge/Throttle/Block 실행 계약(요약본)"
+      authoritative_for:
+        - "S3 Challenge issue/verify contract linkage"
+        - "Throttle delay enforcement parameters interface"
+        - "Block deny & persistence contract linkage"
+      primary_consumers:
+        - "Adapter/Envoy (enforcement)"
+        - "AI runtime service"
+  deprecated_or_removed:
+    - path: "Specs/Defense/L1/runtime/actuators/honey_seat.yaml"
+      status: "removed"
+      reason: "MVP scope out"
+    - path: "Specs/Defense/L1/runtime/actuators/sandbox.yaml"
+      status: "removed"
+      reason: "MVP scope out"
+    - path: "Specs/Defense/L1/runtime/llm/*"
+      status: "runtime disabled"
+      reason: "런타임 LLM 제거(offline only in L2/llm)"
+
+references:
+  # 상위/하위 레벨 참조 (SSOT 연결)
+  L0:
+    - path: "Specs/Defense/L0/l0_core.yaml"
+      role: "불변 전이/멱등/TTL/reasonCode/audit 최소 스키마"
+    - path: "Specs/Defense/L0/l0_defense_policy.yaml"
+      role: "방어 전역 원칙(riskScore, tiering, hysteresis, probation, S6 가드레일 등)"
+    - path: "Specs/Defense/L0/l0_sdd_guide.yaml"
+      role: "문서 위계/사용법 메타-SSOT"
+  Annex:
+    # Annex는 상세 설명서이며 충돌 시 L1이 우선
+    - path: "Specs/Defense/annex/guard_spec.yaml"
+      role: "Double-Hybrid Filter 상세(정규화/결측/클리핑/dedup/Redis writer 책임 포함)"
+      used_by: "logic.yaml(요약 계약)의 근거"
+    - path: "Specs/Defense/annex/turnstile_spec.yaml"
+      role: "Turnstile 트리거/검증/FAIL_OPEN/캐시/dedup 상세"
+      used_by: "actuators.yaml + logic.yaml"
+    - path: "Specs/Defense/annex/throttle_spec.yaml"
+      role: "Adapter delay injection 상세(파라미터/적용 범위/로그)"
+      used_by: "actuators.yaml"
+    - path: "Specs/Defense/annex/block_spec.yaml"
+      role: "403 deny + persistence + audit 상세"
+      used_by: "actuators.yaml"
+    - path: "Specs/Defense/annex/challenge_spec.yaml"
+      role: "S3 고정 VQA(발급/검증/실패 정책/쿨다운/429) 상세"
+      used_by: "actuators.yaml"
+    - path: "Specs/Defense/annex/analyzer_spec.yaml"
+      role: "evidence/counter 업데이트 상세"
+      used_by: "logic.yaml"
+    - path: "Specs/Defense/annex/planner_spec.yaml"
+      role: "tier/flowState/evidence 기반 action 선택 상세"
+      used_by: "logic.yaml"
+    - path: "Specs/Defense/annex/orchestrator_spec.yaml"
+      role: "전이/terminal-first/invalid transition 처리 상세"
+      used_by: "logic.yaml"
+  L2:
+    - path: "Specs/Defense/L2/observability/defense_observability_ssot.yaml"
+      role: "audit 확장/집계/KPI/trace 규칙"
+    - path: "Specs/Defense/L2/optimization/defense_policy_optimization_ssot.yaml"
+      role: "사후 튜닝(로그 개수 기반 트리거), allowlist, rollout/rollback"
+  llm:
+    - path: "Specs/Defense/L1/llm/defense_llm_ssot.yaml"
+      role: "LLM 사용 계약(현재는 runtime disabled, offline evaluator만 허용)"
+      note: "최종 반영 시 runtime 관련 섹션은 disabled로 명시"
+
+implementation_entrypoints:
+  # 구현자가 실제로 어디서 시작하면 되는지
+  mvp_minimum_to_implement:
+    - "contracts.yaml: 403/428 + x-defense-* + body schema 확정"
+    - "events.yaml: runtime/audit event enum 확정"
+    - "state.yaml: Redis fields + TTL + writer 책임 확정"
+    - "logic.yaml: pipeline(Guard→Analyzer→Planner→Orchestrator) I/O 확정"
+    - "actuators.yaml: S3 Challenge + Throttle(Delay) + Block 집행 계약 확정"
+  runtime_flow_summary:
+    - "Envoy ext_authz → Adapter /check → AI /evaluate"
+    - "AI: Guard(점수) → Analyzer(증거) → Planner(액션) → Orchestrator(전이/응답)"
+    - "Adapter: THROTTLE 시 sleep(ms) 후 allow"
+    - "Envoy: BLOCK/REQUIRE_S3(428) 시 deny 응답 반환"
+
+change_management:
+  versioning:
+    policy_version_field: "x-defense-policy-version"
+    rule: "정책 변경 시 version bump + audit에 기록"
+  backward_compatibility:
+    - "새 헤더/필드는 optional로 도입 후, rollout을 거쳐 required로 승격"
+    - "Redis 필드 추가는 backward compatible 방식만 허용(기존 필드 의미 변경 금지)"
+  audit_requirements:
+    - "deny 응답은 항상 reasonCode 포함"
+    - "throttle 적용은 DEF_THROTTLE_APPLIED 이벤트로 기록"
+    - "S3 challenge 결과는 S3_CHALLENGE_RESULT 이벤트로 기록"
+
+open_questions_tbd: []

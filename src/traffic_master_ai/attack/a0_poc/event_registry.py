@@ -28,11 +28,11 @@ from traffic_master_ai.attack.a0_poc.states import State
 _ALL_STATES = frozenset(State)
 _NON_TERMINAL = frozenset({
     State.S0, State.S1, State.S2, 
-    State.S3, State.S4, State.S5, State.S6
+    State.S3, State.S4, State.S4R, State.S5, State.S5R, State.S6
 })
 _SECURITY_INTERRUPTIBLE = frozenset({
     State.S1, State.S2, 
-    State.S4, State.S5, State.S6
+    State.S4, State.S4R, State.S5, State.S5R, State.S6
 })
 
 
@@ -79,6 +79,16 @@ EVENT_VALID_STATES: dict[EventType, frozenset[State]] = {
     EventType.SECTION_LIST_READY: frozenset({State.S4}),
     EventType.SECTION_SELECTED: frozenset({State.S4}),
     EventType.SECTION_EMPTY: frozenset({State.S4}),
+
+    # ─────────────────────────────────────────────────────────────────
+    # D-R. Recommend Events (v2)
+    # ─────────────────────────────────────────────────────────────────
+    EventType.RECOMMENDATIONS_LOADED: frozenset({State.S4R}),
+    EventType.NO_RECOMMENDATIONS: frozenset({State.S4R}),
+    EventType.PARTY_SIZE_CHANGED: frozenset({State.S4R}),
+    EventType.BUNDLE_ACCEPTED: frozenset({State.S5R}),
+    EventType.BUNDLE_REJECTED: frozenset({State.S5R}),
+    EventType.MODE_SWITCH_MANUAL: frozenset({State.S5R}),
     
     # ─────────────────────────────────────────────────────────────────
     # E. Seat Events

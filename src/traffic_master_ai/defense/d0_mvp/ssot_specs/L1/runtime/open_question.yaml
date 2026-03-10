@@ -1,0 +1,448 @@
+# Specs/Defense/L1/runtime/open_questions.yaml
+# Defense Runtime Open Questions (Unified Decision Table)
+# v1.0.0 — SDD 개발 착수 전, 모든 TBD를 한 곳에서 결정/관리하기 위한 SSOT
+#
+# 작성 기준:
+# - 현재 대화에서 확정/작성된 문서들의 open_questions_tbd 항목을 통합했다.
+# - MVP 결정이 이미 내려진 항목은 status=DECIDED로 표시했다.
+# - deadline은 “개발 착수 전(=문서 완결 후)” 기준으로 2026-03-09로 잡았다(Asia/Seoul).
+
+meta:
+  doc_id: "runtime_open_questions"
+  title: "Open Questions (TBD) — Decision Table"
+  version: "1.0.0"
+  updated_at: "2026-03-08"
+  timezone: "Asia/Seoul"
+  owner_team: "defense-runtime"
+  status: "active"
+  rule:
+    - "MVP 개발 착수 전, status=OPEN 항목은 전부 DECIDED로 전환되어야 한다."
+    - "결정 완료 후, 관련 SSOT(L0/L1/L2/Policy/Annex)에 반영하고 링크를 업데이트한다."
+
+mvp_decisions_locked:
+  # 사용자가 확정한 3개 결정 + 내가 정합성 맞게 확정한 1개(Throttle scope)
+  decisions:
+    - id: "LOCK-1"
+      topic: "S3 gate(428) 집행 경계"
+      decision: "Envoy ext_authz deny로 처리(428 + CHALLENGE_REQUIRED + x-defense-*)"
+      affects:
+        - "L1/runtime/actuators.yaml (CHALLENGE_S3 gate_execution)"
+        - "L1/runtime/contracts.yaml (deny 428)"
+        - "L1/runtime/logic.yaml (REQUIRE_S3)"
+      status: "DECIDED"
+    - id: "LOCK-2"
+      topic: "Policy 로드 방식(MVP 및 운영 확장성)"
+      decision: "Redis 로드로 고정(tm:policy:* 키). 파일 로드는 개발 편의용 fallback만 허용"
+      affects:
+        - "policy/policy_v1.yaml (storage_contract)"
+        - "L2/optimization/defense_policy_optimization_ssot.yaml (activation)"
+      status: "DECIDED"
+    - id: "LOCK-3"
+      topic: "Throttle read endpoint prefix (MVP 기본 allowlist)"
+      decision: >
+        include_path_prefixes는 아래로 확정하고, write/결제/홀드/방어 엔드포인트는 exclude로 유지.
+        include: [/api/catalog, /api/events, /api/queue, /api/sections, /api/blocks, /api/areas, /api/seatmap, /api/seats, /api/availability, /api/recommend, /api/search]
+        exclude: [/api/hold, /api/order, /api/payment, /api/confirm, /defense/challenge, /health]
+      affects:
+        - "policy/policy_v1.yaml (parameters.throttle.scope)"
+        - "L1/runtime/actuators.yaml (endpoint_scoping)"
+      status: "DECIDED"
+
+table:
+  # status: OPEN | DECIDED | DEFERRED
+  items:
+    # -------------------------
+    # Runtime Index / Overall
+    # -------------------------
+    - id: "TBD-ENDPOINT-SCOPE"
+      topic: "Throttle 적용 대상 엔드포인트(read) 목록 확정"
+      owner: "ai-team"
+      mvp_required: true
+      default_decision: "LOCK-3 정책으로 확정(allowlist include_path_prefixes 적용)"
+      deadline: "2026-03-09"
+      status: "DECIDED"
+      source_refs:
+        - "L1/runtime/index.yaml (open_questions_tbd)"
+        - "L1/runtime/actuators.yaml (TBD-ACT-1)"
+        - "L1/runtime/logic.yaml (TBD-LG-1)"
+      apply_to:
+        - "policy/policy_v1.yaml"
+        - "L1/runtime/actuators.yaml"
+
+    - id: "TBD-S3-PASS-REPRESENTATION"
+      topic: "S3 통과 표현 방식(서버 플래그 vs 토큰)"
+      owner: "ai-team"
+      mvp_required: true
+      default_decision: "서버 플래그(s3Passed=true) 방식으로 고정"
+      deadline: "2026-03-09"
+      status: "DECIDED"
+      source_refs:
+        - "L1/runtime/index.yaml (open_questions_tbd)"
+        - "annex/orchestrator_spec.yaml (OQ-C-2 관련)"
+        - "L1/runtime/state.yaml (s3Passed)"
+      apply_to:
+        - "L1/runtime/state.yaml"
+        - "L1/runtime/logic.yaml"
+        - "policy/policy_v1.yaml"
+
+    - id: "TBD-INVALID-TRANSITION-HTTP"
+      topic: "invalid transition 처리 방식(409 deny vs allow+audit)"
+      owner: "ai-team"
+      mvp_required: true
+      default_decision: "409 + INVALID_TRANSITION + audit(DEF_INVALID_TRANSITION)로 고정"
+      deadline: "2026-03-09"
+      status: "DECIDED"
+      source_refs:
+        - "L1/runtime/index.yaml (open_questions_tbd)"
+        - "annex/orchestrator_spec.yaml (invalid_transition_policy)"
+        - "L1/runtime/logic.yaml (defaults_mvp invalid_transition_http=409)"
+      apply_to:
+        - "L1/runtime/contracts.yaml"
+        - "L1/runtime/logic.yaml"
+        - "L1/runtime/events.yaml"
+
+    # -------------------------
+    # contracts.yaml
+    # -------------------------
+    - id: "TBD-CT-1"
+      topic: "Envoy ext_authz → Adapter 요청 포맷에서 original_path/original_method 전달 필드 확정"
+      owner: "infra"
+      mvp_required: true
+      default_decision: "Adapter request body에 upstreamPath/upstreamMethod 필드로 고정"
+      deadline: "2026-03-09"
+      status: "DECIDED"
+      source_refs:
+        - "L1/runtime/contracts.yaml (TBD-CT-1)"
+      apply_to:
+        - "L1/runtime/contracts.yaml"
+        - "Adapter 구현"
+
+    - id: "TBD-CT-2"
+      topic: "Turnstile token 전달 방식(header vs body)"
+      owner: "ai+infra"
+      mvp_required: false
+      default_decision: "Header(X-Turnstile-Token) 우선, body 전달은 fallback"
+      deadline: "2026-03-10"
+      status: "DECIDED"
+      source_refs:
+        - "L1/runtime/contracts.yaml (TBD-CT-2)"
+        - "annex/turnstile_spec.yaml (OQ-TS-1)"
+      apply_to:
+        - "L1/runtime/contracts.yaml"
+        - "annex/turnstile_spec.yaml"
+
+    - id: "TBD-CT-3"
+      topic: "INVALID_TRANSITION(409) 반환 주체(Orchestrator vs Envoy/Adapter) 확정"
+      owner: "ai-team"
+      mvp_required: true
+      default_decision: "Orchestrator가 판단하고 /evaluate 결과로 deny를 지시(Envoy는 ext_authz deny 실행)"
+      deadline: "2026-03-09"
+      status: "DECIDED"
+      source_refs:
+        - "L1/runtime/contracts.yaml (TBD-CT-3)"
+      apply_to:
+        - "L1/runtime/logic.yaml"
+        - "L1/runtime/contracts.yaml"
+
+    # -------------------------
+    # state.yaml
+    # -------------------------
+    - id: "TBD-ST-1"
+      topic: "s3Passed 표현 방식(서버 플래그 고정 여부)"
+      owner: "ai-team"
+      mvp_required: true
+      default_decision: "서버 플래그 고정(DECIDED)"
+      deadline: "2026-03-09"
+      status: "DECIDED"
+      source_refs:
+        - "L1/runtime/state.yaml (TBD-ST-1)"
+      apply_to:
+        - "L1/runtime/state.yaml"
+        - "L1/runtime/logic.yaml"
+
+    - id: "TBD-ST-2"
+      topic: "TTL refresh 정책(deny에서도 refresh 할지)"
+      owner: "ai-team"
+      mvp_required: true
+      default_decision: "DENY에서는 TTL refresh 하지 않음(Strict). S3만 tm:grace:s3:{sessionId} TTL=180s"
+      deadline: "2026-03-09"
+      status: "DECIDED"
+      source_refs:
+        - "L1/runtime/state.yaml (TBD-ST-2)"
+      apply_to:
+        - "L1/runtime/state.yaml"
+        - "runtime redis writer 구현"
+
+    # -------------------------
+    # events.yaml
+    # -------------------------
+    - id: "TBD-EV-1"
+      topic: "API_CALL_OBS producer를 FE로 할지 Adapter/BE로 할지"
+      owner: "ai-team"
+      mvp_required: false
+      default_decision: "MVP는 Adapter에서 생성(원 요청 path/method를 가장 정확히 관측 가능)"
+      deadline: "2026-03-10"
+      status: "DECIDED"
+      source_refs:
+        - "L1/runtime/events.yaml (TBD-EV-1)"
+      apply_to:
+        - "L1/runtime/events.yaml"
+        - "Adapter 구현"
+
+    - id: "TBD-EV-2"
+      topic: "HIGH_VALUE_CLICK.tag enum 확정(확장/분리 여부)"
+      owner: "ai-team"
+      mvp_required: true
+      default_decision: "현재 enum(SECTION_SELECT/SEAT_SELECT/HOLD_CLICK/PAYMENT_INIT_CLICK/CONFIRM_CLICK)로 고정"
+      deadline: "2026-03-09"
+      status: "DECIDED"
+      source_refs:
+        - "L1/runtime/events.yaml (TBD-EV-2)"
+      apply_to:
+        - "L1/runtime/events.yaml"
+
+    # -------------------------
+    # actuators.yaml
+    # -------------------------
+    - id: "TBD-ACT-1"
+      topic: "Throttle 적용 대상 read 엔드포인트 목록(prefix/regex)"
+      owner: "ai-team"
+      mvp_required: true
+      default_decision: "LOCK-3 정책으로 확정(allowlist prefix)"
+      deadline: "2026-03-09"
+      status: "DECIDED"
+      source_refs:
+        - "L1/runtime/actuators.yaml (TBD-ACT-1)"
+      apply_to:
+        - "policy/policy_v1.yaml"
+        - "L1/runtime/actuators.yaml"
+
+    - id: "TBD-ACT-2"
+      topic: "S3 gate(428) deny를 Envoy에서 처리할지, BE에서 처리할지"
+      owner: "ai-team"
+      mvp_required: true
+      default_decision: "Envoy deny로 확정(LOCK-1)"
+      deadline: "2026-03-09"
+      status: "DECIDED"
+      source_refs:
+        - "L1/runtime/actuators.yaml (TBD-ACT-2)"
+      apply_to:
+        - "L1/runtime/actuators.yaml"
+        - "L1/runtime/contracts.yaml"
+
+    - id: "TBD-ACT-3"
+      topic: "S3 verify PASS 이후 flowState 전이(서버 즉시 S4 vs 다음 요청에서 전이)"
+      owner: "ai-team"
+      mvp_required: true
+      default_decision: "MVP는 '다음 요청에서 전이'로 단순화(verify는 s3Passed만 set)."
+      deadline: "2026-03-09"
+      status: "DECIDED"
+      source_refs:
+        - "L1/runtime/actuators.yaml (TBD-ACT-3)"
+        - "annex/challenge_spec.yaml (OQ-C-2/OQ-C-1 연계)"
+      apply_to:
+        - "L1/runtime/logic.yaml"
+        - "annex/challenge_spec.yaml"
+
+    # -------------------------
+    # logic.yaml
+    # -------------------------
+    - id: "TBD-LG-1"
+      topic: "Throttle endpoint scoping 확정(이미 LOCK-3으로 결론)"
+      owner: "ai-team"
+      mvp_required: true
+      default_decision: "DECIDED(LOCK-3)"
+      deadline: "2026-03-09"
+      status: "DECIDED"
+      source_refs:
+        - "L1/runtime/logic.yaml (TBD-LG-1)"
+      apply_to:
+        - "policy/policy_v1.yaml"
+
+    - id: "TBD-LG-2"
+      topic: "invalid transition 정책(이미 409로 결론)"
+      owner: "ai-team"
+      mvp_required: true
+      default_decision: "DECIDED(409 deny)"
+      deadline: "2026-03-09"
+      status: "DECIDED"
+      source_refs:
+        - "L1/runtime/logic.yaml (TBD-LG-2)"
+      apply_to:
+        - "L1/runtime/logic.yaml"
+
+    # -------------------------
+    # Turnstile Annex
+    # -------------------------
+    - id: "OQ-TS-1"
+      topic: "FE 토큰 전달 방식(header vs body) 확정(contracts와 동일)"
+      owner: "ai+infra"
+      mvp_required: false
+      default_decision: "Header 우선, body는 fallback"
+      deadline: "2026-03-10"
+      status: "DECIDED"
+      source_refs:
+        - "annex/turnstile_spec.yaml (OQ-TS-1)"
+      apply_to:
+        - "annex/turnstile_spec.yaml"
+        - "L1/runtime/contracts.yaml"
+
+    - id: "OQ-TS-2"
+      topic: "verify 수행 주체(Backend vs Adapter)"
+      owner: "ai+infra"
+      mvp_required: true
+      default_decision: "Adapter가 verify 수행(Envoy 경유 경로에서 일관 처리)"
+      deadline: "2026-03-09"
+      status: "DECIDED"
+      source_refs:
+        - "annex/turnstile_spec.yaml (OQ-TS-2)"
+      apply_to:
+        - "annex/turnstile_spec.yaml"
+        - "Adapter 구현"
+
+    - id: "OQ-TS-3"
+      topic: "turnstile_action/cdata 활용 여부"
+      owner: "ai-team"
+      mvp_required: false
+      default_decision: "MVP는 미사용(OFF). 필요 시 S1 트리거 id만 triggerId로 로깅"
+      deadline: "2026-03-12"
+      status: "DEFERRED"
+      source_refs:
+        - "annex/turnstile_spec.yaml (OQ-TS-3)"
+      apply_to:
+        - "annex/turnstile_spec.yaml"
+
+    - id: "OQ-TS-4"
+      topic: "S2->S3 재검증(secondary trigger) 필요성"
+      owner: "ai-team"
+      mvp_required: false
+      default_decision: "OFF 유지(secondary_trigger_enabled=false)"
+      deadline: "2026-03-12"
+      status: "DEFERRED"
+      source_refs:
+        - "annex/turnstile_spec.yaml (OQ-TS-4)"
+      apply_to:
+        - "policy/policy_v1.yaml"
+        - "annex/turnstile_spec.yaml"
+
+    # -------------------------
+    # Block Annex
+    # -------------------------
+    - id: "OQ-B-1"
+      topic: "blocked 상태 저장 방식(redis 필드 vs 별도 key)"
+      owner: "ai-team"
+      mvp_required: true
+      default_decision: "block 상태는 tm:block:{sessionId} 별도 key로 저장"
+      deadline: "2026-03-09"
+      status: "DECIDED"
+      source_refs:
+        - "annex/block_spec.yaml (OQ-B-1)"
+      apply_to:
+        - "L1/runtime/state.yaml"
+        - "annex/block_spec.yaml"
+
+    - id: "OQ-B-2"
+      topic: "block_ttl_seconds를 session TTL과 항상 동일하게 둘지"
+      owner: "ai-team"
+      mvp_required: true
+      default_decision: "MVP는 동일(1800s)로 고정"
+      deadline: "2026-03-09"
+      status: "DECIDED"
+      source_refs:
+        - "annex/block_spec.yaml (OQ-B-2)"
+      apply_to:
+        - "policy/policy_v1.yaml"
+
+    - id: "OQ-B-3"
+      topic: "BLOCK 결정타 근거의 관리 위치(Planner vs Policy config)"
+      owner: "ai-team"
+      mvp_required: false
+      default_decision: "MVP는 T3=BLOCK 고정. 근거 체계는 운영 단계에서 확장"
+      deadline: "2026-03-12"
+      status: "DEFERRED"
+      source_refs:
+        - "annex/block_spec.yaml (OQ-B-3)"
+      apply_to:
+        - "annex/planner_spec.yaml"
+        - "policy/policy_v1.yaml"
+
+    # -------------------------
+    # Challenge Annex
+    # -------------------------
+    - id: "OQ-C-1"
+      topic: "428(CHALLENGE_REQUIRED)를 Envoy에서 반환할지, BE에서 반환할지"
+      owner: "ai-team"
+      mvp_required: true
+      default_decision: "Envoy deny로 확정(LOCK-1)"
+      deadline: "2026-03-09"
+      status: "DECIDED"
+      source_refs:
+        - "annex/challenge_spec.yaml (OQ-C-1)"
+      apply_to:
+        - "L1/runtime/contracts.yaml"
+        - "L1/runtime/actuators.yaml"
+
+    - id: "OQ-C-2"
+      topic: "S3 결과를 S4 진입 권한으로 나타내는 방식(서버 플래그 vs 토큰)"
+      owner: "ai-team"
+      mvp_required: true
+      default_decision: "서버 플래그(s3Passed)로 확정"
+      deadline: "2026-03-09"
+      status: "DECIDED"
+      source_refs:
+        - "annex/challenge_spec.yaml (OQ-C-2)"
+      apply_to:
+        - "L1/runtime/state.yaml"
+        - "policy/policy_v1.yaml"
+
+    - id: "OQ-C-3"
+      topic: "429 임시 정지 응답의 FE 처리(자동 재시도 vs 수동)"
+      owner: "ai-team"
+      mvp_required: false
+      default_decision: "MVP는 수동(사용자 재시도). 자동 재시도는 UX/부하 리스크"
+      deadline: "2026-03-12"
+      status: "DEFERRED"
+      source_refs:
+        - "annex/challenge_spec.yaml (OQ-C-3)"
+      apply_to:
+        - "annex/challenge_spec.yaml"
+
+    - id: "OQ-C-4"
+      topic: "모바일/웹 뷰포트 보정 파라미터 최종값(반경/윈도우)"
+      owner: "ai-team"
+      mvp_required: true
+      default_decision: "radius=48px, timing_window=320ms로 고정(MVP baseline)"
+      deadline: "2026-03-09"
+      status: "DECIDED"
+      source_refs:
+        - "annex/challenge_spec.yaml (OQ-C-4)"
+      apply_to:
+        - "policy/policy_v1.yaml"
+
+    # -------------------------
+    # Offline LLM (proposal-only)
+    # -------------------------
+    - id: "TBD-LLM-1"
+      topic: "offline patch를 자동 적용할지(기본: 제안만) vs canary 자동 적용"
+      owner: "ai-team"
+      mvp_required: false
+      default_decision: "MVP는 proposal_only(자동 적용 금지)"
+      deadline: "2026-03-12"
+      status: "DEFERRED"
+      source_refs:
+        - "L1/llm/defense_llm_ssot.yaml (open_questions_tbd)"
+      apply_to:
+        - "L1/llm/defense_llm_ssot.yaml"
+        - "L2/optimization/defense_policy_optimization_ssot.yaml"
+
+    - id: "TBD-LLM-2"
+      topic: "offline trigger 최소 이벤트 수 튜닝"
+      owner: "ai-team"
+      mvp_required: false
+      default_decision: "기본값 유지(min_total=2000, min_unique_sessions=200)"
+      deadline: "2026-03-12"
+      status: "DEFERRED"
+      source_refs:
+        - "L1/llm/defense_llm_ssot.yaml (open_questions_tbd)"
+      apply_to:
+        - "L1/llm/defense_llm_ssot.yaml"

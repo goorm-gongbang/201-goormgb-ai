@@ -1,0 +1,130 @@
+"""Local warehouse for near-real-time defense audit queries."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any, Iterable, Mapping, Optional
+
+from ..core.constants import AUDIT_RETENTION_DAYS, WAREHOUSE_FILENAME
+from .jsonl_retention import is_within_retention, load_rows, persist_rows
+from .schemas import AuditEntry
+
+
+class AuditWarehouse:
+    """Append-only local warehouse of normalized audit events.
+
+    MVP implementation of the L2 warehouse contract using JSONL rows.
+    """
+
+    def __init__(
+        self,
+        file_path: str = WAREHOUSE_FILENAME,
+        *,
+        retention_days: int = AUDIT_RETENTION_DAYS,
+    ) -> None:
+        self._path = Path(file_path)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._retention_days = max(0, int(retention_days))
+
+    @property
+    def file_path(self) -> Path:
+        return self._path
+
+    @property
+    def retention_days(self) -> int:
+        return self._retention_days
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "backend": "jsonl_mvp",
+            "table": "defense_audit_events",
+            "filePath": str(self._path),
+            "primaryOptions": ["Postgres", "ClickHouse"],
+            "indices": ["traceId", "sessionId", "eventType", "tsMs"],
+            "partitioning": "by day(tsMs)",
+            "retentionDays": self._retention_days,
+        }
+
+    def append(self, entry: AuditEntry | Mapping[str, Any]) -> bool:
+        item = entry if isinstance(entry, AuditEntry) else AuditEntry.from_dict(entry)
+        errors = item.validate()
+        if errors:
+            raise ValueError("invalid warehouse entry: " + "; ".join(errors))
+
+        row = _normalize_row(item.to_dict())
+        self._prune_expired()
+        if not is_within_retention(row, retention_days=self._retention_days):
+            return False
+        with self._path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+        return True
+
+    def append_many(self, entries: Iterable[AuditEntry | Mapping[str, Any]]) -> int:
+        count = 0
+        for entry in entries:
+            if self.append(entry):
+                count += 1
+        return count
+
+    def clear(self) -> None:
+        """Remove all stored warehouse rows."""
+        self._path.write_text("", encoding="utf-8")
+
+    def read_all(self) -> list[dict[str, Any]]:
+        rows, pruned = load_rows(self._path, retention_days=self._retention_days)
+        if pruned:
+            persist_rows(self._path, rows)
+        return rows
+
+    def query(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> list[dict[str, Any]]:
+        rows = self.read_all()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            if session_id is not None and row.get("sessionId") != session_id:
+                continue
+            if trace_id is not None and row.get("traceId") != trace_id:
+                continue
+            if event_type is not None and row.get("eventType") != event_type:
+                continue
+            out.append(row)
+        out.sort(key=lambda row: int(row.get("tsMs", 0)), reverse=True)
+        if limit is not None and limit >= 0:
+            return out[:limit]
+        return out
+
+    def _prune_expired(self) -> None:
+        rows, pruned = load_rows(self._path, retention_days=self._retention_days)
+        if pruned:
+            persist_rows(self._path, rows)
+
+
+def _normalize_row(entry: Mapping[str, Any]) -> dict[str, Any]:
+    row = dict(entry)
+    row["dedup_isDuplicate"] = bool(_nested_get(entry, "dedup", "isDuplicate", default=False))
+    row["result_httpStatus"] = _nested_get(entry, "result", "httpStatus")
+    row["result_reasonCode"] = _nested_get(entry, "result", "reasonCode")
+    row["turnstile_verifyStatus"] = _nested_get(entry, "turnstile", "verifyStatus")
+    row["challenge_result"] = _nested_get(entry, "challenge", "result")
+    row["throttle_delayMs"] = _nested_get(entry, "throttle", "delayMs")
+    row["throttle_endpointPath"] = _nested_get(entry, "throttle", "endpointPath")
+    return row
+
+
+def _nested_get(data: Mapping[str, Any], *path: str, default: Any = None) -> Any:
+    cur: Any = data
+    for key in path:
+        if not isinstance(cur, Mapping) or key not in cur:
+            return default
+        cur = cur[key]
+    return cur
+
+
+__all__ = ["AuditWarehouse"]

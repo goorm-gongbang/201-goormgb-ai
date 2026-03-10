@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Log Analyzer & CLI Replay Reporter for Defense PoC-0.
 
-Parses decision_audit.jsonl and provides:
+Parses poc_0_decision_audit.jsonl and provides:
 1. Summary Report: Overview of all scenarios by trace_id
 2. Detail Replay: Step-by-step timeline for a specific scenario
 
@@ -348,8 +348,8 @@ Examples:
     parser.add_argument(
         "--log-path",
         type=str,
-        default="logs/decision_audit.jsonl",
-        help="Path to JSONL log file (default: logs/decision_audit.jsonl)",
+        default="logs/poc_0_decision_audit.jsonl",
+        help="Path to JSONL log file (default: logs/poc_0_decision_audit.jsonl)",
     )
 
     parser.add_argument(

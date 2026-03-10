@@ -29,7 +29,7 @@ class DecisionLogger:
     def __init__(
         self,
         log_dir: str = "logs",
-        filename: str = "decision_audit.jsonl",
+        filename: str = "poc_0_decision_audit.jsonl",
     ) -> None:
         """Initialize the logger.
 
@@ -136,7 +136,7 @@ _default_logger: Optional[DecisionLogger] = None
 
 def get_default_logger(
     log_dir: str = "logs",
-    filename: str = "decision_audit.jsonl",
+    filename: str = "poc_0_decision_audit.jsonl",
     force_new: bool = False,
 ) -> DecisionLogger:
     """Get or create the default DecisionLogger instance.
