@@ -2,6 +2,8 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { useSecurityStore } from '@/stores/useSecurityStore';
+import { getOrCreateSessionId } from '@/services/api';
+import CatchBallVqaDemo from '@/components/security/CatchBallVqaDemo';
 
 export default function SecurityLayer() {
   const {
@@ -11,6 +13,7 @@ export default function SecurityLayer() {
     errorMessage,
     remainingAttempts,
     submitAnswer,
+    hideChallenge,
   } = useSecurityStore();
 
   const [answer, setAnswer] = useState('');
@@ -23,24 +26,37 @@ export default function SecurityLayer() {
     }
   }, [isVisible, status]);
 
-  // Clear input on failure
-  useEffect(() => {
-    if (status === 'FAILED') {
-      setAnswer('');
-      inputRef.current?.focus();
-    }
-  }, [status]);
-
   if (!isVisible) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!answer.trim() || status === 'SUBMITTING') return;
-    await submitAnswer(answer.trim());
+    const ok = await submitAnswer(answer.trim());
+    if (!ok) {
+      setAnswer('');
+      inputRef.current?.focus();
+    }
   };
 
   const isLoading = status === 'LOADING';
   const isSubmitting = status === 'SUBMITTING';
+  const isCatchBall = challengeData?.type === 'CATCH_BALL' || challengeData?.type === 'catch_ball';
+  const sessionId = getOrCreateSessionId();
+
+  const handleCatchBallSuccess = async (telemetry: Record<string, unknown>) => {
+    if (isSubmitting) return;
+    const ok = await submitAnswer('__VQA_PASS__', telemetry);
+    if (!ok) {
+      // keep modal open and show backend verification failure message.
+      return;
+    }
+    hideChallenge();
+  };
+
+  const handleCatchBallBlocked = async (telemetry: Record<string, unknown>) => {
+    if (isSubmitting) return;
+    await submitAnswer('__VQA_FAIL__', telemetry);
+  };
 
   return (
     <div
@@ -48,11 +64,15 @@ export default function SecurityLayer() {
       data-testid="security-overlay"
     >
       {/* Modal Card */}
-      <div className="relative w-full max-w-sm mx-4 rounded-3xl bg-white dark:bg-zinc-900 shadow-2xl overflow-hidden">
+      <div
+        className={`relative w-full mx-4 rounded-3xl bg-white dark:bg-zinc-900 shadow-2xl overflow-hidden ${
+          isCatchBall ? 'max-w-[1100px]' : 'max-w-sm'
+        }`}
+      >
         {/* Top accent bar */}
         <div className="h-2 bg-gradient-to-r from-rose-500 via-orange-500 to-amber-500" />
 
-        <div className="p-8 space-y-6">
+        <div className={`${isCatchBall ? 'p-4 space-y-3' : 'p-8 space-y-6'}`}>
           {/* Shield Icon */}
           <div className="flex justify-center">
             <div className="w-16 h-16 rounded-full bg-gradient-to-br from-rose-100 to-orange-100 dark:from-rose-900/30 dark:to-orange-900/30 flex items-center justify-center">
@@ -77,8 +97,32 @@ export default function SecurityLayer() {
             </div>
           )}
 
-          {/* Quiz Form */}
-          {!isLoading && challengeData && (
+          {/* Catch-ball VQA */}
+          {!isLoading && challengeData && isCatchBall && (
+            <div className="space-y-3">
+              <p className="text-xs text-center text-zinc-500 dark:text-zinc-400">
+                공 도착 위치 + 타이밍을 동시에 맞추면 통과됩니다.
+              </p>
+              <div className="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950 p-2">
+                <CatchBallVqaDemo
+                  embedded
+                  challengeId={challengeData.challengeId}
+                  sessionId={sessionId}
+                  issuedAt={challengeData.issuedAt}
+                  onSuccess={handleCatchBallSuccess}
+                  onBlocked={handleCatchBallBlocked}
+                />
+              </div>
+              {errorMessage && (
+                <p className="text-center text-sm text-rose-500 font-medium animate-pulse" data-testid="security-error">
+                  {errorMessage}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Legacy Quiz Form */}
+          {!isLoading && challengeData && !isCatchBall && (
             <form onSubmit={handleSubmit} className="space-y-4">
               {/* Quiz Prompt */}
               <div className="rounded-2xl bg-zinc-100 dark:bg-zinc-800 p-4 text-center">

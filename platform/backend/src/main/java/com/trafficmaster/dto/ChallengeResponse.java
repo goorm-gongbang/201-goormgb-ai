@@ -17,4 +17,8 @@ public class ChallengeResponse {
     private String type;
     private String prompt;
     private String imageUrl;
+    private String challengeToken;
+    private Long issuedAt;
+    private Long expiresAt;
+    private Integer attemptLimit;
 }

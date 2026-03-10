@@ -1,29 +1,9 @@
-openapi: 3.0.3
+openapi: 3.1.0
 info:
   title: Traffic Master AI Defense API
-  description: Mock/stub API for cloud ext_authz integration. Deterministic rule-based
-    decisions until full defense engine rollout. Contract field names/enums are fixed;
-    defaults and policy numeric values are baseline and tunable by environment/policy snapshot.
-    VQA policy v1 is fixed to queue-gate-once (no mid-session step-up challenge).
-  version: v1
-x-contract-governance:
-  fixed:
-  - endpoint semantics
-  - request/response field names
-  - enum values (flow_state, defense_tier, action)
-  - response header keys carried in headers_to_add
-  - x-defense-action vocabulary (none|throttle|challenge|honey|sandbox|block)
-  tunable:
-  - threshold and budget values used by policy engine
-  - policy_version string
-  - runtime host/port and path prefix routing
-  - strict path prefixes
-x-vqa-policy:
-  fixed_mode: queue_gate_once
-  rules:
-  - all sessions must solve one VQA immediately after queue pass
-  - no additional VQA injection during S4/S4R/S5/S5R by tier escalation
-  - S6 allows block only (no new challenge)
+  description: Deterministic defense runtime API for ext_authz adapter integration.
+    Includes evaluate + challenge start/verify/event contracts.
+  version: v2
 paths:
   /healthz:
     get:
@@ -102,6 +82,81 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /challenge/start:
+    post:
+      tags:
+      - challenge
+      summary: Challenge Start
+      operationId: challenge_start_challenge_start_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChallengeStartRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChallengeStartResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /challenge/event:
+    post:
+      tags:
+      - challenge
+      summary: Challenge Event
+      operationId: challenge_event_challenge_event_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChallengeEventIngestRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChallengeEventIngestResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /challenge/verify:
+    post:
+      tags:
+      - challenge
+      summary: Challenge Verify
+      operationId: challenge_verify_challenge_verify_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChallengeVerifyRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChallengeVerifyResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /meta/storage:
     get:
       tags:
@@ -120,6 +175,266 @@ paths:
                 title: Response Storage Meta Meta Storage Get
 components:
   schemas:
+    ChallengeEventIngestRequest:
+      properties:
+        session_id:
+          type: string
+          minLength: 1
+          title: Session Id
+        challenge_id:
+          type: string
+          minLength: 1
+          title: Challenge Id
+        challenge_token:
+          type: string
+          minLength: 1
+          title: Challenge Token
+        events:
+          items:
+            $ref: '#/components/schemas/ChallengePointerEvent'
+          type: array
+          title: Events
+      additionalProperties: false
+      type: object
+      required:
+      - session_id
+      - challenge_id
+      - challenge_token
+      title: ChallengeEventIngestRequest
+      description: Raw challenge events upload.
+    ChallengeEventIngestResponse:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+        challenge_id:
+          type: string
+          title: Challenge Id
+        accepted_events:
+          type: integer
+          title: Accepted Events
+        total_events:
+          type: integer
+          title: Total Events
+      additionalProperties: false
+      type: object
+      required:
+      - session_id
+      - challenge_id
+      - accepted_events
+      - total_events
+      title: ChallengeEventIngestResponse
+      description: Accepted event count response.
+    ChallengePointerEvent:
+      properties:
+        t_ms:
+          type: integer
+          minimum: 0.0
+          title: T Ms
+        x:
+          type: number
+          title: X
+        y:
+          type: number
+          title: Y
+        event:
+          type: string
+          enum:
+          - down
+          - move
+          - up
+          - click
+          title: Event
+      additionalProperties: false
+      type: object
+      required:
+      - t_ms
+      - x
+      - y
+      - event
+      title: ChallengePointerEvent
+      description: Raw client pointer event used for server-side verification.
+    ChallengeStartRequest:
+      properties:
+        session_id:
+          type: string
+          minLength: 1
+          title: Session Id
+        trace_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trace Id
+        flow_state:
+          anyOf:
+          - type: string
+            enum:
+            - S0
+            - S1
+            - S2
+            - S3
+            - S4
+            - S4R
+            - S5
+            - S5R
+            - S6
+            - SX
+          - type: 'null'
+          title: Flow State
+        challenge_type:
+          type: string
+          enum:
+          - queue_gate
+          - catch_ball
+          title: Challenge Type
+          default: catch_ball
+      additionalProperties: false
+      type: object
+      required:
+      - session_id
+      title: ChallengeStartRequest
+      description: Start a one-time challenge gate.
+    ChallengeStartResponse:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+        challenge_id:
+          type: string
+          title: Challenge Id
+        challenge_type:
+          type: string
+          enum:
+          - queue_gate
+          - catch_ball
+          title: Challenge Type
+        challenge_token:
+          type: string
+          title: Challenge Token
+        issued_at_ms:
+          type: integer
+          title: Issued At Ms
+        expires_at_ms:
+          type: integer
+          title: Expires At Ms
+        attempt_limit:
+          type: integer
+          title: Attempt Limit
+        public_params:
+          additionalProperties:
+            anyOf:
+            - type: number
+            - type: integer
+            - type: string
+            - type: boolean
+          type: object
+          title: Public Params
+      additionalProperties: false
+      type: object
+      required:
+      - session_id
+      - challenge_id
+      - challenge_type
+      - challenge_token
+      - issued_at_ms
+      - expires_at_ms
+      - attempt_limit
+      - public_params
+      title: ChallengeStartResponse
+      description: Challenge issuance response.
+    ChallengeVerifyRequest:
+      properties:
+        session_id:
+          type: string
+          minLength: 1
+          title: Session Id
+        challenge_id:
+          type: string
+          minLength: 1
+          title: Challenge Id
+        challenge_token:
+          type: string
+          minLength: 1
+          title: Challenge Token
+        final_click_ts_ms:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Final Click Ts Ms
+      additionalProperties: false
+      type: object
+      required:
+      - session_id
+      - challenge_id
+      - challenge_token
+      title: ChallengeVerifyRequest
+      description: Challenge verification request.
+    ChallengeVerifyResponse:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+        challenge_id:
+          type: string
+          title: Challenge Id
+        result:
+          type: string
+          enum:
+          - PASSED
+          - FAILED
+          - BLOCKED
+          - EXPIRED
+          title: Result
+        passed:
+          type: boolean
+          title: Passed
+        attempts_used:
+          type: integer
+          title: Attempts Used
+        attempts_left:
+          type: integer
+          title: Attempts Left
+        defense_tier:
+          type: string
+          enum:
+          - T0
+          - T1
+          - T2
+          - T3
+          title: Defense Tier
+        action:
+          type: string
+          enum:
+          - NONE
+          - CHALLENGE
+          - THROTTLE
+          - GATE
+          - BLOCK
+          title: Action
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        headers_to_add:
+          additionalProperties:
+            type: string
+          type: object
+          title: Headers To Add
+      additionalProperties: false
+      type: object
+      required:
+      - session_id
+      - challenge_id
+      - result
+      - passed
+      - attempts_used
+      - attempts_left
+      - defense_tier
+      - action
+      title: ChallengeVerifyResponse
+      description: Server-side verification result.
     EvaluateRequest:
       properties:
         session_id:
@@ -249,20 +564,25 @@ components:
           - T3
           title: Defense Tier
         action:
-          anyOf:
-          - type: string
-            enum:
-            - DEF_BLOCKED
-            - DEF_CHALLENGE_FORCED
-            - DEF_THROTTLED
-            - DEF_HONEY_SEAT_INJECTED
-            - DEF_HONEY_TRIGGERED
-            - DEF_SANDBOXED
-          - type: 'null'
+          type: string
+          enum:
+          - NONE
+          - CHALLENGE
+          - THROTTLE
+          - GATE
+          - BLOCK
           title: Action
-          description: |
-            DEF_CHALLENGE_FORCED is reserved for queue-gate one-time VQA issuance.
-            In v1, tier escalation during active session does not emit additional challenge.
+        actions:
+          items:
+            type: string
+            enum:
+            - NONE
+            - CHALLENGE
+            - THROTTLE
+            - GATE
+            - BLOCK
+          type: array
+          title: Actions
         reason:
           anyOf:
           - type: string
@@ -281,18 +601,12 @@ components:
         policy_version:
           type: string
           title: Policy Version
-          default: def-pol-0.1.0
-          description: Baseline policy version example. Runtime value is policy snapshot dependent.
+          default: def-pol-2.0.0
         headers_to_add:
           additionalProperties:
             type: string
           type: object
           title: Headers To Add
-          description: |
-            Response headers to be propagated by adapter/envoy.
-            x-defense-action primary values: none|throttle|challenge|honey|sandbox|block
-            x-defense-actions optional multi-action list (comma-separated), e.g. "throttle,challenge".
-            challenge is used for queue-gate one-time VQA only in v1.
         decision_id:
           type: string
           title: Decision Id
@@ -303,8 +617,7 @@ components:
         version:
           type: string
           title: Version
-          default: v1
-          description: API major version label; deployment tag can vary by environment.
+          default: v2
       additionalProperties: false
       type: object
       required:
@@ -312,6 +625,7 @@ components:
       - session_id
       - flow_state
       - defense_tier
+      - action
       - decision_id
       - latency_ms
       title: EvaluateResponse
@@ -402,7 +716,6 @@ components:
           - SX
           title: Flow State
           default: S0
-          description: Initial state baseline; runtime value changes per session progress.
         defense_tier:
           type: string
           enum:
@@ -412,12 +725,10 @@ components:
           - T3
           title: Defense Tier
           default: T0
-          description: Default startup tier baseline.
         risk_score:
           type: number
           title: Risk Score
           default: 0.0
-          description: Baseline initialization value.
         challenge_fail_count:
           type: integer
           title: Challenge Fail Count
@@ -434,12 +745,10 @@ components:
           type: integer
           title: Heavy Budget Left
           default: 2
-          description: Baseline budget example (tunable).
         replan_budget_left:
           type: integer
           title: Replan Budget Left
           default: 3
-          description: Baseline budget example (tunable).
         probation_until_ms:
           anyOf:
           - type: integer
@@ -448,12 +757,47 @@ components:
         policy_version:
           type: string
           title: Policy Version
-          default: def-pol-0.1.0
-          description: Baseline policy label example.
+          default: def-pol-2.0.0
         updated_ts_ms:
           type: integer
           title: Updated Ts Ms
           default: 0
+        vqa_required:
+          type: boolean
+          title: Vqa Required
+          default: true
+        vqa_passed:
+          type: boolean
+          title: Vqa Passed
+          default: false
+        vqa_attempt_count:
+          type: integer
+          title: Vqa Attempt Count
+          default: 0
+        vqa_retry_limit:
+          type: integer
+          title: Vqa Retry Limit
+          default: 2
+        vqa_last_result:
+          anyOf:
+          - type: string
+            enum:
+            - PASSED
+            - FAILED
+            - BLOCKED
+            - EXPIRED
+          - type: 'null'
+          title: Vqa Last Result
+        active_challenge_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Active Challenge Id
+        active_challenge_expires_at_ms:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Active Challenge Expires At Ms
       additionalProperties: false
       type: object
       title: RuntimeStateSnapshot
@@ -473,6 +817,11 @@ components:
         type:
           type: string
           title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
       type: object
       required:
       - loc

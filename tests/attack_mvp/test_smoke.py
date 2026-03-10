@@ -18,6 +18,26 @@ def test_run_config_defaults(monkeypatch) -> None:
     assert cfg.mode == "MAP"
     assert cfg.frontend_url == "http://localhost:3000"
     assert cfg.game_id == "game-001"
+    assert cfg.challenge_mode == "auto"
+    assert cfg.challenge_strategy == "api_fast"
+
+
+def test_run_config_accepts_extended_challenge_strategies(monkeypatch) -> None:
+    monkeypatch.setenv("TM_ATTACK_CHALLENGE_STRATEGY", "token_tamper")
+    cfg = RunConfig.from_env()
+    assert cfg.challenge_strategy == "token_tamper"
+
+
+def test_run_config_accepts_ui_solver_strategy(monkeypatch) -> None:
+    monkeypatch.setenv("TM_ATTACK_CHALLENGE_STRATEGY", "ui_solver")
+    cfg = RunConfig.from_env()
+    assert cfg.challenge_strategy == "ui_solver"
+
+
+def test_run_config_accepts_ui_solver_stealth_strategy(monkeypatch) -> None:
+    monkeypatch.setenv("TM_ATTACK_CHALLENGE_STRATEGY", "ui_solver_stealth")
+    cfg = RunConfig.from_env()
+    assert cfg.challenge_strategy == "ui_solver_stealth"
 
 
 def test_main_writes_audit_log(tmp_path: Path, monkeypatch) -> None:

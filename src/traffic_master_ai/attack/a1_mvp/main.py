@@ -26,6 +26,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--slow-mo-ms", type=int, default=None)
     p.add_argument("--log-dir", default=None)
     p.add_argument("--mouse-profile", choices=["human", "bot"], default=None)
+    p.add_argument("--challenge-mode", choices=["auto", "pass", "fail"], default=None)
+    p.add_argument(
+        "--challenge-strategy",
+        choices=[
+            "api_fast",
+            "humanish_pass",
+            "edge_pass",
+            "ui_solver",
+            "ui_solver_stealth",
+            "botlike_fail",
+            "timing_fail",
+            "token_tamper",
+        ],
+        default=None,
+    )
     p.add_argument(
         "--no-synthesis",
         action="store_true",
@@ -53,6 +68,10 @@ def main(argv: list[str] | None = None) -> int:
         cfg = replace(cfg, log_dir=args.log_dir)
     if args.mouse_profile is not None:
         cfg = replace(cfg, mouse_profile=args.mouse_profile)
+    if args.challenge_mode is not None:
+        cfg = replace(cfg, challenge_mode=args.challenge_mode)
+    if args.challenge_strategy is not None:
+        cfg = replace(cfg, challenge_strategy=args.challenge_strategy)
     if args.no_synthesis:
         cfg = replace(cfg, mouse_profile="bot")
 
@@ -69,6 +88,8 @@ def main(argv: list[str] | None = None) -> int:
                 "frontend_url": cfg.frontend_url,
                 "game_id": cfg.game_id,
                 "mouse_profile": cfg.mouse_profile,
+                "challenge_mode": cfg.challenge_mode,
+                "challenge_strategy": cfg.challenge_strategy,
             }
         )
         if args.dry_run:

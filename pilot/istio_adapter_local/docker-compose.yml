@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  ai-defense:
+    build:
+      context: ../..
+      dockerfile: spec/delivery_bundle_2026-03-04/CI/Dockerfile.ai-defense
+    environment:
+      - TM_AI_DEFENSE_HOST=0.0.0.0
+      - TM_AI_DEFENSE_PORT=8000
+      - TM_RUNTIME_STATE_BACKEND=memory
+      - TM_DEFENSE_POLICY_VERSION=def-pol-2.0.0
+    ports:
+      - "8000:8000"
+
+  authz-adapter:
+    build: ./adapter
+    environment:
+      - AI_DEFENSE_URL=http://ai-defense:8000/evaluate
+      - AI_DEFENSE_TIMEOUT_MS=800
+      - ADAPTER_POLICY_VERSION=adapter-v1
+      - TM_AUTHZ_CHECK_METHODS=POST
+      - TM_AUTHZ_CHECK_PATH_PREFIXES=/api/
+    ports:
+      - "9001:9001"
+    depends_on:
+      - ai-defense
+
+  envoy:
+    image: envoyproxy/envoy:v1.30-latest
+    command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "-l", "info"]
+    volumes:
+      - ./envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "10000:10000"
+      - "9901:9901"
+    depends_on:
+      - authz-adapter

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from traffic_master_ai.attack.a1_mvp.contracts.api import (
     API_PATH_HOLDS,
+    API_PATH_PAYMENTS,
     API_PATH_RECOMMENDATIONS,
     API_PATH_SEATS_SUFFIX,
     API_PATH_ZONES_PREFIX,
@@ -24,6 +25,8 @@ from traffic_master_ai.attack.a1_mvp.contracts.selectors import (
     SEL_AGREE_CANCEL,
     SEL_AGREE_TERMS,
     SEL_BOOKING_BTN,
+    SEL_SECURITY_CHALLENGE_START,
+    SEL_SECURITY_GLOVE_CATCH,
     SEL_HOLD_FAIL_CLOSE,
     SEL_MAP_BOOK_BTN,
     SEL_PARTY_SIZE_SELECT_MAP,
@@ -36,6 +39,7 @@ from traffic_master_ai.attack.a1_mvp.contracts.selectors import (
     SEL_SECURITY_ERROR,
     SEL_SECURITY_INPUT,
     SEL_SECURITY_OVERLAY,
+    SEL_SECURITY_RETRY,
     SEL_SECURITY_SUBMIT,
     SEL_ZONE_ITEM,
 )
@@ -47,18 +51,36 @@ from traffic_master_ai.attack.a1_mvp.contracts.storage import (
 
 
 def test_selector_contract_has_expected_values() -> None:
-    assert SELECTOR_CONTRACT["preEntry"]["bookingButton"] == "#booking-button:not([disabled])"
+    assert (
+        SELECTOR_CONTRACT["preEntry"]["bookingButton"]
+        == '[data-testid="preentry-booking-button"]:not([disabled]), #booking-button:not([disabled])'
+    )
     assert SELECTOR_CONTRACT["security"]["overlay"] == '[data-testid="security-overlay"]'
     assert SELECTOR_CONTRACT["security"]["input"] == '[data-testid="security-input"]'
     assert SELECTOR_CONTRACT["security"]["submit"] == '[data-testid="security-submit"]'
     assert SELECTOR_CONTRACT["security"]["error"] == '[data-testid="security-error"]'
+    assert (
+        SELECTOR_CONTRACT["security"]["challengeStart"]
+        == '[data-testid="catchball-start"]'
+    )
+    assert (
+        SELECTOR_CONTRACT["security"]["challengeGloveCatch"]
+        == '[data-testid="catchball-glove"]'
+    )
+    assert (
+        SELECTOR_CONTRACT["security"]["challengeRetry"]
+        == '[data-testid="catchball-retry"]'
+    )
     assert (
         SELECTOR_CONTRACT["map"]["zoneItem"]
         == 'button[data-testid^="zone-"][data-remaining]:not([disabled])'
     )
     assert SELECTOR_CONTRACT["map"]["seatGrid"] == '[data-testid="seat-grid"]'
     assert SELECTOR_CONTRACT["map"]["seatAvailable"] == 'button[data-seat-status="AVAILABLE"]'
-    assert SELECTOR_CONTRACT["map"]["bookingButtonMap"] == "#booking-button-map:not([disabled])"
+    assert (
+        SELECTOR_CONTRACT["map"]["bookingButtonMap"]
+        == '[data-testid="map-booking-button"]:not([disabled]), #booking-button-map:not([disabled])'
+    )
     assert SELECTOR_CONTRACT["map"]["holdFailClose"] == '[data-testid="hold-fail-close"]'
     assert SELECTOR_CONTRACT["map"]["partySizeSelect"] == '[data-testid="party-size-select"]'
     assert (
@@ -78,6 +100,9 @@ def test_flattened_selector_aliases_match_contract() -> None:
     assert SEL_SECURITY_INPUT == SELECTOR_CONTRACT["security"]["input"]
     assert SEL_SECURITY_SUBMIT == SELECTOR_CONTRACT["security"]["submit"]
     assert SEL_SECURITY_ERROR == SELECTOR_CONTRACT["security"]["error"]
+    assert SEL_SECURITY_CHALLENGE_START == SELECTOR_CONTRACT["security"]["challengeStart"]
+    assert SEL_SECURITY_GLOVE_CATCH == SELECTOR_CONTRACT["security"]["challengeGloveCatch"]
+    assert SEL_SECURITY_RETRY == SELECTOR_CONTRACT["security"]["challengeRetry"]
     assert SEL_ZONE_ITEM == SELECTOR_CONTRACT["map"]["zoneItem"]
     assert SEL_SEAT_GRID == SELECTOR_CONTRACT["map"]["seatGrid"]
     assert SEL_SEAT_AVAILABLE == SELECTOR_CONTRACT["map"]["seatAvailable"]
@@ -129,6 +154,6 @@ def test_api_contract_constants() -> None:
     assert URL_GLOB_PAYMENT_DONE == "**/payment/done*"
     assert API_PATH_RECOMMENDATIONS == "/api/recommendations"
     assert API_PATH_HOLDS == "/api/holds"
+    assert API_PATH_PAYMENTS == "/api/payments"
     assert API_PATH_ZONES_PREFIX == "/api/zones/"
     assert API_PATH_SEATS_SUFFIX == "/seats"
-

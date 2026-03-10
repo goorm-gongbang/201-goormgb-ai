@@ -18,6 +18,9 @@ class SecuritySelectors(TypedDict):
     input: str
     submit: str
     error: str
+    challengeStart: str
+    challengeGloveCatch: str
+    challengeRetry: str
 
 
 class MapSelectors(TypedDict):
@@ -51,19 +54,24 @@ class SelectorContract(TypedDict):
 
 SELECTOR_CONTRACT: Final[SelectorContract] = {
     "preEntry": {
-        "bookingButton": "#booking-button:not([disabled])",
+        # Prefer explicit testid and keep legacy id as fallback.
+        "bookingButton": '[data-testid="preentry-booking-button"]:not([disabled]), #booking-button:not([disabled])',
     },
     "security": {
         "overlay": '[data-testid="security-overlay"]',
         "input": '[data-testid="security-input"]',
         "submit": '[data-testid="security-submit"]',
         "error": '[data-testid="security-error"]',
+        "challengeStart": '[data-testid="catchball-start"]',
+        "challengeGloveCatch": '[data-testid="catchball-glove"]',
+        "challengeRetry": '[data-testid="catchball-retry"]',
     },
     "map": {
         "zoneItem": 'button[data-testid^="zone-"][data-remaining]:not([disabled])',
         "seatGrid": '[data-testid="seat-grid"]',
         "seatAvailable": 'button[data-seat-status="AVAILABLE"]',
-        "bookingButtonMap": "#booking-button-map:not([disabled])",
+        # Prefer explicit testid and keep legacy id as fallback.
+        "bookingButtonMap": '[data-testid="map-booking-button"]:not([disabled]), #booking-button-map:not([disabled])',
         "holdFailClose": '[data-testid="hold-fail-close"]',
         "partySizeSelect": '[data-testid="party-size-select"]',
     },
@@ -86,6 +94,9 @@ SEL_SECURITY_OVERLAY: Final[str] = SELECTOR_CONTRACT["security"]["overlay"]
 SEL_SECURITY_INPUT: Final[str] = SELECTOR_CONTRACT["security"]["input"]
 SEL_SECURITY_SUBMIT: Final[str] = SELECTOR_CONTRACT["security"]["submit"]
 SEL_SECURITY_ERROR: Final[str] = SELECTOR_CONTRACT["security"]["error"]
+SEL_SECURITY_CHALLENGE_START: Final[str] = SELECTOR_CONTRACT["security"]["challengeStart"]
+SEL_SECURITY_GLOVE_CATCH: Final[str] = SELECTOR_CONTRACT["security"]["challengeGloveCatch"]
+SEL_SECURITY_RETRY: Final[str] = SELECTOR_CONTRACT["security"]["challengeRetry"]
 
 SEL_ZONE_ITEM: Final[str] = SELECTOR_CONTRACT["map"]["zoneItem"]
 SEL_SEAT_GRID: Final[str] = SELECTOR_CONTRACT["map"]["seatGrid"]
@@ -101,4 +112,3 @@ SEL_PARTY_SIZE_SELECT_RECOMMEND: Final[str] = SELECTOR_CONTRACT["recommend"]["pa
 SEL_AGREE_TERMS: Final[str] = SELECTOR_CONTRACT["payment"]["agreeTerms"]
 SEL_AGREE_CANCEL: Final[str] = SELECTOR_CONTRACT["payment"]["agreeCancelFee"]
 SEL_PAY_BTN: Final[str] = SELECTOR_CONTRACT["payment"]["payButton"]
-

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -21,7 +21,7 @@ class DefenseDecisionAuditLogger:
         self._lock = Lock()
 
     @classmethod
-    def from_env(cls) -> "DefenseDecisionAuditLogger":
+    def from_env(cls) -> DefenseDecisionAuditLogger:
         path = os.getenv("TM_DEFENSE_AUDIT_LOG_PATH", "logs/defense_decision_audit.jsonl")
         return cls(path=path)
 
@@ -31,7 +31,7 @@ class DefenseDecisionAuditLogger:
         resp: EvaluateResponse,
         runtime_state: RuntimeStateSnapshot,
     ) -> None:
-        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        now_ms = int(datetime.now(UTC).timestamp() * 1000)
         payload: dict[str, Any] = {
             "ts_ms": now_ms,
             "session_id": req.session_id,
@@ -58,7 +58,27 @@ class DefenseDecisionAuditLogger:
             ),
         }
         line = json.dumps(payload, ensure_ascii=False)
-        with self._lock:
-            with self._path.open("a", encoding="utf-8") as f:
-                f.write(line + "\n")
+        with self._lock, self._path.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
 
+    def log_challenge_event(
+        self,
+        *,
+        session_id: str,
+        challenge_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        now_ms = int(datetime.now(UTC).timestamp() * 1000)
+        line = json.dumps(
+            {
+                "ts_ms": now_ms,
+                "session_id": session_id,
+                "challenge_id": challenge_id,
+                "event_type": event_type,
+                "payload": payload,
+            },
+            ensure_ascii=False,
+        )
+        with self._lock, self._path.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")

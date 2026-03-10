@@ -15,6 +15,6 @@ URL_GLOB_PAYMENT_DONE: Final[str] = "**/payment/done*"
 # API path fragments used for response waits.
 API_PATH_RECOMMENDATIONS: Final[str] = "/api/recommendations"
 API_PATH_HOLDS: Final[str] = "/api/holds"
+API_PATH_PAYMENTS: Final[str] = "/api/payments"
 API_PATH_ZONES_PREFIX: Final[str] = "/api/zones/"
 API_PATH_SEATS_SUFFIX: Final[str] = "/seats"
-

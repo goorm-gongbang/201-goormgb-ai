@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
+import { usePathname } from 'next/navigation';
 import { useSecurityStore } from '@/stores/useSecurityStore';
 
 /**
@@ -11,6 +12,7 @@ import { useSecurityStore } from '@/stores/useSecurityStore';
  */
 export default function SecurityTrigger() {
   const searchParams = useSearchParams();
+  const pathname = usePathname();
   const showChallenge = useSecurityStore((s) => s.showChallenge);
   const isVisible = useSecurityStore((s) => s.isVisible);
   const hasTriggered = useRef(false);
@@ -22,7 +24,14 @@ export default function SecurityTrigger() {
       hasTriggered.current = true;
       showChallenge();
     }
-  }, [searchParams, showChallenge, isVisible]);
+
+    const isSeatsPage = pathname?.startsWith('/seats');
+    const passedOnce = typeof window !== 'undefined' && localStorage.getItem('TM_VQA_PASSED_ONCE') === '1';
+    if (isSeatsPage && !passedOnce && !isVisible && !hasTriggered.current) {
+      hasTriggered.current = true;
+      showChallenge();
+    }
+  }, [searchParams, pathname, showChallenge, isVisible]);
 
   return null; // No visual rendering
 }

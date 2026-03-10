@@ -151,6 +151,7 @@ export default function BookingCard({ saleStatus, onBookingClick, loading }: Boo
       {/* ─── Booking Button ─── */}
       <button
         id="booking-button"
+        data-testid="preentry-booking-button"
         onClick={onBookingClick}
         disabled={!isBookable || loading}
         className={`w-full py-3 rounded-xl text-base font-bold shadow transition-all duration-200 ${

@@ -45,11 +45,11 @@ class PlatformIntegrationTest {
         logFile = File.createTempFile("platform-test-audit", ".jsonl");
         logFile.deleteOnExit();
         auditLogger = new DecisionAuditLogger(logFile.getAbsolutePath());
-        seatService = new SeatService(auditLogger);
-        securityService = new SecurityService(auditLogger);
-        paymentService = new PaymentService(auditLogger, seatService, securityService);
         mapper = new ObjectMapper();
         mapper.registerModule(new JavaTimeModule());
+        seatService = new SeatService(auditLogger);
+        securityService = new SecurityService(auditLogger, mapper);
+        paymentService = new PaymentService(auditLogger, seatService, securityService);
     }
 
     // ─── Helper ───

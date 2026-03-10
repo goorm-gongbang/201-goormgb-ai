@@ -8,9 +8,30 @@ interface ChallengeData {
   prompt: string;
   type: string;
   imageUrl?: string | null;
+  challengeToken?: string;
+  issuedAt?: number;
+  expiresAt?: number;
+  attemptLimit?: number;
 }
 
 type SecurityStatus = 'IDLE' | 'LOADING' | 'SUBMITTING' | 'FAILED';
+type CatchBallTelemetry = Record<string, unknown>;
+
+function normalizeCatchBallTelemetry(
+  telemetry: CatchBallTelemetry | undefined,
+  challengeId: string,
+  sessionId: string,
+  issuedAt?: number,
+): CatchBallTelemetry | null {
+  if (!telemetry || typeof telemetry !== 'object') return null;
+  const normalized: CatchBallTelemetry = { ...telemetry };
+  normalized.challenge_id = challengeId;
+  normalized.session_id = sessionId;
+  if (typeof issuedAt === 'number' && Number.isFinite(issuedAt)) {
+    normalized.issued_at = issuedAt;
+  }
+  return normalized;
+}
 
 interface SecurityState {
   isVisible: boolean;
@@ -22,7 +43,7 @@ interface SecurityState {
 
   showChallenge: () => Promise<void>;
   hideChallenge: () => void;
-  submitAnswer: (answer: string) => Promise<boolean>;
+  submitAnswer: (answer: string, telemetry?: CatchBallTelemetry) => Promise<boolean>;
 }
 
 export const useSecurityStore = create<SecurityState>((set, get) => ({
@@ -43,7 +64,11 @@ export const useSecurityStore = create<SecurityState>((set, get) => ({
       if (!res.ok) throw new Error('Failed to fetch challenge');
 
       const data: ChallengeData = await res.json();
-      set({ challengeData: data, status: 'IDLE' });
+      set({
+        challengeData: data,
+        status: 'IDLE',
+        remainingAttempts: data.attemptLimit ?? 2,
+      });
     } catch (err) {
       console.error('[SecurityStore] Failed to fetch challenge:', err);
       set({ status: 'IDLE', errorMessage: '보안 문제를 불러올 수 없습니다.', lastResult: 'FAIL' });
@@ -60,7 +85,7 @@ export const useSecurityStore = create<SecurityState>((set, get) => ({
     });
   },
 
-  submitAnswer: async (answer: string) => {
+  submitAnswer: async (answer: string, telemetry?: CatchBallTelemetry) => {
     const { challengeData } = get();
     if (!challengeData) return false;
 
@@ -75,6 +100,13 @@ export const useSecurityStore = create<SecurityState>((set, get) => ({
           challengeId: challengeData.challengeId,
           answer,
           sessionId,
+          challengeToken: challengeData.challengeToken ?? '',
+          telemetry: normalizeCatchBallTelemetry(
+            telemetry,
+            challengeData.challengeId,
+            sessionId,
+            challengeData.issuedAt,
+          ),
         }),
       });
 
@@ -83,6 +115,9 @@ export const useSecurityStore = create<SecurityState>((set, get) => ({
       const data = await res.json();
 
       if (data.result === 'PASS') {
+        try {
+          localStorage.setItem('TM_VQA_PASSED_ONCE', '1');
+        } catch {}
         set({
           isVisible: false,
           challengeData: null,
@@ -93,9 +128,10 @@ export const useSecurityStore = create<SecurityState>((set, get) => ({
         });
         return true;
       } else {
+        const reason = data.reasonCode ? ` (${data.reasonCode})` : '';
         set({
           status: 'FAILED',
-          errorMessage: `오답입니다. 남은 기회: ${data.remainingAttempts}회`,
+          errorMessage: `검증 실패${reason}. 남은 기회: ${data.remainingAttempts}회`,
           remainingAttempts: data.remainingAttempts,
           lastResult: 'FAIL',
         });

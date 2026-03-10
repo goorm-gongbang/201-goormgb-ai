@@ -6,12 +6,12 @@ import java.io.File;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.trafficmaster.audit.DecisionAuditLogger;
 import com.trafficmaster.dto.HoldRequest;
 import com.trafficmaster.dto.OrderRequest;
@@ -36,7 +36,7 @@ class PaymentTransactionTest {
         tmpLog.deleteOnExit();
         auditLogger = new DecisionAuditLogger(tmpLog.getAbsolutePath());
         seatService = new SeatService(auditLogger);
-        securityService = new SecurityService(auditLogger);
+        securityService = new SecurityService(auditLogger, new ObjectMapper());
         paymentService = new PaymentService(auditLogger, seatService, securityService);
     }
 

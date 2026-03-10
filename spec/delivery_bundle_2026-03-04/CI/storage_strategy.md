@@ -1,73 +1,64 @@
-# Defense Storage Strategy (MVP-1)
+# Defense Storage Strategy (MVP-2)
+
+## 결정 요약
+- Runtime state: Redis (`tm:sess:{sessionId}`)
+- Audit origin: append-only JSONL + object storage
+- Analytics: PostgreSQL(JSONB)
+- MongoDB: MVP 기본 저장소로 미채택
 
 ## Contract vs Tunable
-- Fixed: 저장소 역할 분리(Runtime/Audit/Analytics), 최소 로그 키 집합, Redis key pattern(`tm:sess:{sessionId}`).
-- Tunable: TTL, 버킷 경로, ETL 주기, PostgreSQL 인덱스/파티션, fail policy 모드.
-- 아래 숫자 값은 baseline이며 운영 데이터 기반으로 조정 가능합니다.
+- Fixed:
+  - 저장소 역할 분리(Runtime/Audit/Analytics)
+  - 최소 로그 키 집합
+  - Redis key pattern
+- Tunable:
+  - TTL, ETL 주기, object storage 경로, PostgreSQL index/partition
+  - 사후 분석 실행 트리거(시간기반/건수기반)
 
-## Decision
-- Runtime state: Redis (default), memory fallback
-- Audit origin: append-only JSONL
-- Analytics: PostgreSQL (JSONB mixed schema)
-- MongoDB: not selected as primary store in MVP-1
-
-## Layer mapping
+## Layer Mapping
 
 | Layer | Purpose | Store | Notes |
 |---|---|---|---|
-| Runtime | low-latency policy state (`flow_state`, `tier`, `risk_score`, counters, budgets) | Redis `tm:sess:{sessionId}` | TTL baseline 1800s (`TM_SESSION_STATE_TTL_SECONDS`) |
-| Audit origin | immutable decision evidence | JSONL (`logs/defense_decision_audit.jsonl`) | append-only |
-| Raw behavior | high-volume raw points | JSONL + object storage | low-frequency read |
-| Analytics | tuning, dashboard, A/B, regression | PostgreSQL | fixed columns + JSONB |
+| Runtime | low-latency policy state | Redis | TTL baseline 1800s |
+| Audit origin | immutable decision evidence | JSONL + object storage | append-only |
+| Raw challenge telemetry | VQA raw pointer events | JSONL + object storage | 고용량 원본 보존 |
+| Analytics | KPI/tuning/reporting | PostgreSQL(JSONB) | ETL 적재 |
 
-## Why PostgreSQL
-1. Session/time/policy-version based aggregations are first-class in SQL.
-2. JSONB allows schema evolution for telemetry keys (VQA typing etc).
-3. Join-friendly for decisions + telemetry + VQA outcomes.
+## Redis Runtime Contract
+Key: `tm:sess:{sessionId}`
 
-## Runtime key contract (Redis)
-
-Key pattern:
-`tm:sess:{sessionId}`
-
-Fields:
+필수 필드:
 - `flow_state`
 - `defense_tier`
 - `risk_score`
-- `probation_until_ms`
 - `challenge_fail_count`
-- `seat_taken_streak`
-- `hold_fail_streak`
-- `heavy_budget_left`
-- `replan_budget_left`
+- `vqa_required`
+- `vqa_passed`
+- `vqa_attempt_count`
+- `active_challenge_id`
 - `policy_version`
 
-TTL:
-- `TM_SESSION_STATE_TTL_SECONDS` (baseline 1800, tunable)
-
-## Logging contract (minimum keys)
-
-Every decision audit record should include:
-- `session_id`
+## Audit Minimum Fields
+- `ts_ms`
 - `trace_id`
+- `session_id`
 - `request_id`
 - `flow_state`
-- `event_type`
 - `defense_tier`
 - `action`
 - `reason_code`
 - `policy_version`
-- `ts_ms`
+- `latency_ms`
 
-Variable fields:
-- telemetry details and evolving keys go to nested objects (`telemetry_features`, `payload`, `details`)
+## Batch Analysis Trigger Policy
+- Runtime 차단 판정에는 배치 분석 결과를 직접 사용하지 않음
+- 배치(PyOD+LLM 등)는 **로그 건수 기반 트리거**로 실행(시간 고정 주기 아님)
+- 배치 결과는 다음 배포 정책/threshold 보정 후보로만 사용
 
-## Fail policy
+## Backup / Retention
+- JSONL: 일 단위 object storage 업로드
+- PostgreSQL: 일 백업 + PITR(운영 환경)
+- Redis: runtime cache 성격, 장기 백업 대상 아님
 
-Runtime state backend down:
-- Redis unavailable -> memory fallback in local/mvp mode
-- Production policy can be switched later (`FAIL_OPEN`/`FAIL_CLOSE`) without API contract change
-
-## Cloud handoff sentence
-
-현재는 decision/raw를 JSONL로 수집 중입니다. MVP-1에서는 실시간 판정 상태를 Redis로 분리하고, 감사 원본은 로그+오브젝트 스토리지로 보존, 분석/튜닝 데이터는 PostgreSQL(JSONB)로 적재하는 3계층 구조로 확정합니다. MongoDB는 이번 단계 기본 저장소로 채택하지 않습니다.
+## Cloud 전달 문장(요약)
+실시간 판정 상태는 Redis, 감사 원본은 JSONL+오브젝트 스토리지, 분석/튜닝 데이터는 PostgreSQL(JSONB)로 분리합니다. 배치 분석은 로그 건수 기반 트리거로 운영하며, 런타임 차단 경로와 분리합니다.

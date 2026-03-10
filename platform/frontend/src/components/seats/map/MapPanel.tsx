@@ -86,6 +86,7 @@ export default function MapPanel({ gameId }: MapPanelProps) {
       {/* Booking Button */}
       <button
         id="booking-button-map"
+        data-testid="map-booking-button"
         onClick={handleBook}
         disabled={!canBook || holdSubmitting}
         className={`w-full py-3 rounded-xl font-semibold transition-all shadow-lg ${

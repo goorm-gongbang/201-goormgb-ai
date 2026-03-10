@@ -1,5 +1,7 @@
 package com.trafficmaster.dto;
 
+import com.fasterxml.jackson.databind.JsonNode;
+
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 
@@ -22,4 +24,9 @@ public class VerifyRequest {
 
     @NotNull(message = "sessionId is required")
     private String sessionId;
+
+    @NotBlank(message = "challengeToken is required")
+    private String challengeToken;
+
+    private JsonNode telemetry;
 }

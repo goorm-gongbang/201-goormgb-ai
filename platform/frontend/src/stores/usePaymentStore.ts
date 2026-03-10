@@ -2,6 +2,7 @@
 
 import { create } from 'zustand';
 import { API_PATHS, HTTP_HEADERS } from '@/contracts/http';
+import { getOrCreateSessionId } from '@/services/api';
 
 interface PaymentState {
   orderId: string | null;
@@ -56,6 +57,7 @@ export const usePaymentStore = create<PaymentState>((set, get) => ({
         headers: {
           [HTTP_HEADERS.CONTENT_TYPE]: HTTP_HEADERS.APPLICATION_JSON,
           [HTTP_HEADERS.IDEMPOTENCY_KEY]: crypto.randomUUID(),
+          [HTTP_HEADERS.X_SESSION_ID]: getOrCreateSessionId(),
         },
         body: JSON.stringify({
           orderId: state.orderId,

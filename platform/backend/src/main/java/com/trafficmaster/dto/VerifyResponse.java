@@ -12,4 +12,6 @@ import lombok.NoArgsConstructor;
 public class VerifyResponse {
     private String result;  // "PASS" | "FAIL"
     private int remainingAttempts;
+    private String reasonCode;
+    private Boolean blocked;
 }

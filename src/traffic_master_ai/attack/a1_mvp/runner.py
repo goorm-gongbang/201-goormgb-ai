@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 
 from traffic_master_ai.common.models.states import FlowState
@@ -26,10 +27,39 @@ async def run_once(cfg: RunConfig, audit: DecisionAuditLogger) -> dict[str, Any]
         ) from e
 
     app = compile_app()
+    use_stealth = cfg.challenge_strategy == "ui_solver_stealth"
+    stealth_user_agent = os.getenv(
+        "TM_ATTACK_STEALTH_USER_AGENT",
+        (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/133.0.0.0 Safari/537.36"
+        ),
+    )
+    stealth_init_script = """
+(() => {
+  try {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true });
+  } catch {}
+  try {
+    Object.defineProperty(navigator, 'plugins', {
+      get: () => [{ name: 'Chrome PDF Plugin' }, { name: 'Chrome PDF Viewer' }],
+      configurable: true
+    });
+  } catch {}
+  try {
+    window.chrome = window.chrome || { runtime: {} };
+  } catch {}
+})();
+"""
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=cfg.headless, slow_mo=cfg.slow_mo_ms)
-        context = await browser.new_context()
+        context = await browser.new_context(
+            user_agent=stealth_user_agent if use_stealth else None,
+        )
+        if use_stealth:
+            await context.add_init_script(stealth_init_script)
         page = await context.new_page()
 
         worker = BrowserWorker(page, mouse_profile=cfg.mouse_profile, audit_cb=audit.log)
