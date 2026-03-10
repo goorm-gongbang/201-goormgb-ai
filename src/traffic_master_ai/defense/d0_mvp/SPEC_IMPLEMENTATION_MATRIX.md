@@ -25,7 +25,7 @@ Status legend:
 | 15 | `ssot_specs/L2/obs_opt/policy_v1.yaml` | Implemented | Policy snapshot/load/store/rollout assignment and mutable local policy storage implemented. |
 | 16 | `ssot_specs/annex/analyzer_spec.yaml` | Implemented | Evidence counters, derived signals, planner summary generation wired in runtime. |
 | 17 | `ssot_specs/annex/block_spec.yaml` | Implemented | Separate block key, terminal-first enforcement, TTL, audit events wired. |
-| 18 | `ssot_specs/annex/challenge_spec.yaml` | Implemented | Fixed S3 issue/verify, fail/open path, cooldown, halt, audit issue/result/halted wired. |
+| 18 | `ssot_specs/annex/challenge_spec.yaml` | Implemented | Fixed S3 issue/verify, fail-close default (503) + emergency fail-open override, cooldown, halt, audit issue/result/halted wired. |
 | 19 | `ssot_specs/annex/guard_spec.yaml` | Implemented | Internal/external score fusion, EWMA, passive decay, probation-aware tiering implemented. |
 | 20 | `ssot_specs/annex/orchestrator_spec.yaml` | Implemented | Terminal-first, transition validation, S3 hard gate, commit/deny shaping, invalid transition audit wired. |
 | 21 | `ssot_specs/annex/planner_spec.yaml` | Implemented | Policy-driven action matrix, evidence summary reasoning, S3 gate, deny mapping implemented. |

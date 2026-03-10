@@ -27,7 +27,12 @@ async def run_once(cfg: RunConfig, audit: DecisionAuditLogger) -> dict[str, Any]
         ) from e
 
     app = compile_app()
-    use_stealth = cfg.challenge_strategy == "ui_solver_stealth"
+    # PASS 시나리오에서 ui_solver는 기본적으로 stealth 컨텍스트를 사용한다.
+    # (non-stealth는 backend의 AUTOMATION_WEBDRIVER 규칙에 의해 실패 가능성이 높음)
+    use_stealth = (
+        cfg.challenge_strategy == "ui_solver_stealth"
+        or (cfg.challenge_strategy == "ui_solver" and cfg.challenge_mode == "pass")
+    )
     stealth_user_agent = os.getenv(
         "TM_ATTACK_STEALTH_USER_AGENT",
         (

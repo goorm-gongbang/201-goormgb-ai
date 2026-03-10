@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { usePathname } from 'next/navigation';
+import { STORAGE_KEYS } from '@/contracts/http';
 import { useSecurityStore } from '@/stores/useSecurityStore';
 
 /**
@@ -26,8 +27,18 @@ export default function SecurityTrigger() {
     }
 
     const isSeatsPage = pathname?.startsWith('/seats');
-    const passedOnce = typeof window !== 'undefined' && localStorage.getItem('TM_VQA_PASSED_ONCE') === '1';
-    if (isSeatsPage && !passedOnce && !isVisible && !hasTriggered.current) {
+    const passedForCurrentSession = (() => {
+      if (typeof window === 'undefined') return false;
+      const sessionId = localStorage.getItem(STORAGE_KEYS.TM_SESSION_ID);
+      const passedSessionId = localStorage.getItem(STORAGE_KEYS.TM_VQA_PASSED_SESSION_ID);
+      // Legacy key cleanup: old global one-time bypass caused VQA to never show again.
+      if (localStorage.getItem('TM_VQA_PASSED_ONCE') === '1') {
+        localStorage.removeItem('TM_VQA_PASSED_ONCE');
+      }
+      if (!sessionId || !passedSessionId) return false;
+      return sessionId === passedSessionId;
+    })();
+    if (isSeatsPage && !passedForCurrentSession && !isVisible && !hasTriggered.current) {
       hasTriggered.current = true;
       showChallenge();
     }

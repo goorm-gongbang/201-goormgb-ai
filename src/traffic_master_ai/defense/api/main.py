@@ -95,6 +95,9 @@ async def evaluate(req: EvaluateRequest) -> EvaluateResponse:
 
     d0_check_req = _legacy_request_to_d0_check(req)
     d0_eval_req = _d0_runtime.check_request_to_evaluate(d0_check_req)
+    telemetry_features = _legacy_features_to_d0(req)
+    if telemetry_features:
+        d0_eval_req.context.features = telemetry_features
     try:
         out = _d0_runtime.evaluate(d0_eval_req)
     except Exception as exc:  # noqa: BLE001 - fail-open policy
@@ -389,6 +392,35 @@ def _to_api_category(method: str) -> str:
     return "WRITE"
 
 
+def _legacy_features_to_d0(req: EvaluateRequest) -> Optional[dict[str, Any]]:
+    if req.telemetry_features is None:
+        return None
+    raw = req.telemetry_features.model_dump(by_alias=True, exclude_none=True)
+    if not raw:
+        return None
+
+    features: dict[str, Any] = {}
+    for key in ("tremorStdDev", "linearityRatio", "avgVelocity", "dwellTime"):
+        value = raw.get(key)
+        if value is not None:
+            features[key] = value
+
+    total_dist = _to_float(raw.get("totalDist"))
+    linear_dist = _to_float(raw.get("linearDist"))
+    if total_dist is not None:
+        features["totalDist"] = total_dist
+    if linear_dist is not None:
+        features["linearDist"] = linear_dist
+    if total_dist is not None and linear_dist is not None and linear_dist > 0:
+        features["pathRatio"] = total_dist / max(linear_dist, 1e-6)
+
+    timestamp = _opt_int(raw.get("timestamp"))
+    if timestamp is not None:
+        features["timestamp"] = timestamp
+
+    return features or None
+
+
 def _opt_int(value: Any) -> Optional[int]:
     if value is None:
         return None
@@ -408,6 +440,15 @@ def _opt_str(value: Any) -> Optional[str]:
             return None
     text = str(value).strip()
     return text or None
+
+
+def _to_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _sync_mark_to_d0_runtime(*, req: RuntimeVqaMarkRequest, now_ms: int) -> None:

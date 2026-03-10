@@ -136,7 +136,12 @@ s3Policy:
       policy: "FAIL_CLOSE for S3 gate (MVP)"
       rule: >
         If S3 verification cannot execute when required,
-        block progression with CHALLENGE_SERVICE_UNAVAILABLE or equivalent reasonCode.
+        keep session at S3 and deny progression with CHALLENGE_VERIFY_UNAVAILABLE (503).
+        Do not increment challengeFailCount for verifier/system failures.
+      emergencyOverride:
+        env: "TM_S3_VERIFY_UNAVAILABLE_MODE"
+        allowed: ["fail_open"]
+        default: "disabled"
 
 # ============================================================
 # 6. DISABLED FEATURES IN MVP (GUARDRAIL)

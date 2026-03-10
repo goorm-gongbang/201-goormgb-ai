@@ -182,7 +182,7 @@ runtime_actions:
     enforcement: "adapter delay injection"
     headers:
       - "x-defense-action=throttle"
-      - "x-throttle-ms"
+      - "x-defense-throttle-ms"
   REQUIRE_S3:
     allow: false
     http: 428
@@ -215,15 +215,16 @@ api_contract:
       - headers_to_add
       - reason
   vqa_gate:
-    issue:
+    canonical_issue:
       method: POST
       path: /defense/challenge/issue
-    ingest:
-      method: POST
-      path: /defense/challenge/event
-    verify:
+    canonical_verify:
       method: POST
       path: /defense/challenge/verify
+    compatibility_paths:
+      - /challenge/start
+      - /challenge/event
+      - /challenge/verify
 
 header_contract:
   required_response_headers:
@@ -231,13 +232,15 @@ header_contract:
     - x-defense-action
     - x-defense-policy-version
   optional_response_headers:
-    - x-throttle-ms
+    - x-defense-throttle-ms
     - x-challenge-type
     - x-block-reason
+    - x-correlation-id
 
 reason_http_mapping:
   BLOCKED: 403
   CHALLENGE_REQUIRED: 428
+  CHALLENGE_VERIFY_UNAVAILABLE: 503
 ```
 
 ## 8. 데이터/저장소 아키텍처
@@ -268,7 +271,7 @@ storage_architecture:
 런타임은 최소 필수 필드를 가진 감사 로그를 남겨야 하며, 추후 오프라인 분석에서 재현 가능한 형태여야 합니다.
 
 ```jsonl
-{"ts_ms":1772500000000,"event_type":"EVALUATE","session_id":"sess-001","trace_id":"tr-001","flow_state":"S4","defense_tier":"T2","action":"THROTTLE","allow":true,"reason_code":null,"policy_version":"def-pol-v1","headers_to_add":{"x-defense-action":"throttle","x-throttle-ms":"250"}}
+{"ts_ms":1772500000000,"event_type":"EVALUATE","session_id":"sess-001","trace_id":"tr-001","flow_state":"S4","defense_tier":"T2","action":"THROTTLE","allow":true,"reason_code":null,"policy_version":"def-pol-v1","headers_to_add":{"x-defense-action":"throttle","x-defense-throttle-ms":"250"}}
 {"ts_ms":1772500000320,"event_type":"S3_CHALLENGE_RESULT","session_id":"sess-001","challenge_id":"CH_abc123","payload":{"result":"FAILED","attempts_used":1,"attempts_left":1}}
 {"ts_ms":1772500000800,"event_type":"EVALUATE","session_id":"sess-001","trace_id":"tr-002","flow_state":"S4","defense_tier":"T3","action":"BLOCK","allow":false,"reason_code":"BLOCKED","policy_version":"def-pol-v1"}
 ```
@@ -295,7 +298,14 @@ failure_and_guardrails:
   terminal_rule:
     constraint: "no mutation after SX"
   challenge_service_failure:
-    behavior: "policy-defined fail-open/close boundary"
+    default: "fail-close"
+    http: 503
+    reasonCode: CHALLENGE_VERIFY_UNAVAILABLE
+    session_semantics:
+      - "keep flow at S3"
+      - "do not set s3Passed"
+      - "do not increment challengeFailCount"
+    emergency_override_env: TM_S3_VERIFY_UNAVAILABLE_MODE=fail_open
   adapter_to_ai_timeout:
     behavior: "explicit fallback + audit"
   block_persistence:
@@ -353,4 +363,145 @@ ops_checklist:
   post_deploy:
     - "block/challenge/throttle KPI dashboard healthy"
     - "offline optimization pipeline isolated from runtime latency"
+```
+
+## 13. VQA Gate 상세 원리
+현재 VQA는 S3 고정 관문이며, 발급(issue)과 검증(verify) 모두 서버가 주도합니다. 검증은 위치/타이밍 2축으로 판정하고, 실패 누적은 세션 단위 재시도 윈도우로 관리합니다. verify unavailable은 기본적으로 `503 fail-close`로 처리하고, 비상시에만 env override를 허용합니다.
+
+VQA를 단순히 "문제를 맞췄는지"로만 보지 않는 이유는, 공격자가 정답만 계산해서 제출하는 경로를 막아야 하기 때문입니다. 그래서 verify 단계는 `challenge_id`의 유효성(세션 바인딩, 만료, 1회성 사용)과 함께, 실제 플레이 행위가 정상인지(위치/타이밍 일치)를 같이 검사합니다.
+
+실제 동작은 다음 순서입니다.  
+issue 단계에서 서버는 `seed`와 목표 좌표/시간(`target_x`, `target_y`, `target_ts_ms`)을 만들고 Redis에 저장합니다. verify 단계에서 클라이언트가 보낸 `catch_ts_ms`, `glove_pos_norm`, `catch_triggered`를 읽어 공간/시간 판정을 수행합니다. PASS면 `s3Passed=true`와 probation을 기록하고, FAIL이면 실패 카운터와 쿨다운/일시정지를 반영합니다.
+
+또한 S3 구간에서는 플레이 텔레메트리 summary(`tremorStdDev`, `linearityRatio`, `avgVelocity`, `dwellTime`, `pathRatio`)를 Guard 입력으로 전달할 수 있습니다. 핵심은 raw 궤적 전체를 저장하는 것이 아니라, 요약 지표만 넘겨 위험 점수에 반영한다는 점입니다.
+
+```yaml
+vqa_gate_mechanics:
+  stage_constraint: "S3 only"
+  issue:
+    key: "tm:chal:{challenge_id}"
+    stored_fields:
+      - session_id
+      - seed
+      - target_x
+      - target_y
+      - target_ts_ms
+      - expires_at_ms
+    ttl_seconds: TM_CHALLENGE_TTL_SECONDS  # default 15
+  verify:
+    input:
+      - catch_ts_ms
+      - glove_pos_norm.x
+      - glove_pos_norm.y
+      - catch_triggered
+      - client_viewport.w
+      - client_viewport.h
+    verdict_formula:
+      spatial_ok: "distance(glove,target) <= catch_radius_px / max(viewport.w, viewport.h)"
+      temporal_ok: "abs(catch_ts_ms - target_ts_ms) <= timing_window_ms"
+    pass_effect:
+      - "s3Passed=true"
+      - "challengeFailCount=0"
+      - "probationUntilMs=now+probation"
+    fail_effect:
+      - "challengeFailCount += 1"
+      - "cooldown/halt 정책 적용"
+  unavailable_policy:
+    default:
+      http: 503
+      reasonCode: CHALLENGE_VERIFY_UNAVAILABLE
+    emergency_override_env: TM_S3_VERIFY_UNAVAILABLE_MODE
+```
+
+## 14. 통합 테스트 실행 방법 (0/1/2)
+실행 순서는 반드시 `0 -> 1 -> 2`를 지킵니다. 각 명령은 주석 없이 그대로 실행합니다.
+
+### 0. 전체 켜야하는 서버 명령어
+Backend, Envoy/Adapter/AI, Frontend를 모두 기동해야 실제 방어 경로(ext_authz)가 동작합니다.
+
+```bash
+# (A) Backend
+cd /Users/jangjihyeon/201-goormgb-ai/platform/backend
+./gradlew bootRun --console=plain
+```
+
+```bash
+# (B) Envoy + Adapter + AI Defense
+cd /Users/jangjihyeon/201-goormgb-ai/pilot/istio_adapter_local
+docker-compose up -d --build
+```
+
+```bash
+# (C) Frontend (Envoy 경유)
+cd /Users/jangjihyeon/201-goormgb-ai/platform/frontend
+TM_API_PROXY_TARGET=http://localhost:10000 npm run dev
+```
+
+```bash
+# (D) health check
+curl -sS http://localhost:8000/healthz
+curl -sS http://localhost:9001/healthz
+curl -sS http://localhost:9901/server_info
+```
+
+### 1. 직접 유저 테스트
+브라우저에서 실제 예매 플로우를 수행하고, VQA/차단/지연 반응을 확인합니다.
+
+```yaml
+manual_user_test:
+  steps:
+    - "http://localhost:3000 접속"
+    - "게임 선택 -> 대기열 통과"
+    - "S3 VQA(보안 퀴즈) 통과 시도"
+    - "좌석 선택 -> 홀드 -> 결제"
+  expected:
+    - "S3 미통과 상태에서 S4/S5 요청 시 428(CHALLENGE_REQUIRED)"
+    - "S3 통과 후 다음 단계 진행 가능"
+    - "고위험 요청에서 403(BLOCKED) 또는 THROTTLE 헤더 관찰"
+  verification:
+    - "AI 상태: GET /runtime/{session_id}"
+    - "감사 로그: logs/decision_audit.jsonl"
+```
+
+### 2. 공격 에이전트 테스트
+공격 모드별(pass/fail/solver) 반응을 재현해 방어 계약을 검증합니다.
+
+```bash
+# (A) 사전 준비
+cd /Users/jangjihyeon/201-goormgb-ai
+source .venv/bin/activate
+pip install -e ".[attack_mvp]"
+playwright install chromium
+```
+
+```bash
+# (B) 드라이런 (실제 동작(브라우저 실행/요청 전송) 없이 설정만 검증하는 모드)
+cd /Users/jangjihyeon/201-goormgb-ai
+source .venv/bin/activate
+python -m traffic_master_ai.attack.a1_mvp.main --dry-run
+```
+
+```bash
+# (C) PASS 시나리오 (UI solver)
+cd /Users/jangjihyeon/201-goormgb-ai
+source .venv/bin/activate
+TM_FRONTEND_URL=http://localhost:3000 \
+python -m traffic_master_ai.attack.a1_mvp.main \
+  --mode MAP --challenge-mode pass --challenge-strategy ui_solver
+```
+
+```bash
+# (D) FAIL/BLOCK 시나리오 (token tamper)
+cd /Users/jangjihyeon/201-goormgb-ai
+source .venv/bin/activate
+TM_FRONTEND_URL=http://localhost:3000 \
+python -m traffic_master_ai.attack.a1_mvp.main \
+  --mode MAP --challenge-mode fail --challenge-strategy token_tamper
+```
+
+```bash
+# (E) 전략 매트릭스 실행
+cd /Users/jangjihyeon/201-goormgb-ai
+source .venv/bin/activate
+python scripts/step7_attack_mode_matrix.py --frontend-url http://localhost:3000 --execute
 ```

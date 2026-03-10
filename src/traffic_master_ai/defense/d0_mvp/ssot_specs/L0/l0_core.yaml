@@ -172,6 +172,9 @@ apiProtocol:
       CHALLENGE_REQUIRED:
         httpStatus: 428
 
+      CHALLENGE_VERIFY_UNAVAILABLE:
+        httpStatus: 503
+
       PAYMENT_FAILED:
         httpStatus: 502
 

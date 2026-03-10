@@ -151,6 +151,14 @@ decision_engine:
 ## 6. 실행 액션
 실행 액션은 상태 노드에서 UI/API 행위를 수행하고, 방어 응답에 따라 재시도/전이/종료를 결정합니다. VQA 솔버는 API 모드와 UI 모드를 모두 지원합니다.
 
+VQA Solver는 두 계층으로 동작합니다.  
+`api_solver`는 챌린지 발급/검증 API를 직접 호출해 PASS/FAIL 시나리오를 재현합니다. 여기서 `api_fast`, `humanish_pass`, `edge_pass`는 통과 가능한 텔레메트리 payload를, `botlike_fail`, `timing_fail`, `token_tamper`는 실패/차단을 유도하는 payload를 만듭니다.
+
+`ui_solver`는 실제 화면 오버레이를 보고 상호작용합니다. 시작 버튼 클릭 -> 글러브 드래그 -> 타이밍 윈도우 진입 시 캐치 클릭 순서로 진행하며, 실패 시 재시도 버튼을 눌러 라운드를 반복합니다. 즉 단순 API 위조가 아니라, 브라우저 입력 이벤트 체인을 통해 프론트 센서 계층까지 통과하려는 전략입니다.
+
+사람형 모사는 `BrowserWorker`의 궤적 생성에서 구현됩니다.  
+직선 이동 대신 cubic-bezier 곡선과 수직 방향 가우시안 노이즈를 섞고, `ease-in-out` 속도 프로파일과 dwell time(클릭 전 머무름)을 적용합니다. 이 과정에서 `linearity_ratio`, `tremor_std_dev`, `avg_velocity`, `dwell_time_ms`를 계산해 목표 분포와 얼마나 비슷한지 추적합니다.
+
 ```yaml
 attack_actions:
   normal_flow:
@@ -193,11 +201,14 @@ protocol_contract:
     challenge_required:
       http: 428
       reasonCode: CHALLENGE_REQUIRED
+    challenge_unavailable:
+      http: 503
+      reasonCode: CHALLENGE_VERIFY_UNAVAILABLE
   consumed_headers:
     - x-defense-action
     - x-defense-tier
     - x-defense-policy-version
-    - x-throttle-ms
+    - x-defense-throttle-ms
 
 challenge_api_contract:
   issue:
@@ -333,4 +344,91 @@ ops_checklist:
     - "challenge attempt events recorded"
     - "blocked/challenge responses parsed"
     - "artifacts attached for matrix validation"
+```
+
+## 13. 통합 테스트 실행 방법 (0/1/2)
+공격 에이전트 테스트는 단독이 아니라 전체 경로(Envoy/Adapter/AI/Backend/Frontend) 기동 후 실행해야 의미가 있습니다.
+
+### 0. 전체 켜야하는 서버 명령어
+
+```bash
+# (A) Backend
+cd /Users/jangjihyeon/201-goormgb-ai/platform/backend
+./gradlew bootRun --console=plain
+```
+
+```bash
+# (B) Envoy + Adapter + AI Defense
+cd /Users/jangjihyeon/201-goormgb-ai/pilot/istio_adapter_local
+docker-compose up -d --build
+```
+
+```bash
+# (C) Frontend (Envoy 경유)
+cd /Users/jangjihyeon/201-goormgb-ai/platform/frontend
+TM_API_PROXY_TARGET=http://localhost:10000 npm run dev
+```
+
+### 1. 직접 유저 테스트
+공격 테스트 전에 정상 사용자 플로우가 성립하는지 먼저 확인합니다.
+
+```yaml
+manual_user_baseline:
+  purpose: "정상 경로 baseline 확보"
+  steps:
+    - "홈 -> 대기열 -> 보안 -> 좌석 -> 결제"
+    - "보안 통과 후 다음 단계 정상 진행 확인"
+  expected:
+    - "정상 시 terminal_reason=DONE"
+    - "오버레이/챌린지 처리 후 플로우 복귀"
+```
+
+### 2. 공격 에이전트 테스트
+패스/실패/우회 전략을 나눠 실행하고 결과를 로그로 검증합니다.
+
+```bash
+# (A) 준비
+cd /Users/jangjihyeon/201-goormgb-ai
+source .venv/bin/activate
+pip install -e ".[attack_mvp]"
+playwright install chromium
+```
+
+```bash
+# (B) smoke
+cd /Users/jangjihyeon/201-goormgb-ai
+source .venv/bin/activate
+python -m traffic_master_ai.attack.a1_mvp.main --dry-run
+```
+
+```bash
+# (C) pass 시나리오
+cd /Users/jangjihyeon/201-goormgb-ai
+source .venv/bin/activate
+TM_FRONTEND_URL=http://localhost:3000 \
+python -m traffic_master_ai.attack.a1_mvp.main \
+  --mode MAP --challenge-mode pass --challenge-strategy ui_solver
+```
+
+```bash
+# (D) fail/block 시나리오
+cd /Users/jangjihyeon/201-goormgb-ai
+source .venv/bin/activate
+TM_FRONTEND_URL=http://localhost:3000 \
+python -m traffic_master_ai.attack.a1_mvp.main \
+  --mode MAP --challenge-mode fail --challenge-strategy token_tamper
+```
+
+```bash
+# (E) 공격 전략 매트릭스
+cd /Users/jangjihyeon/201-goormgb-ai
+source .venv/bin/activate
+python scripts/step7_attack_mode_matrix.py --frontend-url http://localhost:3000 --execute
+```
+
+```yaml
+result_artifacts:
+  attack_logs: "logs/attack_mvp/*.jsonl"
+  matrix_summary: "logs/step7_attack_matrix_summary.json"
+  defense_audit: "logs/decision_audit.jsonl"
 ```

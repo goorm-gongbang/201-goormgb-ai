@@ -44,6 +44,14 @@ from .validator import (
 
 logger = logging.getLogger(__name__)
 
+_OFFLINE_LLM_ALLOWED_MODELS: frozenset[str] = frozenset(
+    {
+        "gpt-5-mini",
+        "gpt-5.1-mini",
+        "gpt-4.1-mini",
+    }
+)
+
 _EFFECT_EVALUATOR_PROMPT = (
     "You are the Traffic-Master Defense Effect Evaluator (OFFLINE). "
     "Analyze aggregated decision_audit metrics and propose small, reversible policy parameter changes. "
@@ -517,6 +525,12 @@ class EffectEvaluator:
 
 
 def build_default_llm_caller() -> LLMCaller:
+    if OFFLINE_LLM_MODEL not in _OFFLINE_LLM_ALLOWED_MODELS:
+        logger.warning(
+            "Offline LLM model '%s' is not in allowlist; using StubLLMCaller.",
+            OFFLINE_LLM_MODEL,
+        )
+        return StubLLMCaller()
     caller = OpenAICompatibleLLMCaller()
     if caller.is_configured:
         return caller

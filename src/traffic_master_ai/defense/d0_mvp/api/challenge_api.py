@@ -7,7 +7,12 @@ from typing import Any, Mapping, Optional
 from ..core.enums import FlowState, ReasonCode
 from .compat import APIRouter, Body, Header, Response
 from .http_errors import ensure_route_handler_alias, raise_contract_http_error
-from .response_utils import error_payload, finalize_payload
+from .response_utils import (
+    error_payload,
+    finalize_payload,
+    infer_terminal_reason,
+    parse_request_meta_headers,
+)
 from .runtime import DefenseRuntime, RuntimeAPIError
 
 
@@ -21,6 +26,8 @@ def create_challenge_router(runtime: Optional[DefenseRuntime] = None) -> APIRout
         body: Mapping[str, Any] = Body(default={}),
         x_session_id: Optional[str] = Header(default=None, alias="X-Session-Id"),
         x_trace_id: Optional[str] = Header(default=None, alias="X-Trace-Id"),
+        x_correlation_id: Optional[str] = Header(default=None, alias="X-Correlation-Id"),
+        x_tm_test_mode: Optional[str] = Header(default=None, alias="X-TM-TestMode"),
         response: Response = None,
     ) -> dict[str, Any]:
         if not x_session_id or not x_trace_id:
@@ -29,6 +36,16 @@ def create_challenge_router(runtime: Optional[DefenseRuntime] = None) -> APIRout
                     ReasonCode.VALIDATION_ERROR,
                     "X-Session-Id and X-Trace-Id are required",
                 ),
+                status_code=400,
+            )
+        try:
+            request_meta, passthrough_headers = parse_request_meta_headers(
+                x_correlation_id=x_correlation_id,
+                x_tm_test_mode=x_tm_test_mode,
+            )
+        except ValueError as exc:
+            raise_contract_http_error(
+                error_payload(ReasonCode.VALIDATION_ERROR, str(exc)),
                 status_code=400,
             )
 
@@ -49,16 +66,19 @@ def create_challenge_router(runtime: Optional[DefenseRuntime] = None) -> APIRout
                 trace_id=x_trace_id,
                 requested_flow_state=requested_flow_state,
                 client_viewport=viewport if isinstance(viewport, Mapping) else None,
+                request_meta=request_meta or None,
             )
         except RuntimeAPIError as exc:
             raise_contract_http_error(
                 exc.to_error_body(),
                 status_code=exc.status_code,
+                headers=passthrough_headers,
             )
         except Exception as exc:
             raise_contract_http_error(
                 error_payload(ReasonCode.INTERNAL_ERROR, str(exc)),
                 status_code=500,
+                headers=passthrough_headers,
             )
         return finalize_payload({
             "challenge_id": issue.challenge_id,
@@ -67,13 +87,15 @@ def create_challenge_router(runtime: Optional[DefenseRuntime] = None) -> APIRout
             "expires_at_ms": issue.expires_at_ms,
             "seed_commitment": issue.seed_commitment,
             "public_params": issue.public_params,
-        }, response=response)
+        }, response=response, headers=passthrough_headers)
 
     @router.post("/verify")
     def challenge_verify_endpoint(
         body: Mapping[str, Any] = Body(default={}),
         x_session_id: Optional[str] = Header(default=None, alias="X-Session-Id"),
         x_trace_id: Optional[str] = Header(default=None, alias="X-Trace-Id"),
+        x_correlation_id: Optional[str] = Header(default=None, alias="X-Correlation-Id"),
+        x_tm_test_mode: Optional[str] = Header(default=None, alias="X-TM-TestMode"),
         response: Response = None,
     ) -> dict[str, Any]:
         if not x_session_id or not x_trace_id:
@@ -82,6 +104,16 @@ def create_challenge_router(runtime: Optional[DefenseRuntime] = None) -> APIRout
                     ReasonCode.VALIDATION_ERROR,
                     "X-Session-Id and X-Trace-Id are required",
                 ),
+                status_code=400,
+            )
+        try:
+            request_meta, passthrough_headers = parse_request_meta_headers(
+                x_correlation_id=x_correlation_id,
+                x_tm_test_mode=x_tm_test_mode,
+            )
+        except ValueError as exc:
+            raise_contract_http_error(
+                error_payload(ReasonCode.VALIDATION_ERROR, str(exc)),
                 status_code=400,
             )
 
@@ -102,16 +134,19 @@ def create_challenge_router(runtime: Optional[DefenseRuntime] = None) -> APIRout
                 trace_id=x_trace_id,
                 challenge_id=challenge_id,
                 client_answer=client_answer,
+                request_meta=request_meta or None,
             )
         except RuntimeAPIError as exc:
             raise_contract_http_error(
                 exc.to_error_body(),
                 status_code=exc.status_code,
+                headers=passthrough_headers,
             )
         except Exception as exc:
             raise_contract_http_error(
                 error_payload(ReasonCode.INTERNAL_ERROR, str(exc)),
                 status_code=500,
+                headers=passthrough_headers,
             )
         body_out = {
             "result": result.result,
@@ -122,11 +157,25 @@ def create_challenge_router(runtime: Optional[DefenseRuntime] = None) -> APIRout
             "attempts_in_window": result.attempts_in_window,
         }
         if result.http_status >= 400:
-            raise_contract_http_error(body_out, status_code=result.http_status)
+            raise_contract_http_error(
+                error_payload(
+                    result.reason_code,
+                    "challenge verification failed",
+                    detail=body_out,
+                    terminal_reason=infer_terminal_reason(
+                        reason_code=result.reason_code,
+                        action="BLOCK" if result.reason_code == ReasonCode.BLOCKED.value else None,
+                        state_to=None,
+                    ),
+                ),
+                status_code=result.http_status,
+                headers=passthrough_headers,
+            )
         return finalize_payload(
             body_out,
             response=response,
             status_code=result.http_status,
+            headers=passthrough_headers,
         )
 
     return ensure_route_handler_alias(router)

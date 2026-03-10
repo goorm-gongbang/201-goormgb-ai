@@ -70,7 +70,10 @@
    - 악성 매크로의 무한 시도를 방지하기 위해 2.5초(2500ms)의 짧은 `Cooldown`을 부여하고 재시도를 허용합니다. (ROI 저하 유도)
 3. **최대 시도 횟수(ex: 60초 내 2회) 초과 (`TEMPORARY_S3_HALT`)**:
    - 여전히 영구 차단(403)은 지양합니다. 다만, 무차별 대입을 무력화하기 위해 **429 (Too Many Requests)** 를 반환하고, 특정 시간(30초) 동안 S3 진행을 임시 보류(Halt)시킵니다.
-4. **결함/장애 처리 (`FAIL_OPEN_WITH_AUDIT`)**:
-   - VQA 서버 백엔드 타임아웃, 연동 장애 발생 시 일반 유저가 통과하지 못해 이탈하는 상황을 방지합니다. 검증 실패를 예외로 처리하여 감사(audit) 기록만 남긴 뒤 진행을 허가(Fail Open)합니다.
+4. **결함/장애 처리 (`FAIL_CLOSE_WITH_AUDIT`, 기본 정책)**:
+   - VQA 서버 백엔드 타임아웃/연동 장애 시 기본 동작은 진행 차단(FAIL_CLOSE)입니다.
+   - 응답은 `CHALLENGE_VERIFY_UNAVAILABLE(503)`으로 고정되며, 세션은 `S3`에 유지됩니다.
+   - 시스템 장애는 사용자 실패로 누적하지 않으므로 `challengeFailCount`를 증가시키지 않습니다.
+   - 운영 비상시에만 `TM_S3_VERIFY_UNAVAILABLE_MODE=fail_open` 오버라이드가 허용됩니다.
 
 이와 같이 방어 에이전트는 단일 판단 오류에 유저가 배제되는 것을 방지하고(Guard EWMA 누적) 실패를 보완하는 부드러운 루틴(Challenge Fail Loop)과, 봇의 득실을 갉아먹는 페널티(Throttle)를 중심으로 설계되어 있습니다.

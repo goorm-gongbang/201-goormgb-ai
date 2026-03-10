@@ -12,8 +12,10 @@ import secrets
 import time
 import uuid
 from dataclasses import dataclass
+import os
 from typing import Any, Mapping, Optional
 
+from ..core.constants import CHALLENGE_VERIFY_UNAVAILABLE_HTTP_STATUS
 from ..core.models import SessionState
 from ..events.catalog import S3_FAIL, S3_PASS, S3_UNKNOWN
 from ..policy.snapshot import PolicySnapshot
@@ -173,11 +175,24 @@ class ChallengeActuator:
                 http_status=429,
                 verify_latency_ms=max(0, _now_ms() - started_at_ms),
             )
-        retry_gate = self.current_retry_gate(
-            session_id=session_id,
-            policy=policy,
-            now_ms=now,
-        )
+        try:
+            retry_gate = self.current_retry_gate(
+                session_id=session_id,
+                policy=policy,
+                now_ms=now,
+            )
+        except Exception as exc:
+            mode = str(os.environ.get("TM_S3_VERIFY_UNAVAILABLE_MODE", "fail_close")).strip().lower()
+            fail_open = mode == "fail_open"
+            return ChallengeVerifyResult(
+                challenge_id=challenge_id,
+                game_id=policy.challenge_game_id,
+                result=S3_UNKNOWN,
+                reason_code="CHALLENGE_VERIFY_UNAVAILABLE",
+                server_verdict={"error": str(exc.__class__.__name__)},
+                http_status=200 if fail_open else CHALLENGE_VERIFY_UNAVAILABLE_HTTP_STATUS,
+                verify_latency_ms=max(0, _now_ms() - started_at_ms),
+            )
         cooldown_until_ms = retry_gate["cooldown_until_ms"]
         if cooldown_until_ms is not None:
             remaining_cooldown_ms = max(0, cooldown_until_ms - now)
@@ -370,12 +385,15 @@ class ChallengeActuator:
             )
 
         except Exception as exc:
+            mode = str(os.environ.get("TM_S3_VERIFY_UNAVAILABLE_MODE", "fail_close")).strip().lower()
+            fail_open = mode == "fail_open"
             return ChallengeVerifyResult(
                 challenge_id=challenge_id,
                 game_id=policy.challenge_game_id,
                 result=S3_UNKNOWN,
                 reason_code="CHALLENGE_VERIFY_UNAVAILABLE",
                 server_verdict={"error": str(exc.__class__.__name__)},
+                http_status=200 if fail_open else CHALLENGE_VERIFY_UNAVAILABLE_HTTP_STATUS,
                 verify_latency_ms=max(0, _now_ms() - started_at_ms),
             )
 

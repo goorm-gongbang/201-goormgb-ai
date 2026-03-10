@@ -66,7 +66,7 @@ design_principles:
   - "정상 사용자 FP 비용 최소화: '실패=즉시 차단' 금지"
   - "공격자 ROI 붕괴: 자동화는 반복 시도 비용이 증가하도록 설계"
   - "서버 검증(결정적): seed/정답 조건은 서버에서만 계산"
-  - "외부 장애 시 사용자 탈락 체감 방지: 가능하면 FAIL_OPEN 성격(단, 정책적으로 S3는 통과 필수이므로 '검증 불가'는 별도 처리 필요)"
+  - "S3 검증 장애 기본 정책은 FAIL_CLOSE(진행 차단)이며, 운영 비상시에만 fail_open 오버라이드를 허용한다."
 
 architecture:
   flow_position:
@@ -172,16 +172,22 @@ server_side_contract:
             glove_pos_norm: "{x:float,y:float}  # 0..1"
             catch_triggered: "bool"
             client_viewport: "{w:int,h:int} | optional"
+            features: "{tremorStdDev:float, linearityRatio:float, avgVelocity:float, dwellTime:float, pathRatio:float} | optional"
+            feature_validation:
+              - "optional이지만 제공되면 object여야 한다"
+              - "허용 키 외 입력 금지"
+              - "모든 값은 finite number여야 한다"
+              - "raw trajectory(points) 전송 금지, summary만 허용"
     response:
-      status: 200
+      status: "200 | 429 | 503(default fail-close)"
       body:
         required:
           - "result"
           - "reason_code"
           - "server_verdict"
         schema:
-          result: "PASS|FAIL"
-          reason_code: "CHALLENGE_PASSED|CHALLENGE_FAILED|CHALLENGE_EXPIRED|CHALLENGE_INVALID"
+          result: "PASS|FAIL|UNKNOWN"
+          reason_code: "CHALLENGE_PASSED|CHALLENGE_FAILED|CHALLENGE_EXPIRED|CHALLENGE_INVALID|CHALLENGE_VERIFY_UNAVAILABLE|CHALLENGE_TEMPORARILY_LOCKED"
           server_verdict:
             score_components:
               spatial_ok: "bool"
@@ -255,17 +261,23 @@ failure_handling_policy:
   service_failure:
     # 검증 서비스/네트워크 장애 시
     on_verify_timeout_or_error:
-      mode: "FAIL_OPEN_WITH_AUDIT"
+      mode: "FAIL_CLOSE_WITH_AUDIT (default)"
       server_behavior:
         - "challenge 결과를 'UNKNOWN'으로 처리"
-        - "사용자에게는 재시도 안내(짧은 쿨다운)만 제공"
-        - "차단(403)로 보내지 않는다"
+        - "s3Passed는 변경하지 않고 false 유지"
+        - "S4/S5 진행을 허용하지 않는다(S3 유지)"
+        - "challengeFailCount를 증가시키지 않는다(시스템 장애를 사용자 실패로 누적 금지)"
       response:
-        http_status: 200
+        http_status: 503
         body_reason_code: "CHALLENGE_VERIFY_UNAVAILABLE"
       notes:
-        - "외부/내부 장애가 정상 사용자 탈락으로 이어지지 않게 함"
-        - "운영에서 장애가 지속되면 S3 자체를 비활성화하는 플래그는 별도 운영 절차로"
+        - "기본 정책은 FAIL_CLOSE이며, 운영 비상시에만 fail_open 허용"
+      emergency_override:
+        env: "TM_S3_VERIFY_UNAVAILABLE_MODE"
+        allowed: ["fail_open"]
+        effect:
+          - "http_status=200"
+          - "result=UNKNOWN 유지 + audit 기록"
 
 state_and_storage:
   redis:
@@ -369,12 +381,13 @@ acceptance_tests:
       - "429 + CHALLENGE_TEMPORARILY_LOCKED"
       - "haltUntilMs 기록(옵션)"
   - id: "C-5"
-    name: "verify 장애 시 FAIL_OPEN_WITH_AUDIT"
+    name: "verify 장애 시 FAIL_CLOSE_WITH_AUDIT (기본)"
     steps:
       - "verify 타임아웃 유도"
     pass_criteria:
-      - "result=UNKNOWN 또는 CHALLENGE_VERIFY_UNAVAILABLE"
-      - "차단(403)로 가지 않음"
+      - "http_status=503"
+      - "reason_code=CHALLENGE_VERIFY_UNAVAILABLE"
+      - "s3Passed=false 유지 및 S4/S5 진행 불가"
       - "audit에 장애 기록"
 
 open_questions_tbd: []

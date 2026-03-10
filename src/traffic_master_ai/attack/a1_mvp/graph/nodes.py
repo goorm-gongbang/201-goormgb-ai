@@ -49,6 +49,7 @@ from ..contracts.selectors import (
 from ..contracts.storage import (
     TM_PREFERENCES_KEY,
     TM_SESSION_ID_KEY,
+    TM_VQA_PASSED_SESSION_ID_KEY,
     build_default_tm_preferences,
 )
 from ..logging.audit import now_ms
@@ -309,6 +310,7 @@ async def _run_catch_ball_api_mode(
 
     if final_pass:
         # SecurityTrigger gate bypass: mark once so seats page does not pop overlay again after reload.
+        await w.set_local_storage(TM_VQA_PASSED_SESSION_ID_KEY, session_id)
         await w.set_local_storage("TM_VQA_PASSED_ONCE", "1")
         await w.reload()
         runtime.context.audit.log(

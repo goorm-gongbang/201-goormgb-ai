@@ -10,6 +10,7 @@ Ref: L2/obs_opt/defense_observability_ssot.yaml#mandatory_events
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
@@ -62,7 +63,12 @@ from ..observability.warehouse import AuditWarehouse
 from ..optimizer.audit_summarizer import AuditSummarizer
 from ..optimizer.pipeline import OfflineOptimizer
 from ..orchestrator.engine import Orchestrator, OrchestratorResult
-from ..policy.loader import FilePolicyStore, PolicyLoader, RedisPolicyStore
+from ..policy.loader import (
+    FilePolicyStore,
+    PolicyLoader,
+    RedisPolicyStore,
+    snapshot_to_document,
+)
 from ..policy.snapshot import PolicySnapshot
 from ..state.block_state import BlockStateManager
 from ..state.dedup import DedupChecker
@@ -137,6 +143,7 @@ class DefenseRuntime:
             )
         )
         self.policy_loader = policy_loader or PolicyLoader(store=self.policy_store)
+        self._bootstrap_policy_authority()
         self.audit_logger = audit_logger or AuditLogger()
         self.audit_warehouse = audit_warehouse or AuditWarehouse()
         self.audit_collector = AuditCollector(
@@ -176,6 +183,32 @@ class DefenseRuntime:
         )
         self.throttle = ThrottleActuator()
         self.block = BlockActuator(self.block_state)
+
+    def _bootstrap_policy_authority(self) -> None:
+        """Ensure Redis policy store has one active baseline policy doc.
+
+        Redis is runtime authority. File store is fallback for bootstrap/local dev.
+        """
+        try:
+            default_snapshot = PolicySnapshot()
+            version = default_snapshot.policy_version
+            doc = self.policy_store.fetch_policy_by_version(version)
+            self.policy_store.save_policy_version(
+                version,
+                doc if isinstance(doc, dict) else snapshot_to_document(default_snapshot),
+            )
+            if self.policy_store.get_rollout_state() is None:
+                self.policy_store.set_rollout_state(
+                    {
+                        "stage": "FULL",
+                        "base_policy_version": version,
+                        "candidate_policy_version": None,
+                        "ratio": 0.0,
+                        "updated_at_ms": int(time.time() * 1000),
+                    }
+                )
+        except Exception:  # noqa: BLE001 - bootstrap should not break startup
+            logger.exception("Failed to bootstrap policy authority")
 
     def dashboard_service(self) -> AdminDashboardService:
         """Lazily create admin dashboard service.
@@ -766,6 +799,7 @@ class DefenseRuntime:
         trace_id: str,
         requested_flow_state: Optional[FlowState] = None,
         client_viewport: Optional[Mapping[str, Any]] = None,
+        request_meta: Optional[Mapping[str, Any]] = None,
     ):
         """Issue one S3 challenge and emit S3_CHALLENGE_ISSUED audit."""
         with self.session_state.session_lock(session_id):
@@ -798,7 +832,7 @@ class DefenseRuntime:
             context=EvaluateRequestContext(
                 policy_version=policy.policy_version,
                 features=None,
-                meta=None,
+                meta=dict(request_meta or {}) or None,
             ),
         )
         event = RuntimeEvent(
@@ -831,8 +865,11 @@ class DefenseRuntime:
         trace_id: str,
         challenge_id: str,
         client_answer: Mapping[str, Any],
+        request_meta: Optional[Mapping[str, Any]] = None,
     ):
         """Verify one S3 challenge and emit result/halt audit events."""
+        _validate_challenge_client_answer(client_answer)
+        feature_summary = _extract_challenge_feature_summary(client_answer)
         with self.session_state.session_lock(session_id):
             policy = self.policy_loader.load(session_id=session_id)
             state = self.session_state.get_or_create(
@@ -871,10 +908,20 @@ class DefenseRuntime:
             ),
             context=EvaluateRequestContext(
                 policy_version=policy.policy_version,
-                features=None,
-                meta=None,
+                features=feature_summary,
+                meta=dict(request_meta or {}) or None,
             ),
         )
+        try:
+            pipeline_out = self.evaluate(request)
+        except Exception as exc:  # noqa: BLE001 - preserve challenge response path
+            pipeline_out = self.fail_open_on_unavailable(request=request, error=exc)
+        latest_state = self.session_state.get_or_create(
+            session_id,
+            policy_version=policy.policy_version,
+        )
+        decision_tier = pipeline_out.orchestrator_result.decision.tier.value
+        decision_action = pipeline_out.orchestrator_result.decision.action.value
         event = RuntimeEvent(
             event_type="S3_RESULT",
             ts_ms=ts_ms,
@@ -892,8 +939,8 @@ class DefenseRuntime:
             request=request,
             event=event,
             policy=policy,
-            decision_tier=latest_state.defense_tier.value,
-            decision_action=latest_state.last_decision_action or "NONE",
+            decision_tier=decision_tier,
+            decision_action=decision_action,
             result_status=result_status,
             result_http_status=result.http_status,
             result_reason_code=result.reason_code,
@@ -905,6 +952,7 @@ class DefenseRuntime:
                 "attemptsInWindow": result.attempts_in_window,
                 "cooldownMs": result.cooldown_ms,
                 "verifyLatencyMs": result.verify_latency_ms,
+                "featureKeys": sorted(feature_summary.keys()) if feature_summary else [],
             },
         )
         if result.http_status == 429 or result.reason_code == "CHALLENGE_TEMPORARILY_LOCKED":
@@ -913,8 +961,8 @@ class DefenseRuntime:
                 request=request,
                 event=event,
                 policy=policy,
-                decision_tier=latest_state.defense_tier.value,
-                decision_action=latest_state.last_decision_action or "NONE",
+                decision_tier=decision_tier,
+                decision_action=decision_action,
                 result_status="FAIL",
                 result_http_status=result.http_status,
                 result_reason_code=result.reason_code,
@@ -926,6 +974,7 @@ class DefenseRuntime:
                     "attemptsInWindow": result.attempts_in_window,
                     "cooldownMs": result.cooldown_ms,
                     "verifyLatencyMs": result.verify_latency_ms,
+                    "featureKeys": sorted(feature_summary.keys()) if feature_summary else [],
                 },
             )
         return result
@@ -1064,6 +1113,27 @@ class DefenseRuntime:
             result["httpStatus"] = result_http_status
         if result_reason_code is not None:
             result["reasonCode"] = result_reason_code
+        terminal_reason = _infer_terminal_reason(
+            reason_code=result_reason_code,
+            action=decision_action,
+            flow_state=event.flow_state.value,
+            result_status=result_status,
+        )
+        if terminal_reason:
+            result["terminalReason"] = terminal_reason
+
+        server_decision: dict[str, Any] = {
+            "riskTier": decision_tier,
+            "action": decision_action,
+            "policyVersion": policy.policy_version,
+        }
+        requested_policy_version = request.context.policy_version
+        if requested_policy_version:
+            server_decision["requestedPolicyVersion"] = requested_policy_version
+            if requested_policy_version != policy.policy_version:
+                server_decision["policyVersionMismatch"] = True
+
+        request_meta = _extract_request_meta(request)
 
         entry = AuditEntry(
             ts_ms=event.ts_ms,
@@ -1072,12 +1142,9 @@ class DefenseRuntime:
             session_id=request.session_id,
             flow_state=event.flow_state.value,
             request_id=request.trace_id,
-            server_decision={
-                "riskTier": decision_tier,
-                "action": decision_action,
-                "policyVersion": policy.policy_version,
-            },
+            server_decision=server_decision,
             result=result,
+            request_meta=request_meta,
             dedup=dedup or {},
             throttle=throttle or {},
             block=block or {},
@@ -1097,6 +1164,7 @@ class DefenseRuntime:
     def check_request_to_evaluate(self, request: CheckRequest) -> EvaluateRequest:
         """Convert /check contract into /evaluate contract."""
         now_ms = int(time.time() * 1000)
+        policy = self.policy_loader.load(session_id=request.session_id)
         event = EvaluateRequestEvent(
             event_type="API_CALL_OBS",
             ts_ms=now_ms,
@@ -1114,7 +1182,7 @@ class DefenseRuntime:
             or None,
         )
         context = EvaluateRequestContext(
-            policy_version="",
+            policy_version=policy.policy_version,
             features=None,
             meta={
                 "original_query": request.original_query,
@@ -1143,25 +1211,45 @@ def build_evaluate_request(
     context_raw = body.get("context")
     if not isinstance(context_raw, Mapping):
         raise ValueError("context is required")
-    policy_version = _opt_str(context_raw.get("policyVersion"))
+    policy_version = _required_non_empty_str(
+        context_raw.get("policyVersion"),
+        field_name="context.policyVersion",
+    )
     if not policy_version:
         raise ValueError("context.policyVersion is required")
-
-    flow_state_raw = str(event_raw.get("flowState", "S0"))
+    event_type = _required_non_empty_str(
+        event_raw.get("eventType"),
+        field_name="event.eventType",
+    )
+    ts_ms = _required_non_negative_int(event_raw.get("tsMs"), field_name="event.tsMs")
+    flow_state_raw = _required_non_empty_str(
+        event_raw.get("flowState"),
+        field_name="event.flowState",
+    )
+    try:
+        flow_state = FlowState(flow_state_raw)
+    except ValueError as exc:
+        raise ValueError("event.flowState must be a valid FlowState") from exc
     event = EvaluateRequestEvent(
-        event_type=str(event_raw.get("eventType", "")),
-        ts_ms=int(event_raw.get("tsMs", 0)),
-        flow_state=FlowState(flow_state_raw),
-        request_path=_opt_str(event_raw.get("requestPath")),
-        request_method=_opt_str(event_raw.get("requestMethod")),
-        s3_result=_opt_str(event_raw.get("s3Result")),
-        source=_opt_str(event_raw.get("source")),
-        payload=_build_event_payload(event_type=str(event_raw.get("eventType", "")), event_raw=event_raw),
+        event_type=event_type,
+        ts_ms=ts_ms,
+        flow_state=flow_state,
+        request_path=_optional_str(event_raw.get("requestPath"), field_name="event.requestPath"),
+        request_method=_optional_str(event_raw.get("requestMethod"), field_name="event.requestMethod"),
+        s3_result=_optional_str(event_raw.get("s3Result"), field_name="event.s3Result"),
+        source=_optional_str(event_raw.get("source"), field_name="event.source"),
+        payload=_build_event_payload(event_type=event_type, event_raw=event_raw),
     )
     context = EvaluateRequestContext(
         policy_version=policy_version,
-        features=_to_optional_dict(context_raw.get("features")),
-        meta=_to_optional_dict(context_raw.get("meta")),
+        features=_to_optional_dict_or_raise(
+            context_raw.get("features"),
+            field_name="context.features",
+        ),
+        meta=_to_optional_dict_or_raise(
+            context_raw.get("meta"),
+            field_name="context.meta",
+        ),
     )
     return EvaluateRequest(
         session_id=session_id,
@@ -1199,13 +1287,22 @@ def build_check_request(
     status_code = _opt_int(status_raw)
     if status_raw is not None and status_code is None:
         raise ValueError("statusCode must be int")
+    flow_state_raw = body.get("flowState")
+    if flow_state_raw is None:
+        raise ValueError("flowState is required")
+    if not isinstance(flow_state_raw, str) or not flow_state_raw:
+        raise ValueError("flowState must be non-empty string")
+    try:
+        flow_state = FlowState(flow_state_raw)
+    except ValueError as exc:
+        raise ValueError("flowState must be a valid FlowState") from exc
 
     return CheckRequest(
         session_id=session_id,
         trace_id=trace_id,
         upstream_path=upstream_path,
         upstream_method=upstream_method,
-        flow_state=FlowState(str(body.get("flowState", "S0"))),
+        flow_state=flow_state,
         original_query=_opt_str(body.get("original_query")),
         client_ip_hash=_opt_str(body.get("client_ip_hash")),
         turnstile_token=_opt_str(body.get("turnstile_token")),
@@ -1294,11 +1391,38 @@ def _opt_int(value: Any) -> Optional[int]:
         return None
 
 
-def _to_optional_dict(value: Any) -> Optional[dict[str, Any]]:
+def _required_non_empty_str(value: Any, *, field_name: str) -> str:
+    if value is None:
+        raise ValueError(f"{field_name} is required")
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be string")
+    text = value.strip()
+    if not text:
+        raise ValueError(f"{field_name} is required")
+    return text
+
+
+def _optional_str(value: Any, *, field_name: str) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be string")
+    return value
+
+
+def _required_non_negative_int(value: Any, *, field_name: str) -> int:
+    if not isinstance(value, int):
+        raise ValueError(f"{field_name} must be int")
+    if value < 0:
+        raise ValueError(f"{field_name} must be non-negative int")
+    return value
+
+
+def _to_optional_dict_or_raise(value: Any, *, field_name: str) -> Optional[dict[str, Any]]:
     if value is None:
         return None
     if not isinstance(value, Mapping):
-        return None
+        raise ValueError(f"{field_name} must be object")
     return dict(value)
 
 
@@ -1322,14 +1446,18 @@ def _build_event_payload(
             payload["targetId"] = str(event_raw.get("targetId"))
     elif event_type == "S3_RESULT":
         if event_raw.get("reasonCode") is not None:
-            payload["reasonCode"] = str(event_raw.get("reasonCode"))
+            payload["reasonCode"] = _required_non_empty_str(
+                event_raw.get("reasonCode"),
+                field_name="event.reasonCode",
+            )
     elif event_type == "API_CALL_OBS":
         if event_raw.get("category") is not None:
             payload["category"] = str(event_raw.get("category"))
         if event_raw.get("statusCode") is not None:
             status_code = _opt_int(event_raw.get("statusCode"))
-            if status_code is not None:
-                payload["statusCode"] = status_code
+            if status_code is None:
+                raise ValueError("event.statusCode must be int")
+            payload["statusCode"] = status_code
     elif event_type == "TURNSTILE_TRIGGERED":
         if event_raw.get("triggerId") is not None:
             payload["triggerId"] = str(event_raw.get("triggerId"))
@@ -1340,16 +1468,143 @@ def _build_event_payload(
             try:
                 payload["externalScore"] = float(event_raw.get("externalScore"))
             except (TypeError, ValueError):
-                pass
+                raise ValueError("event.externalScore must be float in [0,1]") from None
         if event_raw.get("verifyStatus") is not None:
             payload["verifyStatus"] = str(event_raw.get("verifyStatus"))
         if event_raw.get("verifyLatencyMs") is not None:
             verify_latency = _opt_int(event_raw.get("verifyLatencyMs"))
-            if verify_latency is not None:
-                payload["verifyLatencyMs"] = verify_latency
+            if verify_latency is None:
+                raise ValueError("event.verifyLatencyMs must be int")
+            payload["verifyLatencyMs"] = verify_latency
         if event_raw.get("cached") is not None:
-            payload["cached"] = bool(event_raw.get("cached"))
+            if not isinstance(event_raw.get("cached"), bool):
+                raise ValueError("event.cached must be bool")
+            payload["cached"] = event_raw.get("cached")
     return payload or None
+
+
+def _extract_challenge_feature_summary(client_answer: Mapping[str, Any]) -> Optional[dict[str, float]]:
+    raw_features = client_answer.get("features")
+    if raw_features is None:
+        return None
+    if not isinstance(raw_features, Mapping):
+        raise RuntimeAPIError(
+            status_code=400,
+            reason_code=ReasonCode.VALIDATION_ERROR.value,
+            message="client_answer.features must be object",
+        )
+    allowed_keys = {
+        "tremorStdDev",
+        "linearityRatio",
+        "avgVelocity",
+        "dwellTime",
+        "pathRatio",
+    }
+    features: dict[str, float] = {}
+    for key, value in raw_features.items():
+        if key not in allowed_keys:
+            raise RuntimeAPIError(
+                status_code=400,
+                reason_code=ReasonCode.VALIDATION_ERROR.value,
+                message=f"client_answer.features.{key} is not allowed",
+            )
+        if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            raise RuntimeAPIError(
+                status_code=400,
+                reason_code=ReasonCode.VALIDATION_ERROR.value,
+                message=f"client_answer.features.{key} must be finite number",
+            )
+        features[key] = float(value)
+    return features or None
+
+
+def _validate_challenge_client_answer(client_answer: Mapping[str, Any]) -> None:
+    catch_ts_ms = client_answer.get("catch_ts_ms")
+    if catch_ts_ms is not None and not isinstance(catch_ts_ms, int):
+        raise RuntimeAPIError(
+            status_code=400,
+            reason_code=ReasonCode.VALIDATION_ERROR.value,
+            message="client_answer.catch_ts_ms must be int",
+        )
+
+    catch_triggered = client_answer.get("catch_triggered")
+    if catch_triggered is not None and not isinstance(catch_triggered, bool):
+        raise RuntimeAPIError(
+            status_code=400,
+            reason_code=ReasonCode.VALIDATION_ERROR.value,
+            message="client_answer.catch_triggered must be bool",
+        )
+
+    glove_pos_norm = client_answer.get("glove_pos_norm")
+    if glove_pos_norm is not None:
+        if not isinstance(glove_pos_norm, Mapping):
+            raise RuntimeAPIError(
+                status_code=400,
+                reason_code=ReasonCode.VALIDATION_ERROR.value,
+                message="client_answer.glove_pos_norm must be object",
+            )
+        for axis in ("x", "y"):
+            axis_val = glove_pos_norm.get(axis)
+            if axis_val is None:
+                continue
+            if not isinstance(axis_val, (int, float)) or not math.isfinite(float(axis_val)):
+                raise RuntimeAPIError(
+                    status_code=400,
+                    reason_code=ReasonCode.VALIDATION_ERROR.value,
+                    message=f"client_answer.glove_pos_norm.{axis} must be finite number",
+                )
+
+    client_viewport = client_answer.get("client_viewport")
+    if client_viewport is not None:
+        if not isinstance(client_viewport, Mapping):
+            raise RuntimeAPIError(
+                status_code=400,
+                reason_code=ReasonCode.VALIDATION_ERROR.value,
+                message="client_answer.client_viewport must be object",
+            )
+        for key in ("w", "h"):
+            viewport_val = client_viewport.get(key)
+            if viewport_val is None:
+                continue
+            if not isinstance(viewport_val, int) or viewport_val <= 0:
+                raise RuntimeAPIError(
+                    status_code=400,
+                    reason_code=ReasonCode.VALIDATION_ERROR.value,
+                    message=f"client_answer.client_viewport.{key} must be positive int",
+                )
+
+
+def _extract_request_meta(request: EvaluateRequest) -> dict[str, Any]:
+    meta = request.context.meta or {}
+    if not isinstance(meta, Mapping):
+        return {}
+    request_meta: dict[str, Any] = {}
+    correlation_id = meta.get("correlationId")
+    if isinstance(correlation_id, str) and correlation_id:
+        request_meta["correlationId"] = correlation_id
+    if "testMode" in meta:
+        request_meta["testMode"] = bool(meta.get("testMode"))
+    return request_meta
+
+
+def _infer_terminal_reason(
+    *,
+    reason_code: Optional[str],
+    action: str,
+    flow_state: str,
+    result_status: str,
+) -> Optional[str]:
+    if reason_code == ReasonCode.BLOCKED.value or action == DefenseAction.BLOCK.value:
+        return "BLOCKED"
+    if flow_state == FlowState.SX.value and result_status == "OK":
+        return "DONE"
+    if reason_code in {
+        ReasonCode.INVALID_TRANSITION.value,
+        ReasonCode.INTERNAL_ERROR.value,
+        ReasonCode.CHALLENGE_VERIFY_UNAVAILABLE.value,
+    }:
+        return "ABORT"
+    return None
 
 
 def _blocked_guard_output(

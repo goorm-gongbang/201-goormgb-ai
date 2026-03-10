@@ -34,6 +34,8 @@ rollout:
     examples: ["v2.0.0-mvp", "v2.0.1-canary", "v2.0.1"]
 
   storage_contract:
+    runtime_authority: "redis(tm:policy:*)"
+    bootstrap_fallback: "file policy store (development/bootstrap only)"
     required_capabilities:
       - "fetch_policy_by_version(version) -> policy doc"
       - "get_rollout_state() -> rollout_state"
@@ -164,6 +166,14 @@ parameters:
     game_id: "BASEBALL_CATCH"
     ttl_seconds: 15
     verify_timeout_ms: 200
+    verify_unavailable:
+      default_mode: "fail_close"
+      http_status: 503
+      reason_code: "CHALLENGE_VERIFY_UNAVAILABLE"
+      do_not_increment_fail_counter: true
+      emergency_override:
+        env: "TM_S3_VERIFY_UNAVAILABLE_MODE"
+        allowed: ["fail_open"]
     success:
       catch_radius_px: 48
       timing_window_ms: 320

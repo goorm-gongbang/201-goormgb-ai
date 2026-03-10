@@ -8,6 +8,7 @@ from ..state import SeatMode
 
 
 TM_SESSION_ID_KEY: Final[str] = "TM_SESSION_ID"
+TM_VQA_PASSED_SESSION_ID_KEY: Final[str] = "TM_VQA_PASSED_SESSION_ID"
 TM_PREFERENCES_KEY: Final[str] = "TM_PREFERENCES"
 
 
@@ -19,4 +20,3 @@ def build_default_tm_preferences(mode: SeatMode) -> dict[str, object]:
         "priceFilterEnabled": False,
         "priceRange": {"min": 20000, "max": 100000},
     }
-

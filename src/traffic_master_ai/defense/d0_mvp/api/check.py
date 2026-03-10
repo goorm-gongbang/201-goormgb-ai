@@ -12,7 +12,13 @@ from typing import Any, Mapping, Optional
 from ..core.enums import ReasonCode
 from .compat import APIRouter, Body, Header, Response
 from .http_errors import ensure_route_handler_alias, raise_contract_http_error
-from .response_utils import error_payload, finalize_payload
+from .response_utils import (
+    error_payload,
+    finalize_payload,
+    infer_terminal_reason,
+    merge_headers,
+    parse_request_meta_headers,
+)
 from .runtime import DefenseRuntime, build_check_request, _to_runtime_event
 
 
@@ -30,6 +36,8 @@ def create_check_router(runtime: Optional[DefenseRuntime] = None) -> APIRouter:
         x_session_id: Optional[str] = Header(default=None, alias="X-Session-Id"),
         x_trace_id: Optional[str] = Header(default=None, alias="X-Trace-Id"),
         x_turnstile_token: Optional[str] = Header(default=None, alias="X-Turnstile-Token"),
+        x_correlation_id: Optional[str] = Header(default=None, alias="X-Correlation-Id"),
+        x_tm_test_mode: Optional[str] = Header(default=None, alias="X-TM-TestMode"),
         response: Response = None,
     ) -> dict[str, Any]:
         if not x_session_id or not x_trace_id:
@@ -38,6 +46,16 @@ def create_check_router(runtime: Optional[DefenseRuntime] = None) -> APIRouter:
                     ReasonCode.VALIDATION_ERROR,
                     "X-Session-Id and X-Trace-Id are required",
                 ),
+                status_code=400,
+            )
+        try:
+            request_meta, passthrough_headers = parse_request_meta_headers(
+                x_correlation_id=x_correlation_id,
+                x_tm_test_mode=x_tm_test_mode,
+            )
+        except ValueError as exc:
+            raise_contract_http_error(
+                error_payload(ReasonCode.VALIDATION_ERROR, str(exc)),
                 status_code=400,
             )
 
@@ -56,6 +74,10 @@ def create_check_router(runtime: Optional[DefenseRuntime] = None) -> APIRouter:
             )
 
         eval_req = rt.check_request_to_evaluate(check_req)
+        if request_meta:
+            if eval_req.context.meta is None:
+                eval_req.context.meta = {}
+            eval_req.context.meta.update(request_meta)
         try:
             out = rt.evaluate(eval_req)
         except ValueError as exc:
@@ -67,7 +89,7 @@ def create_check_router(runtime: Optional[DefenseRuntime] = None) -> APIRouter:
             out = rt.fail_open_on_unavailable(request=eval_req, error=exc)
         orchestrated = out.orchestrator_result
 
-        headers = dict(orchestrated.headers)
+        headers = merge_headers(orchestrated.headers, passthrough_headers)
         decision = orchestrated.decision
 
         # Apply throttle delay if needed
@@ -99,6 +121,13 @@ def create_check_router(runtime: Optional[DefenseRuntime] = None) -> APIRouter:
         # Ref: contracts.yaml §4 — response_contract.allow
         if orchestrated.allow:
             body_out = {"allow": True}
+            allow_terminal_reason = infer_terminal_reason(
+                reason_code=None,
+                action=decision.action.value,
+                state_to=orchestrated.state_to.value if orchestrated.state_to else None,
+            )
+            if allow_terminal_reason:
+                body_out["terminalReason"] = allow_terminal_reason
             return finalize_payload(body_out, response=response, headers=headers)
 
         # Deny path
@@ -114,6 +143,11 @@ def create_check_router(runtime: Optional[DefenseRuntime] = None) -> APIRouter:
                 orchestrated.error.reason_code,
                 orchestrated.error.message,
                 orchestrated.error.detail,
+                terminal_reason=infer_terminal_reason(
+                    reason_code=orchestrated.error.reason_code,
+                    action=decision.action.value,
+                    state_to=orchestrated.state_to.value if orchestrated.state_to else None,
+                ),
             ),
             status_code=orchestrated.http_status,
             headers=headers,

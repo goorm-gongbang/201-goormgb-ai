@@ -44,6 +44,7 @@ class AuditEntry:
     request_id: str
     server_decision: dict[str, Any]
     result: dict[str, Any]
+    request_meta: dict[str, Any] = field(default_factory=dict)
     dedup: dict[str, Any] = field(default_factory=dict)
     throttle: dict[str, Any] = field(default_factory=dict)
     block: dict[str, Any] = field(default_factory=dict)
@@ -112,6 +113,7 @@ class AuditEntry:
             "requestId": self.request_id,
             "serverDecision": self.server_decision,
             "result": self.result,
+            "requestMeta": self.request_meta,
             "dedup": self.dedup,
             "throttle": self.throttle,
             "block": self.block,
@@ -136,6 +138,7 @@ class AuditEntry:
             request_id=str(data.get("requestId", "")),
             server_decision=dict(data.get("serverDecision", {})),
             result=dict(data.get("result", {})),
+            request_meta=dict(data.get("requestMeta", {})),
             dedup=dict(data.get("dedup", {})),
             throttle=dict(data.get("throttle", {})),
             block=dict(data.get("block", {})),

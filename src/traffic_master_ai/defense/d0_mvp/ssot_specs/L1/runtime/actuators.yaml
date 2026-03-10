@@ -101,7 +101,7 @@ actuators:
           request:
             required_headers_ref: "Specs/Defense/L1/runtime/contracts.yaml#headers.required_in_all_defense_paths"
           response:
-            http_status: 200
+            http_status: "200 | 429 | 503(default fail-close)"
             required_fields: ["result", "reason_code", "server_verdict"]
       # (B) S4/S5 단계: S3 미통과면 428 deny (회귀)
       gate_execution:
@@ -132,9 +132,14 @@ actuators:
           - "state.challengeFailCount += 1"
         on_halt_lock:
           - "state.challengeHaltUntilMs := now + halt_seconds*1000 (옵션)"
+        on_verify_unavailable:
+          - "state.s3Passed 변경 금지(false 유지)"
+          - "state.challengeFailCount 증가 금지(시스템 장애를 사용자 실패로 누적 금지)"
+          - "기본 응답 503 + CHALLENGE_VERIFY_UNAVAILABLE"
       notes:
         - "S3 PASS 표현은 MVP에서 서버 플래그(s3Passed) 방식으로 한다(state.yaml)."
         - "deny TTL refresh를 사용하지 않으므로, S3 단계에서는 tm:grace:s3:{sessionId}를 짧은 TTL로 유지(state.yaml/policy 참조)."
+        - "운영 비상시 TM_S3_VERIFY_UNAVAILABLE_MODE=fail_open 오버라이드만 허용한다."
 
     observability:
       audit_events:

@@ -72,6 +72,17 @@ AUDIT_EVENT_TYPES: frozenset[str] = frozenset(
 # Enum values
 # =========================================
 FLOW_STATE_ENUM: frozenset[str] = frozenset({"S0", "S1", "S2", "S3", "S4", "S5", "S6", "SX"})
+_FLOW_ALLOWED_S1_TO_S5: frozenset[str] = frozenset({"S1", "S2", "S3", "S4", "S5"})
+_FLOW_ALLOWED_S1_TO_S3: frozenset[str] = frozenset({"S1", "S2", "S3"})
+
+EVENT_ALLOWED_FLOW_STATES: dict[str, frozenset[str]] = {
+    FLOW_STATE_TRANSITION: FLOW_STATE_ENUM,
+    HIGH_VALUE_CLICK: _FLOW_ALLOWED_S1_TO_S5,
+    S3_RESULT: frozenset({"S3"}),
+    API_CALL_OBS: _FLOW_ALLOWED_S1_TO_S5,
+    TURNSTILE_TRIGGERED: _FLOW_ALLOWED_S1_TO_S3,
+    TURNSTILE_VERIFIED: _FLOW_ALLOWED_S1_TO_S3,
+}
 
 HVC_SECTION_SELECT: str = "SECTION_SELECT"
 HVC_SEAT_SELECT: str = "SEAT_SELECT"
@@ -191,6 +202,9 @@ def validate_runtime_event_envelope(
         errors.append("tsMs must be non-negative int")
     if flow_state not in FLOW_STATE_ENUM:
         errors.append(f"invalid flowState: {flow_state}")
+    allowed_flow_states = EVENT_ALLOWED_FLOW_STATES.get(event_type)
+    if allowed_flow_states is not None and flow_state not in allowed_flow_states:
+        errors.append(f"flowState {flow_state} is not allowed for eventType {event_type}")
     errors.extend(validate_event_payload(event_type, payload))
     return errors
 

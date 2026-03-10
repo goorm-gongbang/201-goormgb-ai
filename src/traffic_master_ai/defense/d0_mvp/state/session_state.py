@@ -10,9 +10,17 @@ from __future__ import annotations
 from contextlib import contextmanager
 import logging
 import threading
+import time
+import uuid
 from typing import Any, Optional
 
-from ..core.constants import S3_GRACE_TTL_SECONDS, SESSION_STATE_TTL_SECONDS
+from ..core.constants import (
+    S3_GRACE_TTL_SECONDS,
+    SESSION_DIST_LOCK_ENABLED,
+    SESSION_DIST_LOCK_TTL_MS,
+    SESSION_DIST_LOCK_WAIT_MS,
+    SESSION_STATE_TTL_SECONDS,
+)
 from ..core.models import SessionState
 from .redis_client import RedisLike
 
@@ -20,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 _SESSION_KEY_PREFIX = "tm:sess:"
 _S3_GRACE_KEY_PREFIX = "tm:grace:s3:"
+_SESSION_LOCK_KEY_PREFIX = "tm:lock:sess:"
 
 
 _WRITER_ALLOWED_FIELDS: dict[str, frozenset[str]] = {
@@ -56,10 +65,16 @@ class SessionStateManager:
         redis: RedisLike,
         session_ttl_s: int = SESSION_STATE_TTL_SECONDS,
         s3_grace_ttl_s: int = S3_GRACE_TTL_SECONDS,
+        dist_lock_enabled: bool = SESSION_DIST_LOCK_ENABLED,
+        dist_lock_wait_ms: int = SESSION_DIST_LOCK_WAIT_MS,
+        dist_lock_ttl_ms: int = SESSION_DIST_LOCK_TTL_MS,
     ) -> None:
         self._redis = redis
         self._session_ttl_s = session_ttl_s
         self._s3_grace_ttl_s = s3_grace_ttl_s
+        self._dist_lock_enabled = bool(dist_lock_enabled)
+        self._dist_lock_wait_ms = max(0, int(dist_lock_wait_ms))
+        self._dist_lock_ttl_ms = max(200, int(dist_lock_ttl_ms))
         self._lock_index: dict[str, threading.RLock] = {}
         self._lock_index_guard = threading.Lock()
 
@@ -164,12 +179,19 @@ class SessionStateManager:
 
     @contextmanager
     def session_lock(self, session_id: str):
-        """Process-local same-session lock to serialize runtime mutations."""
+        """Same-session lock for runtime mutations.
+
+        Uses process-local RLock and Redis distributed lock (best-effort).
+        """
         lock = self._get_session_lock(session_id)
         lock.acquire()
+        lock_token: Optional[str] = None
         try:
+            lock_token = self._acquire_dist_lock(session_id)
             yield
         finally:
+            if lock_token is not None:
+                self._release_dist_lock(session_id, lock_token)
             lock.release()
 
     def sync_policy_version(
@@ -245,6 +267,41 @@ class SessionStateManager:
                 lock = threading.RLock()
                 self._lock_index[session_id] = lock
             return lock
+
+    def _session_dist_lock_key(self, session_id: str) -> str:
+        return f"{_SESSION_LOCK_KEY_PREFIX}{session_id}"
+
+    def _acquire_dist_lock(self, session_id: str) -> Optional[str]:
+        if not self._dist_lock_enabled:
+            return None
+        token = uuid.uuid4().hex
+        lock_key = self._session_dist_lock_key(session_id)
+        deadline = time.monotonic() + (self._dist_lock_wait_ms / 1000.0)
+        sleep_s = 0.01
+        ttl_seconds = max(1, int((self._dist_lock_ttl_ms + 999) / 1000))
+
+        while True:
+            acquired = self._redis.set(lock_key, token, ex=ttl_seconds, nx=True)
+            if acquired:
+                return token
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "Distributed session lock timeout; fallback to local lock only (session=%s)",
+                    session_id,
+                )
+                return None
+            time.sleep(sleep_s)
+
+    def _release_dist_lock(self, session_id: str, token: str) -> None:
+        lock_key = self._session_dist_lock_key(session_id)
+        try:
+            current = self._redis.get(lock_key)
+            if isinstance(current, (bytes, bytearray)):
+                current = current.decode("utf-8", errors="ignore")
+            if current is not None and str(current) == token:
+                self._redis.delete(lock_key)
+        except Exception:  # noqa: BLE001 - lock release must not break runtime
+            logger.exception("Failed to release distributed session lock: %s", session_id)
 
     def _write_hash(
         self,

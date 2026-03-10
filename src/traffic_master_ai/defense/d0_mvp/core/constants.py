@@ -56,6 +56,9 @@ S3_PROBATION_SECONDS: int = _env("TM_S3_PROBATION_SECONDS", 45)
 SESSION_STATE_TTL_SECONDS: int = _env("TM_SESSION_STATE_TTL_SECONDS", 1800)
 BLOCK_TTL_SECONDS: int = _env("TM_BLOCK_TTL_SECONDS", 1800)
 S3_GRACE_TTL_SECONDS: int = _env("TM_S3_GRACE_TTL_SECONDS", 180)
+SESSION_DIST_LOCK_ENABLED: bool = _env("TM_SESSION_DIST_LOCK_ENABLED", True)
+SESSION_DIST_LOCK_WAIT_MS: int = _env("TM_SESSION_DIST_LOCK_WAIT_MS", 200)
+SESSION_DIST_LOCK_TTL_MS: int = _env("TM_SESSION_DIST_LOCK_TTL_MS", 2000)
 
 # ===================================================================
 # Dedup — L1/runtime/events.yaml §dedup
@@ -101,6 +104,12 @@ THROTTLE_EXCLUDE_PATH_PREFIXES: list[str] = [
 CHALLENGE_GAME_ID: str = "BASEBALL_CATCH"
 CHALLENGE_TTL_SECONDS: int = _env("TM_CHALLENGE_TTL_SECONDS", 15)
 CHALLENGE_VERIFY_TIMEOUT_MS: int = _env("TM_CHALLENGE_VERIFY_TIMEOUT_MS", 200)
+CHALLENGE_VERIFY_UNAVAILABLE_MODE: str = _env(
+    "TM_S3_VERIFY_UNAVAILABLE_MODE", "fail_close"
+)
+CHALLENGE_VERIFY_UNAVAILABLE_HTTP_STATUS: int = _env(
+    "TM_S3_VERIFY_UNAVAILABLE_HTTP_STATUS", 503
+)
 CHALLENGE_CATCH_RADIUS_PX: int = _env("TM_CHALLENGE_CATCH_RADIUS_PX", 48)
 CHALLENGE_TIMING_WINDOW_MS: int = _env("TM_CHALLENGE_TIMING_WINDOW_MS", 320)
 CHALLENGE_MAX_ATTEMPTS: int = _env("TM_CHALLENGE_MAX_ATTEMPTS", 2)
@@ -173,6 +182,11 @@ IDEMPOTENCY_TTL_SECONDS: int = _env("TM_IDEMPOTENCY_TTL_SECONDS", 600)
 MAX_RETRY_PER_STATE: int = 3
 SEAT_HOLD_TTL_MS: int = 300_000
 PAYMENT_WINDOW_TTL_MS: int = 300_000
+
+# ===================================================================
+# Test hooks
+# ===================================================================
+TEST_MODE_ENABLED: bool = _env("TM_TEST_MODE_ENABLED", False)
 
 # ===================================================================
 # Offline LLM — L1/llm/defense_llm_ssot.yaml

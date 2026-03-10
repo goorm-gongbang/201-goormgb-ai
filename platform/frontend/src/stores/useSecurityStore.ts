@@ -1,7 +1,9 @@
 'use client';
 
 import { create } from 'zustand';
+import { STORAGE_KEYS } from '@/contracts/http';
 import { getOrCreateSessionId } from '@/services/api';
+import { redirectToTerminal } from '@/services/terminal';
 
 interface ChallengeData {
   challengeId: string;
@@ -116,7 +118,9 @@ export const useSecurityStore = create<SecurityState>((set, get) => ({
 
       if (data.result === 'PASS') {
         try {
-          localStorage.setItem('TM_VQA_PASSED_ONCE', '1');
+          localStorage.setItem(STORAGE_KEYS.TM_VQA_PASSED_SESSION_ID, sessionId);
+          // Legacy key cleanup
+          localStorage.removeItem('TM_VQA_PASSED_ONCE');
         } catch {}
         set({
           isVisible: false,
@@ -128,6 +132,21 @@ export const useSecurityStore = create<SecurityState>((set, get) => ({
         });
         return true;
       } else {
+        if (data.reasonCode === 'BLOCKED') {
+          set({
+            isVisible: false,
+            challengeData: null,
+            status: 'IDLE',
+            errorMessage: null,
+            lastResult: 'FAIL',
+          });
+          redirectToTerminal({
+            reasonCode: data.reasonCode,
+            httpStatus: 403,
+            message: data.message ?? '요청이 차단되었습니다.',
+          });
+          return false;
+        }
         const reason = data.reasonCode ? ` (${data.reasonCode})` : '';
         set({
           status: 'FAILED',

@@ -6,6 +6,7 @@ const API_BASE = '/api';
 
 import { HTTP_HEADERS, REASON_CODES, SESSION_STORAGE_KEYS, STORAGE_KEYS } from '@/contracts/http';
 import { useSecurityStore } from '@/stores/useSecurityStore';
+import { redirectToTerminal } from '@/services/terminal';
 
 // ─── Correlation ID Management ───
 
@@ -103,15 +104,18 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
 
   if (!res.ok) {
     if (data && isAppError(data)) {
-      // Global Security Challenge Trigger — only if modal is not already showing
-      if (
-        data.reasonCode === REASON_CODES.CHALLENGE_REQUIRED
-        || data.reasonCode === REASON_CODES.BLOCKED
-      ) {
+      if (data.reasonCode === REASON_CODES.BLOCKED) {
         const secState = useSecurityStore.getState();
-        if (!secState.isVisible) {
-          secState.showChallenge();
-        }
+        secState.hideChallenge();
+        redirectToTerminal({
+          reasonCode: data.reasonCode,
+          httpStatus: res.status,
+          message: data.message,
+        });
+      } else if (data.reasonCode === REASON_CODES.CHALLENGE_REQUIRED) {
+        // Global Security Challenge Trigger — only if modal is not already showing
+        const secState = useSecurityStore.getState();
+        if (!secState.isVisible) secState.showChallenge();
       }
       
       const err: AppError = {

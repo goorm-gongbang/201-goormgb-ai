@@ -53,7 +53,7 @@ def create_admin_console_router(runtime: Optional[DefenseRuntime] = None) -> API
     def overview(
         x_admin_role: Optional[str] = Header(default=None, alias="X-Admin-Role"),
         x_admin_token: Optional[str] = Header(default=None, alias="X-Admin-Token"),
-        window_seconds: int = 300,
+        window_seconds: int = 10,
     ) -> dict[str, object]:
         _require_access(x_admin_role, x_admin_token)
         return _dashboard().overview(window_seconds=window_seconds)
@@ -62,7 +62,7 @@ def create_admin_console_router(runtime: Optional[DefenseRuntime] = None) -> API
     def integrity(
         x_admin_role: Optional[str] = Header(default=None, alias="X-Admin-Role"),
         x_admin_token: Optional[str] = Header(default=None, alias="X-Admin-Token"),
-        window_seconds: int = 300,
+        window_seconds: int = 10,
     ) -> dict[str, object]:
         _require_access(x_admin_role, x_admin_token)
         return _dashboard().integrity(window_seconds=window_seconds)
@@ -71,7 +71,7 @@ def create_admin_console_router(runtime: Optional[DefenseRuntime] = None) -> API
     def throttle(
         x_admin_role: Optional[str] = Header(default=None, alias="X-Admin-Role"),
         x_admin_token: Optional[str] = Header(default=None, alias="X-Admin-Token"),
-        window_seconds: int = 300,
+        window_seconds: int = 10,
     ) -> dict[str, object]:
         _require_access(x_admin_role, x_admin_token)
         return _dashboard().throttle_view(window_seconds=window_seconds)
@@ -80,7 +80,7 @@ def create_admin_console_router(runtime: Optional[DefenseRuntime] = None) -> API
     def s3_challenge(
         x_admin_role: Optional[str] = Header(default=None, alias="X-Admin-Role"),
         x_admin_token: Optional[str] = Header(default=None, alias="X-Admin-Token"),
-        window_seconds: int = 300,
+        window_seconds: int = 10,
     ) -> dict[str, object]:
         _require_access(x_admin_role, x_admin_token)
         return _dashboard().s3_view(window_seconds=window_seconds)
@@ -89,7 +89,7 @@ def create_admin_console_router(runtime: Optional[DefenseRuntime] = None) -> API
     def block(
         x_admin_role: Optional[str] = Header(default=None, alias="X-Admin-Role"),
         x_admin_token: Optional[str] = Header(default=None, alias="X-Admin-Token"),
-        window_seconds: int = 300,
+        window_seconds: int = 10,
     ) -> dict[str, object]:
         _require_access(x_admin_role, x_admin_token)
         return _dashboard().block_view(window_seconds=window_seconds)

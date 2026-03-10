@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
-from ..core.constants import OFFLINE_OPT_AUDIT_FILENAME
+from ..core.constants import OFFLINE_LLM_MAX_SAMPLE_TRACES, OFFLINE_OPT_AUDIT_FILENAME
 from ..observability.dashboard import AdminDashboardService
 from ..observability.warehouse import AuditWarehouse
 from ..policy.loader import PolicyLoader, PolicyStore, snapshot_to_document
@@ -116,7 +116,7 @@ class OfflineOptimizer:
             base_policy_version=base_policy.policy_version,
             base_policy=base_policy,
         )
-        sampled_traces = self._sample_traces(limit=10)
+        sampled_traces = self._sample_traces(limit=OFFLINE_LLM_MAX_SAMPLE_TRACES)
         summary = self._summarizer.summarize(
             metrics_snapshot=metrics,
             sampled_traces=sampled_traces,

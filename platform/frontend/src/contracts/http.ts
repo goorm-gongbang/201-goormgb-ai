@@ -1,5 +1,6 @@
 export const STORAGE_KEYS = {
   TM_SESSION_ID: 'TM_SESSION_ID',
+  TM_VQA_PASSED_SESSION_ID: 'TM_VQA_PASSED_SESSION_ID',
   TM_PREFERENCES: 'TM_PREFERENCES',
   TM_CAPTURE_RAW_TRAJ: 'TM_CAPTURE_RAW_TRAJ',
   TM_TRAJ_DATASET_ID: 'TM_TRAJ_DATASET_ID',
@@ -12,6 +13,9 @@ export const STORAGE_KEYS = {
 
 export const SESSION_STORAGE_KEYS = {
   CORRELATION_ID: 'correlationId',
+  TERMINAL_REASON: 'terminalReason',
+  TERMINAL_HTTP_STATUS: 'terminalHttpStatus',
+  TERMINAL_MESSAGE: 'terminalMessage',
 } as const;
 
 export const HTTP_HEADERS = {
@@ -39,4 +43,3 @@ export const API_PATHS = {
   ORDERS: '/api/orders',
   PAYMENTS: '/api/payments',
 } as const;
-

@@ -111,7 +111,7 @@ action_enforcement_mapping:
   THROTTLE:
     expect_allow: true
     expect_delay_ms: ">= configured threshold"
-    expect_header: "x-throttle-ms"
+    expect_header: "x-defense-throttle-ms"
   REQUIRE_S3:
     expect_allow: false
     expect_http: 428
@@ -204,6 +204,11 @@ observability_assertions:
 ## 10. 실패 처리와 가드레일 검증
 실패 처리 검증은 보안 강도와 사용자 경험의 균형을 확인하는 단계입니다. 특히 무한 재시도, 종단 후 재진입, S6 마찰 삽입은 반드시 차단해야 합니다.
 
+VQA 관련 정합성은 특히 "왜 실패했는지"를 분리해서 봐야 합니다.  
+`428 CHALLENGE_REQUIRED`는 S3 미통과 회귀이고, `403 BLOCKED`는 정책상 차단이며, `503 CHALLENGE_VERIFY_UNAVAILABLE`는 검증 경로 장애입니다. 이 세 가지를 같은 실패로 뭉치면 원인 분석이 불가능해집니다.
+
+또한 verify unavailable 케이스는 정책 의미까지 검증해야 합니다. 기본값이 fail-close이면 세션은 S3에 남아야 하고, 실패 카운터가 무조건 증가하면 안 됩니다. 매트릭스에서는 HTTP 코드뿐 아니라 상태 변화와 audit 필드까지 함께 assert해야 합니다.
+
 ```yaml
 guardrail_assertions:
   retry_control:
@@ -216,6 +221,7 @@ guardrail_assertions:
     - "only NONE/BLOCK allowed in S6"
   failure_mode_control:
     - "adapter/ai timeout fallback is auditable"
+    - "verify unavailable(503) is distinguishable from normal fail path"
 ```
 
 ## 11. 검증 시나리오
@@ -253,6 +259,13 @@ matrix_cases:
     expect:
       observed_action_in: [THROTTLE, REQUIRE_S3, BLOCK]
       tier_not_less_than: T1
+  - id: MX-06
+    strategy: verifier_unavailable_simulation
+    challenge_mode: auto
+    expect:
+      response_reason: CHALLENGE_VERIFY_UNAVAILABLE
+      response_http: 503
+      flow_state_remains: S3
 ```
 
 ## 12. 운영 체크리스트
@@ -273,4 +286,80 @@ ops_checklist:
   release_gate:
     - "critical rows pass 100%"
     - "no contract regression on HTTP/header/state/audit"
+```
+
+## 13. 통합 테스트 실행 방법 (0/1/2)
+정합성 매트릭스는 실제 실행 로그를 근거로 판정합니다. 따라서 서버 기동 -> 수동 baseline -> 공격 실행 순서를 고정합니다.
+
+### 0. 전체 켜야하는 서버 명령어
+
+```bash
+# (A) Backend
+cd /Users/jangjihyeon/201-goormgb-ai/platform/backend
+./gradlew bootRun --console=plain
+```
+
+```bash
+# (B) Envoy + Adapter + AI Defense
+cd /Users/jangjihyeon/201-goormgb-ai/pilot/istio_adapter_local
+docker-compose up -d --build
+```
+
+```bash
+# (C) Frontend (Envoy 경유)
+cd /Users/jangjihyeon/201-goormgb-ai/platform/frontend
+TM_API_PROXY_TARGET=http://localhost:10000 npm run dev
+```
+
+```bash
+# (D) health check
+curl -sS http://localhost:8000/healthz
+curl -sS http://localhost:9001/healthz
+curl -sS http://localhost:9901/server_info
+```
+
+### 1. 직접 유저 테스트
+정상 사용자 시나리오를 먼저 실행해 baseline 로그를 확보합니다.
+
+```yaml
+manual_baseline_for_matrix:
+  objective: "공격 대비 baseline 비교군 확보"
+  steps:
+    - "직접 예매 플로우 1회 성공(DONE) 수행"
+    - "S3 challenge pass 경로 확인"
+  required_artifacts:
+    - "logs/decision_audit.jsonl (baseline trace)"
+    - "브라우저 네트워크 응답(403/428 없음 확인)"
+```
+
+### 2. 공격 에이전트 테스트
+전략별 케이스를 실행하고 매트릭스 행(assert)와 1:1로 대조합니다.
+
+```bash
+# (A) 공격 에이전트 단일 시나리오
+cd /Users/jangjihyeon/201-goormgb-ai
+source .venv/bin/activate
+TM_FRONTEND_URL=http://localhost:3000 \
+python -m traffic_master_ai.attack.a1_mvp.main \
+  --mode MAP --challenge-mode fail --challenge-strategy timing_fail
+```
+
+```bash
+# (B) 공격 전략 매트릭스 일괄 실행
+cd /Users/jangjihyeon/201-goormgb-ai
+source .venv/bin/activate
+python scripts/step7_attack_mode_matrix.py --frontend-url http://localhost:3000 --execute
+```
+
+```yaml
+matrix_evidence_bundle:
+  required:
+    - "logs/attack_mvp/*.jsonl"
+    - "logs/step7_attack_matrix_summary.json"
+    - "logs/decision_audit.jsonl"
+  assert_targets:
+    - "HTTP status/reasonCode mapping"
+    - "x-defense-* header consistency"
+    - "state transition invariants"
+    - "mandatory audit event presence"
 ```
