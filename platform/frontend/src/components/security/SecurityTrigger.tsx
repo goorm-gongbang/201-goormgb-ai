@@ -17,16 +17,8 @@ export default function SecurityTrigger() {
   const showChallenge = useSecurityStore((s) => s.showChallenge);
   const isVisible = useSecurityStore((s) => s.isVisible);
   const hasTriggered = useRef(false);
-  const lastPathname = useRef<string | null>(null);
 
   useEffect(() => {
-    // Reset trigger flag when navigating to a different page
-    // so VQA can fire again on new /seats visits.
-    if (lastPathname.current !== null && lastPathname.current !== pathname) {
-      hasTriggered.current = false;
-    }
-    lastPathname.current = pathname ?? null;
-
     const forceChallenge = searchParams.get('forceChallenge');
 
     if (forceChallenge === 'true' && !isVisible && !hasTriggered.current) {

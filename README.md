@@ -77,17 +77,6 @@ source /Users/jangjihyeon/201-goormgb-ai/.venv/bin/activate
 playwright install chromium
 ```
 
-### AI 서버 env 템플릿 준비
-
-```bash
-cd /Users/jangjihyeon/201-goormgb-ai
-cp .env.ai.example .env.ai
-```
-
-클라우드팀 전달 기준:
-- AI 서버(방어 런타임)만 배포/운영한다면 `.env.ai` 계열만 전달하면 됩니다.
-- Frontend/Backend/Proxy를 같은 팀이 함께 운영한다면 해당 서비스 env도 별도 전달이 필요합니다.
-
 ## 4. 전체 서버 기동 방법
 
 아래 2가지 중 하나를 사용합니다.
@@ -138,7 +127,8 @@ TM_API_PROXY_TARGET=http://localhost:10000 npm run dev
 
 ```bash
 cd /Users/jangjihyeon/201-goormgb-ai
-./scripts/run_ai_defense.sh
+source .venv/bin/activate
+python -m uvicorn traffic_master_ai.defense.api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ## 5. 헬스체크
