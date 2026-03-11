@@ -13,7 +13,6 @@
 ### A. AI API + Docker (CICD)
 - `CI/openapi-defense.v2.yaml`
 - `CI/defense_api_README.md`
-- `CI/ai_defense_api_main.py`
 - `CI/Dockerfile.ai-defense`
 
 ### B. 저장 전략
@@ -21,15 +20,23 @@
 - `CI/postgres_schema.sql`
 - `CI/verification_queries.sql`
 
+### C. Istio Adapter 인수인계
+- `spec/cloud_team_handover_istio_adapter.md`
+
 ## 2) FE/BE 전달물
 
+> FE/BE 공통 문서는 `BE/` 폴더에 통합 관리됩니다.
+
 ### A. SSOT/API 계약
-- `FE/fe_be_ssot_contract.md` (BE 동일본 반영)
-- `FE/vqa_event_defense_scenarios.md` (BE 동일본 반영)
+- `BE/fe_be_ssot_contract.md`
+- `BE/vqa_event_defense_scenarios.md`
 
 ### B. 판단 가이드
-- `FE/risk_tier_decision_guide.md` (BE 동일본 반영)
-- `FE/telemetry_payload_guide.md` (BE 동일본 반영)
+- `BE/risk_tier_decision_guide.md`
+- `BE/telemetry_payload_guide.md`
+
+### C. 테스트 가이드
+- `BE/cross_team_test_guide.md`
 
 ## 3) 실행 전 공통 확인
 - Adapter가 `/evaluate` 호출 가능

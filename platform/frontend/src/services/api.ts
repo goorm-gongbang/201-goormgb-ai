@@ -17,6 +17,19 @@ export function getOrCreateSessionId(): string {
   return sessionId;
 }
 
+/**
+ * Reset session ID for a new booking flow.
+ * Generates a fresh UUID and clears VQA pass state so the
+ * SecurityTrigger fires again on /seats.
+ */
+export function resetSessionId(): string {
+  const newId = crypto.randomUUID();
+  localStorage.setItem(SESSION_STORAGE_KEY, newId);
+  localStorage.removeItem(STORAGE_KEYS.TM_VQA_PASSED_SESSION_ID);
+  localStorage.removeItem('TM_VQA_PASSED_ONCE');
+  return newId;
+}
+
 // ─── Axios Instance (all requests carry X-Session-Id header) ───
 
 const api = axios.create({
