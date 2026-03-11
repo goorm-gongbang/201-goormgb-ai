@@ -30,6 +30,7 @@ defense_api = [
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
     "redis>=5.0.0",
+    "prometheus-fastapi-instrumentator>=7.0.0",
 ]
 
 [tool.hatch.build.targets.wheel]

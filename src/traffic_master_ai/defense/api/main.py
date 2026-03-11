@@ -1,9 +1,11 @@
-from typing import Any
-
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
+from prometheus_fastapi_instrumentator import Instrumentator
 
 app = FastAPI(title="Traffic Master AI Defense API", version="bootstrap-v1")
+
+# Prometheus metrics 자동 계측 및 /metrics 엔드포인트 노출
+Instrumentator().instrument(app).expose(app)
 
 
 class EvaluateRequest(BaseModel):
@@ -26,6 +28,11 @@ class EvaluateResponse(BaseModel):
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok", "service": "ai-defense", "version": "bootstrap-v1"}
+
+
+@app.get("/readyz")
+def readyz() -> dict[str, str]:
+    return {"status": "ready", "service": "ai-defense"}
 
 
 @app.post("/evaluate", response_model=EvaluateResponse)
