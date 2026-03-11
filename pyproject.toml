@@ -6,7 +6,6 @@ build-backend = "hatchling.build"
 name = "traffic-master-ai"
 version = "0.1.0"
 description = "Traffic Master AI Domain - Attack & Defense PoC-0"
-readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 authors = [
