@@ -1,11 +1,19 @@
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
+from prometheus_client import Counter
 from prometheus_fastapi_instrumentator import Instrumentator
 
 app = FastAPI(title="Traffic Master AI Defense API", version="bootstrap-v1")
 
 # Prometheus metrics 자동 계측 및 /metrics 엔드포인트 노출
 Instrumentator().instrument(app).expose(app)
+
+# 커스텀 메트릭: 검사된 요청 경로별 카운터
+EVALUATE_REQUESTS = Counter(
+    "ai_defense_evaluate_total",
+    "Total evaluate requests by path, method, and decision",
+    ["path", "method", "decision"],
+)
 
 
 class EvaluateRequest(BaseModel):
@@ -37,6 +45,11 @@ def readyz() -> dict[str, str]:
 
 @app.post("/evaluate", response_model=EvaluateResponse)
 def evaluate(req: EvaluateRequest) -> EvaluateResponse:
+    decision = "allow"  # TODO: 실제 로직에서 allow/deny 결정
+
+    # 메트릭 기록: path, method, decision
+    EVALUATE_REQUESTS.labels(path=req.path, method=req.method, decision=decision).inc()
+
     return EvaluateResponse(
         allow=True,
         session_id=req.session_id,

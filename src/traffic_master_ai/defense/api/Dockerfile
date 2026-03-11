@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 WORKDIR /app
-RUN pip install --no-cache-dir fastapi uvicorn pydantic prometheus-fastapi-instrumentator
+RUN pip install --no-cache-dir fastapi uvicorn pydantic prometheus-client prometheus-fastapi-instrumentator
 
 COPY src ./src
 
