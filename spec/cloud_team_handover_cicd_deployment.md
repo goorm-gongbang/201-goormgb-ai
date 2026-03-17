@@ -364,6 +364,64 @@ Authz Adapter에서 AI 서버로 호출하는 핵심 API입니다.
 
 ---
 
+### 7.2. 챌린지 시작 API (`POST /challenge/start`)
+브라우저에서 챌린지 화면 진입 시 호출하여 챌린지 정보를 가져옵니다.
+
+#### Request
+```json
+{
+  "session_id": "sess-12345",
+  "challenge_type": "catch_ball"      // 기본값
+}
+```
+
+#### Response
+```json
+{
+  "session_id": "sess-12345",
+  "challenge_id": "ch-abc-123",
+  "challenge_type": "catch_ball",
+  "challenge_token": "jwt-token-...", // 검증 시 전달 필수
+  "expires_at_ms": 1710672015000,     // 만료 시각
+  "attempt_limit": 2,                 // 최대 시도 횟수
+  "public_params": {                  // UI 렌더링용 파라미터
+    "target_size": 40,
+    "speed": 1.5
+  }
+}
+```
+
+---
+
+### 7.3. 챌린지 검증 API (`POST /challenge/verify`)
+클라이언트가 수행한 챌린지 결과를 제출하여 검증받습니다.
+
+#### Request
+```json
+{
+  "session_id": "sess-12345",
+  "challenge_id": "ch-abc-123",
+  "challenge_token": "jwt-token-...",
+  "final_click_ts_ms": 1710672012000  // 수행 완료 시각
+}
+```
+
+#### Response
+```json
+{
+  "session_id": "sess-12345",
+  "passed": true,                     // [필수] 통과 여부
+  "result": "PASSED",                 // (PASSED, FAILED, EXPIRED)
+  "defense_tier": "T0",               // 통과 후 하향된 티어
+  "action": "NONE",                   // 통과 시 서비스 이용 가능
+  "headers_to_add": {                 // 클라이언트에서 저장할 쿠키/헤더
+    "x-defense-action": "none"
+  }
+}
+```
+
+---
+
 ## 8. 모니터링 및 운영
 
 ### 8.1. 헬스 체크 및 메트릭
