@@ -26,7 +26,7 @@
 │                    AI Defense Runtime                     │
 │                                                          │
 │  ┌──────────┐    ┌──────────┐    ┌───────────────────┐  │
-│  │ /evaluate │    │ /challenge│    │ Audit Logger      │  │
+│  │ /evaluate │    │ /vqa     │    │ Audit Logger      │  │
 │  │ 실시간판정 │    │ VQA 검증  │    │ (판정 기록)       │  │
 │  └────┬─────┘    └────┬─────┘    └────┬──────────────┘  │
 │       │               │               │                  │
@@ -140,9 +140,9 @@ CMD ["python", "-m", "uvicorn", "traffic_master_ai.defense.api.main:app", "--hos
 | `TM_BLOCK_TTL_SECONDS` | 차단 세션 TTL (초) | 1800 |
 | `TM_S3_GRACE_TTL_SECONDS` | VQA 유예 기간 (초) | 180 |
 | `TM_POLICY_CACHE_SECONDS` | 정책 캐시 유효 시간 (초) | 5 |
-| `TM_CHALLENGE_TTL_SECONDS` | VQA 챌린지 만료 시간 (초) | 15 |
+| `TM_CHALLENGE_TTL_SECONDS` | VQA 만료 시간 (초) | 15 |
 | `TM_CHALLENGE_VERIFY_TIMEOUT_MS` | VQA 검증 타임아웃 (ms) | 200 |
-| `TM_CHALLENGE_MAX_ATTEMPTS` | VQA 챌린지 최대 시도 횟수 | 2 |
+| `TM_CHALLENGE_MAX_ATTEMPTS` | VQA 최대 시도 횟수 | 2 |
 | `TM_CHALLENGE_HALT_SECONDS` | 초과 시 임시 잠금 시간 (초) | 30 |
 | `TM_S3_VERIFY_UNAVAILABLE_MODE` | VQA 불가 시 동작 모드 | `fail_close` |
 | `TM_THROTTLE_DELAY_MS_T1` | T1 티어 딜레이 주입 (ms) | 80 |
@@ -326,6 +326,20 @@ sequenceDiagram
     BE-->>C: 응답 반환
 ```
 
+#### Case C: VQA 전용 경로 — 직접 라우팅 (Public)
+사용자가 VQA를 수행하기 위해 AI 서버와 직접 통신하는 경로입니다. 이 경로는 백엔드를 거치지 않고 Istio Gateway가 AI 서버로 직접 트래픽을 넘깁니다.
+
+```mermaid
+sequenceDiagram
+    participant C as Client (Browser)
+    participant G as Istio / Envoy
+    participant AI as AI Defense Server
+
+    C->>G: POST /challenge/start (VQA 시작)
+    G->>AI: Direct Routing (VirtualService)
+    AI-->>C: VQA 파라미터 반환
+```
+
 ### 6.2. 트래픽 검사 범위 (Selective Scope)
 
 AI 서버는 전사 모든 API를 관할하지 않습니다. **"보호가 필요한 핵심 API(Critical API)"**에 대해서만 선택적으로 판정을 수행하며, 그 외의 트래픽은 AI 서버의 부하를 줄이기 위해 원천적으로 바이패스하는 것을 원칙으로 합니다.
@@ -335,8 +349,11 @@ AI 서버는 전사 모든 API를 관할하지 않습니다. **"보호가 필요
 | **Critical (Red)** | 리스크 검사 대상 | `/api/payment`, `/api/order`, `/api/user/*` (POST/PUT) | **적극 개입** (동기 판정) |
 | **Normal (Green)** | 비관리 대상 | `/static/*`, `/api/products` (GET), `/api/health` | **완전 배제** (Bypass) |
 
+#### [Istio] 라우팅 차이점 요약
+1. **Internal (Authz)**: `/evaluate`는 Adapter가 AI 서버를 내부적으로 호출합니다. 클라이언트에 노출되지 않습니다.
+2. **External (Public)**: `/challenge/*`는 브라우저가 직접 호출합니다. `VirtualService`를 통해 AI 서버 파드로 직접 연결되어야 합니다.
+
 #### [Istio] 관리 대상 API 한정 설정 (예시)
-인프라 팀에서는 아래와 같이 보호가 필요한 경로에 대해서만 `AuthorizationPolicy`를 적용해 주시기 바랍니다.
 ```yaml
 spec:
   action: CUSTOM
@@ -353,7 +370,7 @@ spec:
 ---
 
 ## 7. API 상세 명세
-AI 서버의 고정 인터페이스 정의입니다. 상세 스키마는 서버 기동 후 `/docs`에서 확인할 수 있습니다.
+AI 서버의 고정 인터페이스 정의입니다. 상세 스키마는 서버 기동 후 `/docs` 나 `/redoc`에서 확인할 수 있습니다.
 
 ---
 
@@ -393,14 +410,14 @@ Authz Adapter에서 AI 서버로 호출하는 핵심 API입니다.
 | 필드 | 설명 | 비고 |
 |---|---|---|
 | `action` | `NONE` | 정상 트래픽. 추가 조치 없음. |
-| `action` | `CHALLENGE` | 봇 의심. 클라이언트에 VQA 챌린지 요구헤더 전송 필요. |
+| `action` | `CHALLENGE` | 봇 의심. 클라이언트에 VQA 요구헤더 전송 필요. |
 | `action` | `THROTTLE` | 과다 요청. `x-throttle-ms` 만큼 클라이언트 응답 지연 권장. |
 | `action` | `BLOCK` | 확정 봇. 즉시 403 Forbidden 처리. |
 
 ---
 
-### 7.2. 챌린지 시작 API (`POST /challenge/start`)
-브라우저에서 챌린지 화면 진입 시 호출하여 챌린지 정보를 가져옵니다.
+### 7.2. VQA 시작 API (`POST /challenge/start`)
+브라우저에서 VQA 화면 진입 시 호출하여 VQA 정보를 가져옵니다.
 
 #### Request
 ```json
@@ -428,8 +445,8 @@ Authz Adapter에서 AI 서버로 호출하는 핵심 API입니다.
 
 ---
 
-### 7.3. 챌린지 검증 API (`POST /challenge/verify`)
-클라이언트가 수행한 챌린지 결과를 제출하여 검증받습니다.
+### 7.3. VQA 검증 API (`POST /challenge/verify`)
+클라이언트가 수행한 VQA 결과를 제출하여 검증받습니다.
 
 #### Request
 ```json
