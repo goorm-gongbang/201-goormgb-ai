@@ -49,12 +49,17 @@ CMD ["python", "-m", "uvicorn", "traffic_master_ai.defense.api.main:app", "--hos
 ### 2.2. 필수 환경 변수 (Runtime Config)
 파드(Pod) 기동 시 아래 변수들을 반드시 주입해 주세요. **특히 Redis는 실전 엔진 가동을 위한 필수 사항입니다.**
 
-| 변수명 | 설명 | 비고 |
-| :--- | :--- | :--- |
-| `TM_REDIS_URL` | 상태 공유용 Redis 주소 | 예: `redis://redis-ai.data.svc.cluster.local:6379/0` (필수) |
-| `TM_BACKEND_SANCTION_URL` | 백엔드 제재 요청 API | 백엔드 주소 확정 시 주입 (미주입 시 기능만 비활성화됨) |
-| `AWS_S3_BUCKET` | Audit 로그 적재용 버킷 | IAM Role 기반 접근 권장 |
-| `APP_PORT` | 서버 바인드 포트 | 기본값 `8000` |
+| 구분 | 변수명 | 설명 | 기본값 / 비고 |
+| :--- | :--- | :--- | :--- |
+| **Core** | `TM_REDIS_URL` | 상태 공유 및 차단 세션 관리용 Redis | `redis://...` (필수) |
+| **Core** | `TM_BACKEND_SANCTION_URL` | 백엔드 유저 제재(Ban) API 주소 | 미주입 시 비활성 |
+| **Infra** | `AWS_S3_BUCKET` | 오프라인 분석용 Audit 로그 버킷 | IAM Role 권장 |
+| **LLM** | `TM_OFFLINE_LLM_API_KEY` | 오프라인 최적화용 LLM API Key | `OPENAI_API_KEY`와 호환 |
+| **LLM** | `TM_OFFLINE_LLM_ENDPOINT` | LLM API 엔드포인트 세팅 | Gateway 사용 시 필요 |
+| **LLM** | `TM_OFFLINE_LLM_MODEL` | 분석에 사용할 모델명 | `gpt-5-mini` (기본) |
+| **Tuning** | `TM_T0_MAX` / `TM_T1_MAX` | 티어별 위험도 차단 임계치 | 0.20 / 0.50 (기본) |
+| **Tuning** | `TM_SESSION_STATE_TTL_SECONDS` | 세션 유지 시간 (초) | 1800 (기본) |
+| **System** | `APP_PORT` / `CI` | 포트 설정 및 CI 모드 활성화 | 8000 / False (기본) |
 
 ---
 
