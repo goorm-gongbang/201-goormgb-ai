@@ -189,6 +189,10 @@ AI Defense 코드에 `RedisStateStore`가 **이미 구현**되어 있습니다. 
   "defense_tier": "T0",
   "risk_score": 0.12,
   "challenge_fail_count": 0,
+  "vqa_required": false,
+  "vqa_passed": false,
+  "vqa_attempt_count": 0,
+  "active_challenge_id": null,
   "policy_version": "v2.0.0-mvp"
 }
 ```
