@@ -87,18 +87,30 @@ class RedisStateStore(RuntimeStateStore):
 def build_runtime_store_from_env() -> tuple[RuntimeStateStore, str]:
     """Build runtime state store from environment settings.
 
+    Requires TM_REDIS_URL to be set for the dev/prod environment.
+    Fallback to In-Memory is only permitted in CI/CD (smoke tests).
+
     Returns:
         Tuple of (store, backend_name).
     """
     ttl = int(os.getenv("TM_SESSION_STATE_TTL_SECONDS", "1800"))
     redis_url = os.getenv("TM_REDIS_URL", "").strip()
+    is_ci = os.getenv("CI", "false").lower() == "true"
 
     if redis_url:
         try:
             store = RedisStateStore(redis_url=redis_url, ttl_seconds=ttl)
             return store, "redis"
         except Exception:
-            # Fallback is intentional for local development.
-            pass
+            if not is_ci:
+                raise
+            # If in CI, allow fallback if redis init fails
+
+    if not redis_url and not is_ci:
+        # Strict enforcement for real environments
+        raise ValueError(
+            "TM_REDIS_URL is strictly required for non-CI environments. "
+            "In-memory fallback is only permitted when CI=true."
+        )
 
     return InMemoryStateStore(ttl_seconds=ttl), "memory"
