@@ -288,7 +288,12 @@ ETL 모듈(`etl_worker.py`) **구현 완료**. S3에 적재된 JSONL 데이터�
 
 ## 6. 네트워크 및 Istio 연동 명세
 
-### 6.1. 전체 트래픽 흐름 (Sequence Diagram)
+### 6.1. 전체 트래픽 흐름 (Red/Green Selective Inspection)
+
+AI 서버는 모든 트래픽을 검사하지 않고, 중요도에 따라 선택적으로 개입하는 **하이브리드 검사 구조**를 가집니다.
+
+#### Case A: Critical API (Red) — 실시간 검사 경로
+결제, 정보 변경 등 중요도가 높은 `POST` 요청은 반드시 AI 서버의 판정을 거칩니다.
 
 ```mermaid
 sequenceDiagram
@@ -307,17 +312,42 @@ sequenceDiagram
     BE-->>C: 응답 반환
 ```
 
-### 6.2. 트래픽 검사 경로 및 로직
-AI 서버는 실시간 판정과 챌린지 검증이라는 두 가지 핵심 역할을 수행합니다.
+#### Case B: Normal API (Green) — 바이패스 경로
+정적 리소스나 단순 `GET` 조회 요청은 AI 서버를 거치지 않고 백엔드로 직접 연결되어 성능을 최적화합니다.
 
-#### 1) 실시간 판정 (`POST /evaluate`)
-*   **Adapter 로직**: 모든 `POST /api/*` 요청(특히 쓰기 작업)에 대해 AI 서버를 호출하고, 응답의 `allow` 및 `headers_to_add`를 처리합니다.
-*   **권장 타임아웃**: 800ms (AI 서버 장애 시 `fail-open` 처리 필수)
+```mermaid
+sequenceDiagram
+    participant C as Client (User)
+    participant G as Istio / Envoy
+    participant BE as Backend API
 
-#### 2) 챌린지 엔드포인트 (`/challenge/*`)
-클라이언트(브라우저)에서 AI 서버로 직접 통신하는 경로입니다. Istio `VirtualService`를 통해 AI 서버로 직접 라우팅되어야 합니다.
-*   `POST /challenge/start`: 챌린지 발급
-*   `POST /challenge/verify`: 챌린지 결과 검증
+    C->>G: API 요청 (e.g. GET /api/products)
+    G->>BE: 원본 요청 전달 (Bypass AI)
+    BE-->>C: 응답 반환
+```
+
+### 6.2. 트래픽 검사 로직 및 구분 (Red vs Green)
+
+Istio `AuthorizationPolicy` 설정을 통해 어떤 요청을 검사할지 결정합니다.
+
+| 구분 | 성격 | 대상 (예시) | 동작 방식 |
+|---|---|---|---|
+| **Critical (Red)** | 데이터 변경, 민감 동작 | `POST`, `PUT`, `DELETE` 요청 | **Inspect**: AI 서버 판정 필수 (Latency ~15ms) |
+| **Normal (Green)** | 단순 조회, 퍼블릭 데이터 | `GET`, `OPTIONS`, 정적 파일 | **Bypass**: AI 서버 거치지 않음 (Latency 0ms) |
+
+#### [Istio] Selective Inspection 설정 (예시)
+```yaml
+spec:
+  action: CUSTOM
+  provider:
+    name: ai-defense-authz
+  rules:
+  - to:
+    - operation:
+        paths: ["/api/*"]
+        notPaths: ["/api/health", "/api/metrics"]
+        methods: ["POST", "PUT", "DELETE"] # Critical (Red) API 지정
+```
 
 ---
 
