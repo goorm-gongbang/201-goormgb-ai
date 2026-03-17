@@ -284,59 +284,101 @@ ETL 모듈(`etl_worker.py`) **구현 완료**. S3에 적재된 JSONL 데이터�
 
 ## 6. 네트워크 및 Istio 연동 명세
 
-### 6.1. 트래픽 검사 경로
-모든 실시간 트래픽은 백엔드에 닿기 전 AI 서버의 `/evaluate`를 거쳐야 합니다. 인프라 팀에서는 **Go 기반 Authz Adapter**를 구축하여 아래와 같이 연동해 주세요.
+### 6.1. 전체 트래픽 흐름 (Sequence Diagram)
 
-*   **핵심 엔드포인트**: `POST /evaluate` (동기식 판정)
-*   **Adapter 로직**: 모든 `POST /api/*` 요청에 대해 AI 서버를 호출하고, 응답의 `allow` 및 `headers_to_add`를 처리합니다.
+```mermaid
+sequenceDiagram
+    participant C as Client (User)
+    participant G as Istio / Envoy
+    participant A as Authz Adapter (Go)
+    participant AI as AI Defense Server
+    participant BE as Backend API
+
+    C->>G: API 요청 (e.g. POST /api/payment)
+    G->>A: CheckRequest
+    A->>AI: POST /evaluate (Session/Path/Method)
+    AI-->>A: EvaluateResponse (allow=true, action=NONE)
+    A-->>G: OK (+ headers_to_add)
+    G->>BE: 원본 요청 전달 (+ x-defense-* headers)
+    BE-->>C: 응답 반환
+```
+
+### 6.2. 트래픽 검사 경로 및 로직
+AI 서버는 실시간 판정과 챌린지 검증이라는 두 가지 핵심 역할을 수행합니다.
+
+#### 1) 실시간 판정 (`POST /evaluate`)
+*   **Adapter 로직**: 모든 `POST /api/*` 요청(특히 쓰기 작업)에 대해 AI 서버를 호출하고, 응답의 `allow` 및 `headers_to_add`를 처리합니다.
 *   **권장 타임아웃**: 800ms (AI 서버 장애 시 `fail-open` 처리 필수)
 
-#### [Istio] VirtualService 설정 (Direct Routing)
-VQA 인증이나 행동 분석 데이터 적재(`POST /challenge/*`)는 백엔드를 거치지 않고 AI 서버로 직접 전달되어야 합니다.
-```yaml
-spec:
-  http:
-  - match:
-    - uri:
-        prefix: /challenge/
-    route:
-    - destination:
-        host: ai-defense-service
-        port:
-          number: 8000
-```
-
-#### [Istio] AuthorizationPolicy 설정
-```yaml
-spec:
-  action: CUSTOM
-  provider:
-    name: ai-defense-authz
-  rules:
-  - to:
-    - operation:
-        paths: ["/api/*"]
-        notPaths: ["/api/health", "/api/metrics"]
-        methods: ["POST"]
-```
+#### 2) 챌린지 엔드포인트 (`/challenge/*`)
+클라이언트(브라우저)에서 AI 서버로 직접 통신하는 경로입니다. Istio `VirtualService`를 통해 AI 서버로 직접 라우팅되어야 합니다.
+*   `POST /challenge/start`: 챌린지 발급
+*   `POST /challenge/verify`: 챌린지 결과 검증
 
 ---
 
-## 7. API 엔드포인트 및 모니터링
+## 7. API 상세 명세
+AI 서버의 고정 인터페이스 정의입니다. 상세 스키마는 서버 기동 후 `/docs`에서 확인할 수 있습니다.
 
-### 7.1. 헬스 체크 및 메트릭
-*   **Liveness**: `GET /healthz`
-*   **Readiness**: `GET /readyz`
-*   **모니터링**: `GET /metrics` (Prometheus 연동용)
-    *   커스텀 메트릭 `ai_defense_evaluate_total`을 통해 실시간 방어 현황 파악 가능
+---
 
-### 7.2. API 상세 문서 (Swagger)
+### 7.1. 실시간 판정 API (`POST /evaluate`)
+Authz Adapter에서 AI 서버로 호출하는 핵심 API입니다.
+
+#### Request Schema
+```json
+{
+  "session_id": "sess-12345",         // [필수] 세션 식별자
+  "trace_id": "req-abcd-efgh",        // [권장] 요청 트레이스 ID
+  "path": "/api/v1/payment",          // [필수] 대상 API 경로
+  "method": "POST",                   // [필수] HTTP 메소드
+  "user_id": "user-99",               // [권장] JWT에서 추출한 userId (제재 연동용)
+  "timestamp": 1710672000000,         // [필수] 현재 Unix Epoch (ms)
+  "headers": {                        // [선택] 필요 시 원본 헤더 전달
+    "User-Agent": "Mozilla/5.0..."
+  }
+}
+```
+
+#### Response Schema
+```json
+{
+  "allow": true,                      // [필수] 통과 여부 (false 시 403 차단)
+  "session_id": "sess-12345",
+  "action": "NONE",                   // [필수] 수행 액션 (NONE, CHALLENGE, THROTTLE, BLOCK)
+  "headers_to_add": {                 // [필수] 클라이언트 응답에 추가할 헤더
+    "x-defense-tier": "T0",
+    "x-defense-action": "none"
+  },
+  "latency_ms": 15,                   // AI 엔진 처리 소요 시간
+  "decision_id": "dec-xyz-789"        // 판정 고유 ID (로그 추적용)
+}
+```
+
+| 필드 | 설명 | 비고 |
+|---|---|---|
+| `action` | `NONE` | 정상 트래픽. 추가 조치 없음. |
+| `action` | `CHALLENGE` | 봇 의심. 클라이언트에 VQA 챌린지 요구헤더 전송 필요. |
+| `action` | `THROTTLE` | 과다 요청. `x-throttle-ms` 만큼 클라이언트 응답 지연 권장. |
+| `action` | `BLOCK` | 확정 봇. 즉시 403 Forbidden 처리. |
+
+---
+
+## 8. 모니터링 및 운영
+
+### 8.1. 헬스 체크 및 메트릭
+*   **Liveness**: `GET /healthz` (200 OK)
+*   **Readiness**: `GET /readyz` (200 OK)
+*   **모니터링**: `GET /metrics` (Prometheus Scrapping)
+    *   `ai_defense_evaluate_total`: 실시간 판정 통계 (decision label로 차단율 모니터링 가능)
+
+### 8.2. API 상세 문서 (Swagger)
 서버 배포 후 아래 경로에서 상세 스키마를 확인하실 수 있습니다.
 *   `GET /docs` (Swagger UI)
 
 ---
 
-## 8. 클라우드 팀 체크리스트 (최종)
+## 9. 클라우드 팀 체크리스트 (최종)
 
 ### MVP (즉시)
 - [ ] **Redis 인스턴스 프로비저닝**: `TM_REDIS_URL` 환경변수 주입 및 통신 확인
