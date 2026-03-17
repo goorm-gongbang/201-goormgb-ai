@@ -1,19 +1,24 @@
-# AI Defense Server: Cloud Team CI/CD & Deployment Guide
+# AI Defense Server: Cloud Team 통합 배포 및 연동 가이드 (Master Guide)
 
-## 1. 개요 (Overview)
-본 문서는 Hybrid Architecture 확정에 따라, 클라우드/인프라 팀이 **AI Defense Server (Python FastAPI)**를 실제 운영 환경(EKS 등)에 배포하고 Istio Envoy Proxy와 연동하기 위해 필요한 **CI/CD 파이프라인 구성 요건, 컨테이너 빌드 명세, 그리고 API 인터페이스 계약**을 정의합니다.
+> **대상**: Cloud/Infra 팀 (Deployment, Istio, Authz Adapter 담당)
+> **최종 업데이트**: 2026-03-17
+> **버전**: v2.1 (V2 실전 엔진 및 빌드 수정 반영)
+
+## 1. 개요
+본 문서는 AI Defense Server(V2)를 운영 환경에 배포하고, Istio Envoy Proxy와 연동하기 위한 **모든 요건(CI/CD, 인프라 설정, API 계약)**을 하나로 통합한 마스터 가이드입니다.
 
 ---
 
-## 2. 애플리케이션 리포지토리 및 빌드 명세
+## 2. 애플리케이션 배포 및 환경 설정
 
-### 2.1. Dockerfile (컨테이너 규격)
-AI Defense 서버는 `python:3.12-slim` 베이스 이미지를 사용하며, `uvicorn`을 통해 비동기 웹서버로 구동됩니다.
+### 2.1. Docker 이미지 빌드
+AI 팀이 제공하는 `Dockerfile`을 활용하여 이미지를 빌드합니다. `dev` 브랜치 머지 시 자동 빌드되도록 설정 부탁드립니다.
 
-**소스 트리 위치:** `src/traffic_master_ai/defense/api/` (또는 프로젝트 루트 구조에 따름)
+*   **Dockerfile 위치**: `src/traffic_master_ai/defense/api/Dockerfile`
+*   **빌드 컨텍스트**: 프로젝트 루트 (Root) 권장
 
 ```dockerfile
-# Dockerfile.ai-defense
+# src/traffic_master_ai/defense/api/Dockerfile
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -21,18 +26,17 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Install build dependencies and optimize caching
+# Install build dependencies and include README for metadata generation
 COPY pyproject.toml README.md ./
 
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir "hatchling" \
-    && pip install --no-cache-dir --no-deps -e ".[defense_api]" \
-    || pip install --no-cache-dir fastapi uvicorn redis pydantic
+    && pip install --no-cache-dir ".[defense_api]"
 
-# Copy source code after dependencies are installed
+# Copy source code
 COPY src ./src
 
-# Final installation to ensure all entry points are set correctly
+# Install again to ensure entry points are mapped correctly (if needed by hatch)
 RUN pip install --no-cache-dir ".[defense_api]"
 
 # FastAPI 기본 포트
@@ -42,77 +46,79 @@ EXPOSE 8000
 CMD ["python", "-m", "uvicorn", "traffic_master_ai.defense.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
-### 2.2. CI/CD 환경 변수 요구사항
-파드 기동시 주입되어야 할 주요 환경 변수입니다. EKS Secret / ConfigMap으로 마운팅 부탁드립니다.
+### 2.2. 필수 환경 변수 (Runtime Config)
+파드(Pod) 기동 시 아래 변수들을 반드시 주입해 주세요. **특히 Redis는 실전 엔진 가동을 위한 필수 사항입니다.**
 
-| Env Variable | Description | Default | 비고 |
-| :--- | :--- | :--- | :--- |
-| `REDIS_HOST` | 상태 관리를 위한 Redis 클러스터 주소 | `localhost` | Prod 환경 Redis Endpoint 필수 |
-| `REDIS_PORT` | Redis 포트 | `6379` | |
-| `AWS_S3_BUCKET` | 오프라인 분석용 로그 적재 버킷 | - | IAM OIDC / ServiceAccount Role 바인딩 필요 |
-| `TM_S3_VERIFY_UNAVAILABLE_MODE` | VQA 인프라 장애 시 Fallback 정책 | `fail_open` | `fail_open` 권장 |
-| `TM_BACKEND_SANCTION_URL` | 백엔드 제재 API 주소 | - | 예: `http://backend-svc:8080/api/v1/internal/sanctions` |
+| 변수명 | 설명 | 비고 |
+| :--- | :--- | :--- |
+| `TM_REDIS_URL` | 상태 공유용 Redis 주소 | 예: `redis://redis-ai.data.svc.cluster.local:6379/0` (필수) |
+| `TM_BACKEND_SANCTION_URL` | 백엔드 제재 요청 API | 백엔드 주소 확정 시 주입 (미주입 시 기능만 비활성화됨) |
+| `AWS_S3_BUCKET` | Audit 로그 적재용 버킷 | IAM Role 기반 접근 권장 |
+| `APP_PORT` | 서버 바인드 포트 | 기본값 `8000` |
 
 ---
 
-## 3. API 엔드포인트 명세 (L7 라우팅 및 Health Check)
+## 3. 네트워크 및 Istio 연동 명세
 
-클라우드 팀(Ingress/ALB/Envoy 관점)에서 열어주어야 하거나 모니터링해야 할 엔드포인트 목록입니다. 모든 로직은 단일 포트(`8000`)에서 서빙됩니다.
+### 3.1. 트래픽 검사 경로 (Istio 연동)
+모든 실시간 트래픽은 백엔드에 닿기 전 AI 서버의 `/evaluate`를 거쳐야 합니다. 인프라 팀에서는 **Go 기반 Authz Adapter**를 구축하여 아래와 같이 연동해 주세요.
 
-### 3.1. 프로브 (Liveness / Readiness)
-컨테이너 오케스트레이션(K8s) 상태 체크용입니다.
-*   `GET /healthz` : 200 OK
-*   `GET /readyz` : 200 OK
+*   **핵심 엔드포인트**: `POST /evaluate` (동기식 판정)
+*   **Adapter 로직**: 모든 `POST /api/*` 요청에 대해 AI 서버를 호출하고, 응답의 `allow` 및 `headers_to_add`를 처리합니다.
 
-### 3.2. Istio Envoy ext_authz 연동 엔드포인트
-각 트래픽이 백엔드에 닿기 전, Envoy가 동기식으로 호출하여 검사를 수행하는 핵심 엔드포인트입니다.
-*   **Endpoint:** `POST /evaluate`
-*   **Request Schema (Envoy Adapter -> AI):**
-```json
-{
-  "session_id": "string",
-  "path": "string",
-  "method": "string",
-  "timestamp": 1710500000000,
-  "flow_state": "S4",
-  "telemetry_features": {
-    "tremorStdDev": 0.5,
-    "linearityRatio": 0.9,
-    "avgVelocity": 120.5
-  }
-}
-```
-*   **Response Schema (AI -> Envoy Adapter):**
-```json
-{
-  "allow": true,
-  "action": "THROTTLE",
-  "headers_to_add": {
-    "x-defense-action": "throttle",
-    "x-throttle-ms": "300"
-  }
-}
+#### [Istio] VirtualService 설정 (Direct Routing)
+VQA 인증이나 행동 분석 데이터 적재(`POST /challenge/*`)는 백엔드를 거치지 않고 AI 서버로 직접 전달되어야 합니다.
+```yaml
+spec:
+  http:
+  - match:
+    - uri:
+        prefix: /challenge/
+    route:
+    - destination:
+        host: ai-defense-service
+        port:
+          number: 8000
 ```
 
-### 3.3. 프론트엔드 직접 통신 엔드포인트 (Backend Bypass 대상)
-프론트엔드에서 발생한 트래픽이 **Istio(Ingress Gateway)** 대문을 통과한 후, 백엔드(Spring)로 가지 않고 **AI 서버로 다이렉트 패싱(Direct Forwarding)** 되는 엔드포인트들입니다.
+#### [Istio] AuthorizationPolicy 설정
+```yaml
+spec:
+  action: CUSTOM
+  provider:
+    name: ai-defense-authz
+  rules:
+  - to:
+    - operation:
+        paths: ["/api/*"]
+        notPaths: ["/api/health", "/api/metrics"]
+        methods: ["POST"]
+```
 
-*   `POST /challenge/start` : VQA 캡챠 생성/요청
-*   `POST /challenge/verify`: VQA 캡챠 결과 검증
-*   `POST /challenge/event` : 마우스 궤적 원본(Raw Telemetry) 비동기 적재
+---
 
-### 3.4. Swagger UI 및 API 전문 (OpenAPI v2)
-전체 API 모델 상세 스키마는 Swagger UI를 통해 확인할 수 있습니다. 인프라 설정 시 개발망에만 노출되도록 제한 권장합니다.
+## 4. API 엔드포인트 및 모니터링
+
+### 4.1. 헬스 체크 및 메트릭
+*   **Liveness**: `GET /healthz`
+*   **Readiness**: `GET /readyz`
+*   **모니터링**: `GET /metrics` (Prometheus 연동용)
+    *   커스텀 메트릭 `ai_defense_evaluate_total`을 통해 실시간 방어 현황 파악 가능
+
+### 4.2. API 상세 문서 (Swagger)
+서버 배포 후 아래 경로에서 상세 스키마를 확인하실 수 있습니다.
 *   `GET /docs` (Swagger UI)
-*   `GET /openapi.json` (OpenAPI Spec - 런타임에서 자동 생성됨)
 
 ---
 
-## 4. 클라우드 인프라 아키텍처 지원 요청 (Action Items)
+## 5. 클라우드 팀 체크리스트 (최종)
 
-1.  **Direct Routing (VQA & Telemetry):**
-    VQA 인증 팝업이나 행동 수집 등 AI 방어 서버가 직접 처리해야 하는 API 통신(`POST /challenge/*`)은 백엔드(Spring API Gateway)로 라우팅되지 않아야 합니다. **Istio Ingress Gateway 에 `VirtualService` 라우팅 룰을 설정**하여, `/challenge/*` 패스로 들어오는 트래픽은 우리 AI 방어 파드(Service)로 곧장 Forwarding 되도록 터널을 뚫어 주세요.
-2.  **IAM / 보안 그룹:** 
-    AI 파드가 S3 버킷(로그 적재용)과 ElastiCache Redis에 접근할 수 있도록 권한 정책(Policy) 부여 확인을 요청합니다.
-3.  **로드 밸런싱 최적화:** 
-    `POST /evaluate`는 모든 트래픽의 병목(Bottleneck)이 될 수 있습니다. gRPC 대신 HTTP REST를 사용하므로 HTTP/2 Keep-Alive 및 Connection Pool 튜닝을 프록시 단에 설정해 주시면 감사하겠습니다.
+- [ ] **Redis 준비**: `TM_REDIS_URL` 환경변수 주입 및 통신 확인
+- [ ] **Istio 설정**: `AuthorizationPolicy` 및 `VirtualService` 반영
+- [ ] **Go Adapter 구축**: AI 서버 `/evaluate` 호출부 구현 및 타임아웃(800ms 권장) 설정
+- [ ] **모니터링 연동**: Prometheus에서 `/metrics` 스크래핑 활성화
+- [ ] **장애 정책**: AI 서버 장애 시 `fail-open`(트래픽 허용) 처리 확인
+
+---
+> [!IMPORTANT]
+> **핵심 요약**: 클라우드 팀은 본 문서의 내용을 바탕으로 **이미지 배포, 환경변수 설정, Istio 라우팅** 세 가지만 완수하시면 AI Defense V2 엔진이 즉시 가동됩니다.

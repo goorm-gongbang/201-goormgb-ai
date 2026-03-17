@@ -55,8 +55,7 @@ instrumentator = Instrumentator()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """FastAPI lifespan: Initialize Prometheus metrics on startup."""
-    instrumentator.instrument(app).expose(app)
+    """FastAPI lifespan: Startup/Shutdown hooks."""
     yield
 
 
@@ -69,6 +68,9 @@ app = FastAPI(
     ),
     lifespan=lifespan,
 )
+
+# [Gap Closing] Instrument app at the start (to allow middleware addition)
+instrumentator.instrument(app)
 
 _state_store, _state_backend = build_runtime_store_from_env()
 _audit = DefenseDecisionAuditLogger.from_env()
@@ -545,3 +547,10 @@ def _sync_mark_to_d0_runtime(*, req: RuntimeVqaMarkRequest, now_ms: int) -> None
         },
         is_allow=False,
     )
+
+@app.get("/metrics", tags=["infrastructure"])
+async def metrics():
+    """Expose Prometheus metrics."""
+    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+    from fastapi import Response
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
