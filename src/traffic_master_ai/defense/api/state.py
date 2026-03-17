@@ -21,32 +21,6 @@ class RuntimeStateStore(Protocol):
         """Write session state with TTL semantics."""
 
 
-class InMemoryStateStore(RuntimeStateStore):
-    """In-memory fallback store with TTL support."""
-
-    def __init__(self, ttl_seconds: int) -> None:
-        self.ttl_seconds = ttl_seconds
-        self._lock = Lock()
-        self._data: dict[str, tuple[RuntimeStateSnapshot, float]] = {}
-
-    def get(self, session_id: str) -> RuntimeStateSnapshot | None:
-        now = time.time()
-        with self._lock:
-            item = self._data.get(session_id)
-            if item is None:
-                return None
-            snapshot, expires_at = item
-            if expires_at <= now:
-                self._data.pop(session_id, None)
-                return None
-            return snapshot
-
-    def upsert(self, session_id: str, snapshot: RuntimeStateSnapshot) -> None:
-        expires_at = time.time() + self.ttl_seconds
-        with self._lock:
-            self._data[session_id] = (snapshot, expires_at)
-
-
 class RedisStateStore(RuntimeStateStore):
     """Redis-backed session state store.
 
@@ -86,6 +60,7 @@ class RedisStateStore(RuntimeStateStore):
 
 def build_runtime_store_from_env() -> tuple[RuntimeStateStore, str]:
     """Build runtime state store from environment settings.
+    Requires TM_REDIS_URL to be set for the dev/prod environment.
 
     Returns:
         Tuple of (store, backend_name).
@@ -93,12 +68,11 @@ def build_runtime_store_from_env() -> tuple[RuntimeStateStore, str]:
     ttl = int(os.getenv("TM_SESSION_STATE_TTL_SECONDS", "1800"))
     redis_url = os.getenv("TM_REDIS_URL", "").strip()
 
-    if redis_url:
-        try:
-            store = RedisStateStore(redis_url=redis_url, ttl_seconds=ttl)
-            return store, "redis"
-        except Exception:
-            # Fallback is intentional for local development.
-            pass
+    if not redis_url:
+        raise ValueError(
+            "TM_REDIS_URL is strictly required. In-memory fallback has been removed "
+            "to ensure distributed state consistency across pods."
+        )
 
-    return InMemoryStateStore(ttl_seconds=ttl), "memory"
+    store = RedisStateStore(redis_url=redis_url, ttl_seconds=ttl)
+    return store, "redis"
