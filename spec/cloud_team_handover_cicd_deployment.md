@@ -51,6 +51,7 @@ CMD ["python", "-m", "uvicorn", "traffic_master_ai.defense.api.main:app", "--hos
 | `REDIS_PORT` | Redis 포트 | `6379` | |
 | `AWS_S3_BUCKET` | 오프라인 분석용 로그 적재 버킷 | - | IAM OIDC / ServiceAccount Role 바인딩 필요 |
 | `TM_S3_VERIFY_UNAVAILABLE_MODE` | VQA 인프라 장애 시 Fallback 정책 | `fail_open` | `fail_open` 권장 |
+| `TM_BACKEND_SANCTION_URL` | 백엔드 제재 API 주소 | - | 예: `http://backend-svc:8080/api/v1/internal/sanctions` |
 
 ---
 
