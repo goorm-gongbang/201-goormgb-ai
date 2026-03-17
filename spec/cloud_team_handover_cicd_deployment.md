@@ -1,15 +1,80 @@
-# AI Defense Server: Cloud Team 통합 배포 및 연동 가이드 (Master Guide)
+# AI Defense Server: Cloud Team 통합 배포 및 인프라 가이드 (Master Guide)
 
-> **대상**: Cloud/Infra 팀 (Deployment, Istio, Authz Adapter 담당)
+> **대상**: Cloud/Infra 팀 (Deployment, Istio, Authz Adapter, Storage 담당)
 > **최종 업데이트**: 2026-03-17
-> **버전**: v2.1 (V2 실전 엔진 및 빌드 수정 반영)
+> **버전**: v3.0 (Storage/Infra 명세 통합 및 S3·PostgreSQL Phase 2 반영)
 
-## 1. 개요
-본 문서는 AI Defense Server(V2)를 운영 환경에 배포하고, Istio Envoy Proxy와 연동하기 위한 **모든 요건(CI/CD, 인프라 설정, API 계약)**을 하나로 통합한 마스터 가이드입니다.
+### 📌 읽기 가이드
+
+| 구분 | 섹션 | 설명 |
+|---|---|---|
+| **필독** | §1 저장소 전략 요약 | 전체 아키텍처에서 저장소 역할 분리 |
+| **필독** | §2 Docker 빌드 및 환경 변수 | 배포 및  환경변수 전체 목록 |
+| **필독** | §3 Redis | MVP 필수 — 코드 준비 완료, 인프라만 필요 |
+| **필독** | §4 S3 (Object Storage) | Prod 필수 — AI팀 코드 작성 예정 |
+| **필독** | §5 PostgreSQL | Prod 필수 — AI팀 ETL 코드 작성 예정 |
+| **필독** | §6 Istio 연동 명세 | Envoy Authz Adapter 설정 |
+| **필독** | §7 모니터링 | Prometheus, Swagger |
+| **필독** | §8 최종 체크리스트 | Cloud 팀 작업 항목 요약 |
 
 ---
 
-## 2. 애플리케이션 배포 및 환경 설정
+## 1. 저장소 전략 요약
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                    AI Defense Runtime                     │
+│                                                          │
+│  ┌──────────┐    ┌──────────┐    ┌───────────────────┐  │
+│  │ /evaluate │    │ /challenge│    │ Audit Logger      │  │
+│  │ 실시간판정 │    │ VQA 검증  │    │ (판정 기록)       │  │
+│  └────┬─────┘    └────┬─────┘    └────┬──────────────┘  │
+│       │               │               │                  │
+└───────┼───────────────┼───────────────┼──────────────────┘
+        │               │               │
+        ▼               ▼               ▼
+   ┌─────────┐    ┌─────────┐    ┌─────────────┐
+   │  Redis   │    │  Redis   │    │  JSONL File  │
+   │ 세션상태  │    │ 세션상태  │    │ (로컬 저장)  │
+   └─────────┘    └─────────┘    └──────┬──────┘
+                                        │ (prod: 주기적 업로드)
+                                        ▼
+                                   ┌─────────┐
+                                   │   S3     │
+                                   │ 아카이빙  │
+                                   └────┬────┘
+                                        │ ETL (CronJob)
+                                        ▼
+                                   ┌──────────┐
+                                   │PostgreSQL │
+                                   │ Analytics │
+                                   └──────────┘
+```
+
+| 레이어 | 용도 | 저장소 | 단계 |
+|---|---|---|---|
+| Runtime | 실시간 정책 상태 | **Redis** | MVP 필수 ✅ |
+| Audit 원본 | 불변 판정 증거 | JSONL → **S3** | Staging 이상 |
+| Raw Telemetry | VQA 포인터 이벤트 | JSONL → **S3** | Staging 이상 |
+| Analytics | KPI/튜닝/리포트 | **PostgreSQL** (JSONB) | Staging 이상 |
+
+### 계약 vs 권장 구분
+
+> 🔒 = AI 코드와 직접 연결되어 **반드시 지켜야** 하는 계약
+> 💡 = Cloud팀이 인프라 정책에 따라 **자율적으로 결정** 가능한 권장사항
+
+| 구분 | 항목 | 이유 |
+|---|---|---|
+| 🔒 계약 | env var 이름 (`TM_REDIS_URL`, `TM_S3_BUCKET` 등) | 코드에서 이 이름으로 읽음 |
+| 🔒 계약 | Redis key 패턴 (`tm:sess:{sessionId}`) | 코드가 이 패턴으로 읽기/쓰기 |
+| 🔒 계약 | S3 PutObject 권한 | 없으면 업로드 실패 |
+| 💡 권장 | Redis 인스턴스 타입·메모리·HA | `redis://` URL만 주면 됨 |
+| 💡 권장 | S3 버킷 이름·암호화·Lifecycle | 네이밍/보안 정책은 Cloud팀 자율 |
+| 💡 권장 | PG 인스턴스 타입·스토리지·백업 | `postgresql://` URL만 주면 됨 |
+
+---
+
+## 2. Docker 이미지 빌드 및 환경 변수
 
 ### 2.1. Docker 이미지 빌드
 AI 팀이 제공하는 `Dockerfile`을 활용하여 이미지를 빌드합니다. `dev` 브랜치 머지 시 자동 빌드되도록 설정 부탁드립니다.
@@ -46,30 +111,159 @@ EXPOSE 8000
 CMD ["python", "-m", "uvicorn", "traffic_master_ai.defense.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
-### 2.2. 필수 환경 변수 (Runtime Config)
-파드(Pod) 기동 시 아래 변수들을 반드시 주입해 주세요. **특히 Redis는 실전 엔진 가동을 위한 필수 사항입니다.**
+### 2.2. 환경 변수 전체 목록 (Runtime Config)
+파드(Pod) 기동 시 아래 변수들을 주입해 주세요. **MVP에서는 `TM_REDIS_URL`만 필수**이며, S3/PostgreSQL은 Staging 이상에서 주입합니다.
 
-| 구분 | 변수명 | 설명 | 기본값 / 비고 |
-| :--- | :--- | :--- | :--- |
-| **Core** | `TM_REDIS_URL` | 상태 공유 및 차단 세션 관리용 Redis | `redis://...` (필수) |
-| **Core** | `TM_BACKEND_SANCTION_URL` | 백엔드 유저 제재(Ban) API 주소 | 미주입 시 비활성 |
-| **Infra** | `AWS_S3_BUCKET` | 오프라인 분석용 Audit 로그 버킷 | IAM Role 권장 |
-| **LLM** | `TM_OFFLINE_LLM_API_KEY` | 오프라인 최적화용 LLM API Key | `OPENAI_API_KEY`와 호환 |
-| **LLM** | `TM_OFFLINE_LLM_ENDPOINT` | LLM API 엔드포인트 세팅 | Gateway 사용 시 필요 |
-| **LLM** | `TM_OFFLINE_LLM_MODEL` | 분석에 사용할 모델명 | `gpt-5-mini` (기본) |
-| **Tuning** | `TM_T0_MAX` / `TM_T1_MAX` | 티어별 위험도 차단 임계치 | 0.20 / 0.50 (기본) |
-| **Tuning** | `TM_SESSION_STATE_TTL_SECONDS` | 세션 유지 시간 (초) | 1800 (기본) |
-| **System** | `APP_PORT` / `CI` | 포트 설정 및 CI 모드 활성화 | 8000 / False (기본) |
+| 구분 | 변수명 | 설명 | MVP 필수 여부 | 기본값 / 비고 |
+| :--- | :--- | :--- | :---: | :--- |
+| **Core** | `TM_REDIS_URL` | 실시간 세션 상태 관리용 Redis | ✅ 필수 | `redis://<host>:<port>/<db>` |
+| **Core** | `TM_BACKEND_SANCTION_URL` | 백엔드 유저 제재(Ban) API 주소 | 선택 | 미주입 시 비활성 |
+| **Storage** | `TM_S3_BUCKET` | Audit 로그 아카이빙용 S3 버킷명 | Staging+ | 미주입 시 로컬 파일 모드 |
+| **Storage** | `TM_S3_PREFIX` | S3 객체 Key prefix | Staging+ | `ai-defense/audit/` |
+| **Storage** | `TM_S3_REGION` | S3 버킷 리전 | Staging+ | Cloud팀 결정 후 전달 |
+| **Storage** | `TM_PG_URL` | PostgreSQL 접속 URL | Staging+ | `postgresql://user:pass@host:5432/db` |
+| **LLM** | `TM_OFFLINE_LLM_API_KEY` | 오프라인 최적화용 LLM API Key | 선택 | `OPENAI_API_KEY`와 호환 |
+| **LLM** | `TM_OFFLINE_LLM_ENDPOINT` | LLM API 엔드포인트 | 선택 | Gateway 사용 시 필요 |
+| **LLM** | `TM_OFFLINE_LLM_MODEL` | 사용할 LLM 모델명 | 선택 | `gpt-5-mini` (기본) |
+| **Tuning** | `TM_T0_MAX` / `TM_T1_MAX` | 티어별 위험도 차단 임계치 | 선택 | 0.20 / 0.50 (기본) |
+| **Tuning** | `TM_SESSION_STATE_TTL_SECONDS` | 세션 유지 시간 (초) | 선택 | 1800 (기본) |
+| **System** | `APP_PORT` | 서버 바인드 포트 | 선택 | 8000 (기본) |
+| **System** | `CI` | CI 환경 여부 (In-Memory fallback) | 선택 | `true` 시 Redis 미사용 |
 
 ---
 
-## 3. 네트워크 및 Istio 연동 명세
+## 3. Redis — MVP 필수 (코드 준비 완료 ✅)
 
-### 3.1. 트래픽 검사 경로 (Istio 연동)
+### 3.1 현재 상태
+AI Defense 코드에 `RedisStateStore`가 **이미 구현**되어 있습니다. Cloud 팀은 인스턴스만 프로비저닝하면 됩니다.
+
+### 3.2 연결 방식
+
+| 항목 | 값 |
+|---|---|
+| 환경변수 | `TM_REDIS_URL` |
+| 형식 | `redis://<host>:<port>/<db>` |
+| 미설정 시 | In-Memory fallback (개발 전용, Pod 간 상태 공유 불가) |
+| Python 클라이언트 | `redis>=5.0.0` |
+| 서버 호환 버전 | **Redis 6.2 이상** 권장 |
+
+### 3.3 키 패턴 및 데이터
+
+| 항목 | 값 |
+|---|---|
+| Key pattern | `tm:sess:{sessionId}` |
+| TTL | 1800초 (`TM_SESSION_STATE_TTL_SECONDS`로 조정 가능) |
+| Value 형식 | JSON (Pydantic model 직렬화) |
+| 메모리 추정 | key당 ~1KB → 10만 세션 ≈ 100MB |
+
+```json
+{
+  "session_id": "sess-abc123",
+  "flow_state": "S2",
+  "defense_tier": "T0",
+  "risk_score": 0.12,
+  "challenge_fail_count": 0,
+  "policy_version": "v2.0.0-mvp"
+}
+```
+
+### 3.4 인프라 스펙 권장
+
+| 항목 | 권장값 |
+|---|---|
+| 인스턴스 타입 | Managed Redis (ElastiCache, Memorystore 등) |
+| 메모리 | 최소 256MB (초기), 확장 가능하게 |
+| 고가용성 | replica 1개 이상 (failover) |
+| 네트워크 | AI Defense Pod와 같은 VPC/네임스페이스 |
+| 장기 백업 | 불필요 (runtime cache 성격) |
+
+---
+
+## 4. S3 (Object Storage) — Staging 이상 필요
+
+### 4.1 용도
+- Audit log (판정 기록) 아카이빙 — append-only, 불변 증거
+- Raw telemetry (VQA 포인터 이벤트) 원본 보존
+
+### 4.2 현재 상태
+현재는 **로컬 JSONL 파일**에만 기록 중. AI팀에서 S3 자동 업로드 코드(`S3Uploader`)를 `dev` 브랜치에 구현 중이며, 완료 후 코드와 함께 env var 스펙이 확정됩니다. **Cloud팀은 하기 스펙으로 인프라만 선행 준비**해 주세요.
+
+### 4.3 환경변수 스펙
+
+| 변수 | 예상값 | 설명 |
+|---|---|---|
+| `TM_S3_BUCKET` | Cloud팀이 버킷 생성 후 이름 전달 | 버킷 이름 |
+| `TM_S3_PREFIX` | `ai-defense/audit/` (AI팀 정의) | 객체 key prefix |
+| `TM_S3_REGION` | Cloud팀이 리전 결정 후 전달 | 리전 |
+| AWS 인증 | IAM Role / ServiceAccount | Cloud팀이 설정 후 전달 |
+
+> **역할 분담**: AI팀이 env var **이름(스펙)**을 정의하고, Cloud팀이 인프라를 만든 뒤 **값을 채워서** Helm chart에 설정합니다.
+
+### 4.4 업로드 아키텍처
+
+```
+판정 발생 → JSONL 파일에 append (즉시, 로컬)
+                    │
+                    ▼ (주기적 업로드, AI서버 내 백그라운드 워커)
+              S3 버킷에 PUT → 업로드 완료 후 로컬 파일 rotate
+```
+
+| 항목 | 권장값 |
+|---|---|
+| 버킷 수 | 1개 (prefix로 audit / telemetry 분리) |
+| 보존 정책 | 90일 이상 (감사 증거) |
+| 암호화 | SSE-S3 또는 SSE-KMS |
+| 접근 권한 | AI Defense Pod의 ServiceAccount에 **PutObject 권한** |
+| Lifecycle | 90일 후 Infrequent Access 전환 권장 |
+
+> [!NOTE]
+> **Cloud팀 협의 필요**: K8s Pod 재시작 시 로컬 파일이 소실됩니다. 아래 중 하나를 선택해 주세요:
+> - **PersistentVolume** 연결: Pod 재시작에도 로그 파일 유지
+> - **Sidecar 패턴**: Fluentd 등으로 실시간에 가깝게 S3 전송
+> - **짧은 업로드 주기**: 1~5분 간격으로 S3 업로드하여 유실 최소화
+
+---
+
+## 5. PostgreSQL — Staging 이상 필요
+
+### 5.1 용도
+- S3의 JSONL → ETL 배치 적재
+- KPI 집계, 튜닝 데이터 분석, 리포트 대시보드
+
+### 5.2 현재 상태
+ETL 모듈(`etl_worker.py`) AI팀 구현 중. 완료 시 env var 스펙을 전달드리겠습니다. **Cloud팀은 하기 스펙으로 인프라만 선행 준비**해 주세요.
+
+### 5.3 환경변수 스펙
+
+| 변수 | 예상값 | 설명 |
+|---|---|---|
+| `TM_PG_URL` | `postgresql://<user>:<pass>@<host>:5432/<db>` | 접속 URL |
+
+### 5.4 스키마 방향
+- **JSONB 기반**: 판정 로그를 JSONB 컬럼에 저장 (스키마 유연성 확보)
+- ETL은 **K8s CronJob** 형태로 실행 예정 (AI팀이 컨테이너 이미지 제공)
+- 중복 방지: `trace_id` 기반 Upsert 로직
+
+### 5.5 인프라 스펙 권장
+
+| 항목 | 권장값 |
+|---|---|
+| 인스턴스 타입 | Managed PostgreSQL (RDS, Cloud SQL 등) |
+| 버전 | **PostgreSQL 14 이상** (JSONB 최적화) |
+| 스토리지 | 최소 20GB (초기), 자동 확장 |
+| 백업 | 일 백업 + PITR (운영 환경) |
+| 네트워크 | ETL Job Pod와 같은 VPC |
+
+---
+
+## 6. 네트워크 및 Istio 연동 명세
+
+### 6.1. 트래픽 검사 경로
 모든 실시간 트래픽은 백엔드에 닿기 전 AI 서버의 `/evaluate`를 거쳐야 합니다. 인프라 팀에서는 **Go 기반 Authz Adapter**를 구축하여 아래와 같이 연동해 주세요.
 
 *   **핵심 엔드포인트**: `POST /evaluate` (동기식 판정)
 *   **Adapter 로직**: 모든 `POST /api/*` 요청에 대해 AI 서버를 호출하고, 응답의 `allow` 및 `headers_to_add`를 처리합니다.
+*   **권장 타임아웃**: 800ms (AI 서버 장애 시 `fail-open` 처리 필수)
 
 #### [Istio] VirtualService 설정 (Direct Routing)
 VQA 인증이나 행동 분석 데이터 적재(`POST /challenge/*`)는 백엔드를 거치지 않고 AI 서버로 직접 전달되어야 합니다.
@@ -102,28 +296,37 @@ spec:
 
 ---
 
-## 4. API 엔드포인트 및 모니터링
+## 7. API 엔드포인트 및 모니터링
 
-### 4.1. 헬스 체크 및 메트릭
+### 7.1. 헬스 체크 및 메트릭
 *   **Liveness**: `GET /healthz`
 *   **Readiness**: `GET /readyz`
 *   **모니터링**: `GET /metrics` (Prometheus 연동용)
     *   커스텀 메트릭 `ai_defense_evaluate_total`을 통해 실시간 방어 현황 파악 가능
 
-### 4.2. API 상세 문서 (Swagger)
+### 7.2. API 상세 문서 (Swagger)
 서버 배포 후 아래 경로에서 상세 스키마를 확인하실 수 있습니다.
 *   `GET /docs` (Swagger UI)
 
 ---
 
-## 5. 클라우드 팀 체크리스트 (최종)
+## 8. 클라우드 팀 체크리스트 (최종)
 
-- [ ] **Redis 준비**: `TM_REDIS_URL` 환경변수 주입 및 통신 확인
+### MVP (즉시)
+- [ ] **Redis 인스턴스 프로비저닝**: `TM_REDIS_URL` 환경변수 주입 및 통신 확인
 - [ ] **Istio 설정**: `AuthorizationPolicy` 및 `VirtualService` 반영
-- [ ] **Go Adapter 구축**: AI 서버 `/evaluate` 호출부 구현 및 타임아웃(800ms 권장) 설정
+- [ ] **Go Adapter 구축**: AI 서버 `/evaluate` 호출부 구현 및 타임아웃(800ms) 설정
 - [ ] **모니터링 연동**: Prometheus에서 `/metrics` 스크래핑 활성화
 - [ ] **장애 정책**: AI 서버 장애 시 `fail-open`(트래픽 허용) 처리 확인
 
+### Staging/Prod (인프라 선행 준비)
+- [ ] **S3 버킷 생성**: Lifecycle 정책 설정 (staging/prod 각각)
+- [ ] **S3 권한 부여**: AI Defense Pod ServiceAccount에 `PutObject` 권한
+- [ ] **PostgreSQL 인스턴스 프로비저닝**: staging/prod 각각
+- [ ] **ETL CronJob용 PG 접속 계정 생성**: AI팀이 이미지 제공 예정
+- [ ] **확정 env var 수령 후 Helm chart 반영**: `TM_S3_BUCKET`, `TM_PG_URL` 등
+
 ---
+
 > [!IMPORTANT]
-> **핵심 요약**: 클라우드 팀은 본 문서의 내용을 바탕으로 **이미지 배포, 환경변수 설정, Istio 라우팅** 세 가지만 완수하시면 AI Defense V2 엔진이 즉시 가동됩니다.
+> **핵심 요약**: **MVP에서는 Redis와 Istio만 필요합니다.** S3와 PostgreSQL은 Staging 이상에서 필요하며, AI팀이 코드를 완성한 뒤 확정 env var 스펙을 전달드리겠습니다. Cloud팀은 staging/prod 인프라를 미리 프로비저닝해 주시면 연동이 빨라집니다.
