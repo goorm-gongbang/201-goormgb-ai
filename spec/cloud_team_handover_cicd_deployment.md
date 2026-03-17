@@ -23,7 +23,7 @@ AI 팀이 제공하는 `Dockerfile`을 활용하여 이미지를 빌드합니다
 
 | 변수명 | 설명 | 비고 |
 | :--- | :--- | :--- |
-| `TM_REDIS_URL` | 상태 공유용 Redis 주소 | 예: `redis://redis-svc:6379/0` (필수) |
+| `TM_REDIS_URL` | 상태 공유용 Redis 주소 | 예: `redis://redis-ai.data.svc.cluster.local:6379/0` (필수) |
 | `TM_BACKEND_SANCTION_URL` | 백엔드 제재 요청 API | 백엔드 주소 확정 시 주입 (미주입 시 기능만 비활성화됨) |
 | `AWS_S3_BUCKET` | Audit 로그 적재용 버킷 | IAM Role 기반 접근 권장 |
 | `APP_PORT` | 서버 바인드 포트 | 기본값 `8000` |
