@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 try:
-    from fastapi import APIRouter, Body, FastAPI, Header, HTTPException, Response
+    from fastapi import APIRouter, Body, FastAPI, Header, HTTPException, Query, Response
     from fastapi.responses import HTMLResponse
 
     FASTAPI_AVAILABLE = True
@@ -38,6 +38,10 @@ except ModuleNotFoundError:
         return default
 
     def Body(default: Any = None) -> Any:
+        return default
+
+    def Query(default: Any = None, alias: Optional[str] = None) -> Any:
+        del alias
         return default
 
     class HTMLResponse(str):
@@ -96,5 +100,6 @@ __all__ = [
     "Header",
     "HTMLResponse",
     "HTTPException",
+    "Query",
     "Response",
 ]

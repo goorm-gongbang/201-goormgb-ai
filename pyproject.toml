@@ -30,7 +30,13 @@ defense_api = [
     "uvicorn>=0.30.0",
     "redis>=5.0.0",
     "prometheus-fastapi-instrumentator>=7.0.0",
+    "boto3>=1.34.0",
+    "sqlalchemy>=2.0.0",
+    "psycopg2-binary>=2.9.0",
 ]
+
+[project.scripts]
+tm-ai-etl = "traffic_master_ai.defense.api.etl_worker:run_etl"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/traffic_master_ai"]
