@@ -10,7 +10,9 @@ import time
 import uuid
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException
+import os
+import httpx
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 
 from ..d0_mvp.api.admin_console import create_admin_console_router
 from ..d0_mvp.api.challenge_api import create_challenge_router as create_d0_challenge_router
@@ -51,6 +53,26 @@ _audit = DefenseDecisionAuditLogger.from_env()
 _challenge_runtime = ChallengeRuntime(ChallengeConfig.from_env())
 _d0_runtime = D0DefenseRuntime()
 
+# [Gap Closing] Load Backend Sanction URL from env
+BE_SANCTION_URL = os.getenv("TM_BACKEND_SANCTION_URL")
+
+async def _send_be_sanction(user_id: str, reason: str):
+    """Asynchronously notify backend to revoke user session."""
+    if not BE_SANCTION_URL or not user_id:
+        return
+    
+    async with httpx.AsyncClient(timeout=2.0) as client:
+        try:
+            payload = {
+                "userId": user_id,
+                "reason": f"[AI-Defense] {reason}",
+                "action": "REVOKE_SESSION"
+            }
+            await client.post(BE_SANCTION_URL, json=payload)
+        except Exception:
+            # Shield AI performance from BE failures
+            pass
+
 # Expose teammate runtime routers directly.
 app.include_router(create_check_router(_d0_runtime))
 app.include_router(create_d0_challenge_router(_d0_runtime))
@@ -89,7 +111,7 @@ async def runtime_state(session_id: str) -> RuntimeStateSnapshot:
 
 
 @app.post("/evaluate", response_model=EvaluateResponse, tags=["decision"])
-async def evaluate(req: EvaluateRequest) -> EvaluateResponse:
+async def evaluate(req: EvaluateRequest, background_tasks: BackgroundTasks) -> EvaluateResponse:
     started_at = time.perf_counter()
     now_ms = int(time.time() * 1000)
 
@@ -104,6 +126,11 @@ async def evaluate(req: EvaluateRequest) -> EvaluateResponse:
         out = _d0_runtime.fail_open_on_unavailable(request=d0_eval_req, error=exc)
 
     resp = _legacy_response_from_d0(req=req, started_at=started_at, out=out)
+    
+    # [Gap Closing] Trigger async backend sanction if status is BLOCK
+    if resp.action == "BLOCK" and req.user_id:
+        background_tasks.add_task(_send_be_sanction, user_id=req.user_id, reason=resp.reason or "AI identified as BOT")
+
     snap = _legacy_snapshot_from_d0_state(
         session_id=req.session_id,
         d0_state=_d0_runtime.session_state.get(req.session_id),
