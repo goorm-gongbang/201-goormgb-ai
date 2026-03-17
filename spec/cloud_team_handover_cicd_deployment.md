@@ -2,7 +2,7 @@
 
 > **대상**: Cloud/Infra 팀 (Deployment, Istio, Authz Adapter 담당)
 > **최종 업데이트**: 2026-03-17
-> **버전**: v2.0 (V2 실전 엔진 반영)
+> **버전**: v2.1 (V2 실전 엔진 및 빌드 수정 반영)
 
 ## 1. 개요
 본 문서는 AI Defense Server(V2)를 운영 환경에 배포하고, Istio Envoy Proxy와 연동하기 위한 **모든 요건(CI/CD, 인프라 설정, API 계약)**을 하나로 통합한 마스터 가이드입니다.
@@ -14,9 +14,37 @@
 ### 2.1. Docker 이미지 빌드
 AI 팀이 제공하는 `Dockerfile`을 활용하여 이미지를 빌드합니다. `dev` 브랜치 머지 시 자동 빌드되도록 설정 부탁드립니다.
 
-*   **Dockerfile 위치**: `src/traffic_master_ai/defense/api/Dockerfile` (또는 프로젝트 루트)
-*   **엔트리포인트**: `uvicorn traffic_master_ai.defense.api.main:app`
-*   **기본 포트**: `8000`
+*   **Dockerfile 위치**: `src/traffic_master_ai/defense/api/Dockerfile`
+*   **빌드 컨텍스트**: 프로젝트 루트 (Root) 권장
+
+```dockerfile
+# src/traffic_master_ai/defense/api/Dockerfile
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Install build dependencies and include README for metadata generation
+COPY pyproject.toml README.md ./
+
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir "hatchling" \
+    && pip install --no-cache-dir ".[defense_api]"
+
+# Copy source code
+COPY src ./src
+
+# Install again to ensure entry points are mapped correctly
+RUN pip install --no-cache-dir ".[defense_api]"
+
+# FastAPI 기본 포트
+EXPOSE 8000
+
+# 서버 구동 명령
+CMD ["python", "-m", "uvicorn", "traffic_master_ai.defense.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
 
 ### 2.2. 필수 환경 변수 (Runtime Config)
 파드(Pod) 기동 시 아래 변수들을 반드시 주입해 주세요. **특히 Redis는 실전 엔진 가동을 위한 필수 사항입니다.**

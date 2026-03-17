@@ -17,6 +17,7 @@ logs/
 # Ignore local OS junk
 .DS_Store
 
-# Ignore documentation at root
-README.md
+# Allow root files needed for build
+!README.md
+!pyproject.toml
 !src/traffic_master_ai/defense/api/README.md
