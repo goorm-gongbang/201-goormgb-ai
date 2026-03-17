@@ -326,16 +326,17 @@ sequenceDiagram
     BE-->>C: 응답 반환
 ```
 
-### 6.2. 트래픽 검사 로직 및 구분 (Red vs Green)
+### 6.2. 트래픽 검사 범위 (Selective Scope)
 
-Istio `AuthorizationPolicy` 설정을 통해 어떤 요청을 검사할지 결정합니다.
+AI 서버는 전사 모든 API를 관할하지 않습니다. **"보호가 필요한 핵심 API(Critical API)"**에 대해서만 선택적으로 판정을 수행하며, 그 외의 트래픽은 AI 서버의 부하를 줄이기 위해 원천적으로 바이패스하는 것을 원칙으로 합니다.
 
-| 구분 | 성격 | 대상 (예시) | 동작 방식 |
+| 구분 | 성격 | 대상 (예시) | AI 서버 개입 |
 |---|---|---|---|
-| **Critical (Red)** | 데이터 변경, 민감 동작 | `POST`, `PUT`, `DELETE` 요청 | **Inspect**: AI 서버 판정 필수 (Latency ~15ms) |
-| **Normal (Green)** | 단순 조회, 퍼블릭 데이터 | `GET`, `OPTIONS`, 정적 파일 | **Bypass**: AI 서버 거치지 않음 (Latency 0ms) |
+| **Critical (Red)** | 리스크 검사 대상 | `/api/payment`, `/api/order`, `/api/user/*` (POST/PUT) | **적극 개입** (동기 판정) |
+| **Normal (Green)** | 비관리 대상 | `/static/*`, `/api/products` (GET), `/api/health` | **완전 배제** (Bypass) |
 
-#### [Istio] Selective Inspection 설정 (예시)
+#### [Istio] 관리 대상 API 한정 설정 (예시)
+인프라 팀에서는 아래와 같이 보호가 필요한 경로에 대해서만 `AuthorizationPolicy`를 적용해 주시기 바랍니다.
 ```yaml
 spec:
   action: CUSTOM
@@ -344,9 +345,9 @@ spec:
   rules:
   - to:
     - operation:
-        paths: ["/api/*"]
-        notPaths: ["/api/health", "/api/metrics"]
-        methods: ["POST", "PUT", "DELETE"] # Critical (Red) API 지정
+        # 우리가 실제 방어 로직을 가진 경로만 한정하여 등록
+        paths: ["/api/v2/payment/*", "/api/v2/user/withdraw"]
+        methods: ["POST"]
 ```
 
 ---
