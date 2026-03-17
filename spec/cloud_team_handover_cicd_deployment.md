@@ -112,23 +112,37 @@ CMD ["python", "-m", "uvicorn", "traffic_master_ai.defense.api.main:app", "--hos
 ```
 
 ### 2.2. 환경 변수 전체 목록 (Runtime Config)
-파드(Pod) 기동 시 아래 변수들을 주입해 주세요. **MVP에서는 `TM_REDIS_URL`만 필수**이며, S3/PostgreSQL은 Staging 이상에서 주입합니다.
+파드(Pod) 기동 시 아래 변수들을 Helm chart / ConfigMap / Secret에 설정해 주세요.
+전체 변수가 담긴 템플릿 파일: **`.env.ai.example`** (프로젝트 루트)
 
-| 구분 | 변수명 | 설명 | MVP 필수 여부 | 기본값 / 비고 |
-| :--- | :--- | :--- | :---: | :--- |
-| **Core** | `TM_REDIS_URL` | 실시간 세션 상태 관리용 Redis | ✅ 필수 | `redis://<host>:<port>/<db>` |
-| **Core** | `TM_BACKEND_SANCTION_URL` | 백엔드 유저 제재(Ban) API 주소 | 선택 | 미주입 시 비활성 |
-| **Storage** | `TM_S3_BUCKET` | Audit 로그 아카이빙용 S3 버킷명 | Staging+ | 미주입 시 로컬 파일 모드 |
-| **Storage** | `TM_S3_PREFIX` | S3 객체 Key prefix | Staging+ | `ai-defense/audit/` |
-| **Storage** | `TM_S3_REGION` | S3 버킷 리전 | Staging+ | Cloud팀 결정 후 전달 |
-| **Storage** | `TM_PG_URL` | PostgreSQL 접속 URL | Staging+ | `postgresql://user:pass@host:5432/db` |
-| **LLM** | `TM_OFFLINE_LLM_API_KEY` | 오프라인 최적화용 LLM API Key | 선택 | `OPENAI_API_KEY`와 호환 |
-| **LLM** | `TM_OFFLINE_LLM_ENDPOINT` | LLM API 엔드포인트 | 선택 | Gateway 사용 시 필요 |
-| **LLM** | `TM_OFFLINE_LLM_MODEL` | 사용할 LLM 모델명 | 선택 | `gpt-5-mini` (기본) |
-| **Tuning** | `TM_T0_MAX` / `TM_T1_MAX` | 티어별 위험도 차단 임계치 | 선택 | 0.20 / 0.50 (기본) |
-| **Tuning** | `TM_SESSION_STATE_TTL_SECONDS` | 세션 유지 시간 (초) | 선택 | 1800 (기본) |
-| **System** | `APP_PORT` | 서버 바인드 포트 | 선택 | 8000 (기본) |
-| **System** | `CI` | CI 환경 여부 (In-Memory fallback) | 선택 | `true` 시 Redis 미사용 |
+| 변수명 | 설명 | 기본값 / 비고 |
+| :--- | :--- | :--- |
+| `TM_REDIS_URL` | 실시간 세션 상태 관리용 Redis | `redis://<host>:<port>/<db>` — **비워두면 In-Memory fallback** |
+| `TM_BACKEND_SANCTION_URL` | 백엔드 유저 제재(Ban) API 주소 | 비워두면 제재 기능 비활성 |
+| `TM_S3_BUCKET` | Audit 로그 아카이빙용 S3 버킷명 | 비워두면 로컬 파일 모드 |
+| `TM_S3_PREFIX` | S3 오브젝트 Key prefix | `ai-defense/audit/` |
+| `TM_S3_REGION` | S3 버킷 리전 | Cloud팀 결정 후 입력 |
+| `TM_PG_URL` | PostgreSQL 접속 URL | `postgresql://user:pass@host:5432/db` |
+| `TM_ADMIN_SHARED_TOKEN` | Admin Console 접근 공통 토큰 | 운영 환경에서 반드시 설정 |
+| `TM_ADMIN_READONLY_TOKEN` | Admin Console 읽기 전용 토큰 | 운영 환경에서 반드시 설정 |
+| `TM_OFFLINE_LLM_API_KEY` | 오프라인 최적화용 LLM API Key | OpenAI API Key와 동일 형식 |
+| `TM_OFFLINE_LLM_ENDPOINT` | LLM API 엔드포인트 | `https://api.openai.com/v1` |
+| `TM_OFFLINE_LLM_MODEL` | 사용할 LLM 모델명 | `gpt-5-mini` |
+| `TM_T0_MAX` / `TM_T1_MAX` / `TM_T2_MAX` | 위험도 티어 임계치 | 0.20 / 0.50 / 0.80 |
+| `TM_SESSION_STATE_TTL_SECONDS` | 세션 유지 시간 (초) | 1800 |
+| `TM_BLOCK_TTL_SECONDS` | 차단 세션 TTL (초) | 1800 |
+| `TM_CHALLENGE_TTL_SECONDS` | VQA 챌린지 만료 시간 (초) | 15 |
+| `TM_CHALLENGE_MAX_ATTEMPTS` | VQA 챌린지 최대 시도 횟수 | 2 |
+| `TM_CHALLENGE_HALT_SECONDS` | 초과 시 임시 잠금 시간 (초) | 30 |
+| `TM_THROTTLE_DELAY_MS_T1` | T1 티어 딜레이 주입 (ms) | 80 |
+| `TM_THROTTLE_DELAY_MS_T2` | T2 티어 딜레이 주입 (ms) | 250 |
+| `TM_TURNSTILE_ENABLED` | Turnstile 검증 활성화 여부 | `true` |
+| `TM_DEFENSE_AUDIT_LOG_PATH` | 로컬 Audit 로그 파일 경로 | `logs/defense_decision_audit.jsonl` |
+| `APP_PORT` | 서버 바인드 포트 | `8000` |
+| `CI` | CI 환경 여부 (`true` 시 Redis 미사용) | 비워두면 Redis 사용 |
+
+> [!NOTE]
+> Tuning 변수(`TM_T0_MAX`, `TM_THROTTLE_*` 등)는 서버 기동 시 초기 기본값으로만 사용됩니다. 운영 중 방어 정책은 오프라인 LLM 최적화 파이프라인이 `PolicySnapshot`을 통해 동적으로 업데이트하므로, 일반적으로 이 값들을 수동으로 변경할 필요는 없습니다.
 
 ---
 
