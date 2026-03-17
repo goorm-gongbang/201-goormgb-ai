@@ -103,7 +103,7 @@ CMD ["python", "-m", "uvicorn", "traffic_master_ai.defense.api.main:app", "--hos
 ### 3.4. Swagger UI 및 API 전문 (OpenAPI v2)
 전체 API 모델 상세 스키마는 Swagger UI를 통해 확인할 수 있습니다. 인프라 설정 시 개발망에만 노출되도록 제한 권장합니다.
 *   `GET /docs` (Swagger UI)
-*   `GET /openapi.json` (OpenAPI Spec - CI/CD 번들의 `openapi-defense.v2.yaml`과 실시간 동기화)
+*   `GET /openapi.json` (OpenAPI Spec - 런타임에서 자동 생성됨)
 
 ---
 
