@@ -36,7 +36,7 @@ RUN pip install --no-cache-dir --upgrade pip \
 # Copy source code
 COPY src ./src
 
-# Install again to ensure entry points are mapped correctly
+# Install again to ensure entry points are mapped correctly (if needed by hatch)
 RUN pip install --no-cache-dir ".[defense_api]"
 
 # FastAPI 기본 포트
