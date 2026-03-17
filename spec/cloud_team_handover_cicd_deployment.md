@@ -21,13 +21,19 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# 소스코드 복사
+# Install build dependencies and optimize caching
 COPY pyproject.toml README.md ./
+
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir "hatchling" \
+    && pip install --no-cache-dir --no-deps -e ".[defense_api]" \
+    || pip install --no-cache-dir fastapi uvicorn redis pydantic
+
+# Copy source code after dependencies are installed
 COPY src ./src
 
-# 의존성 설치 (defense_api 그룹)
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir ".[defense_api]"
+# Final installation to ensure all entry points are set correctly
+RUN pip install --no-cache-dir ".[defense_api]"
 
 # FastAPI 기본 포트
 EXPOSE 8000
