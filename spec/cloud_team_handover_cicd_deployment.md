@@ -410,9 +410,9 @@ Authz Adapter에서 AI 서버로 호출하는 핵심 API입니다.
 | 필드 | 설명 | 비고 |
 |---|---|---|
 | `action` | `NONE` | 정상 트래픽. 추가 조치 없음. |
-| `action` | `CHALLENGE` | 봇 의심. 클라이언트에 VQA 요구헤더 전송 필요. |
-| `action` | `THROTTLE` | 과다 요청. `x-throttle-ms` 만큼 클라이언트 응답 지연 권장. |
-| `action` | `BLOCK` | 확정 봇. 즉시 403 Forbidden 처리. |
+| `action` | `CHALLENGE` | **VQA 필수 단계**. (리스크와 무관하게) 서비스 플로우상 검증이 필요한 상태(S3/S4 진입 등). |
+| `action` | `THROTTLE` | 위험 티어(T1/T2) 진입. `x-throttle-ms` 만큼 클라이언트 응답 지연 권장. |
+| `action` | `BLOCK` | 확정 봇 또는 위험 티어(T3) 진입. 즉시 403 Forbidden 처리. |
 
 ---
 
