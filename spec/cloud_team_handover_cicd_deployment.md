@@ -117,29 +117,41 @@ CMD ["python", "-m", "uvicorn", "traffic_master_ai.defense.api.main:app", "--hos
 
 | 변수명 | 설명 | 기본값 / 비고 |
 | :--- | :--- | :--- |
+| **[Core]** | | |
 | `TM_REDIS_URL` | 실시간 세션 상태 관리용 Redis | `redis://<host>:<port>/<db>` — **비워두면 In-Memory fallback** |
 | `TM_BACKEND_SANCTION_URL` | 백엔드 유저 제재(Ban) API 주소 | 비워두면 제재 기능 비활성 |
+| **[Storage]** | | |
 | `TM_S3_BUCKET` | Audit 로그 아카이빙용 S3 버킷명 | 비워두면 로컬 파일 모드 |
 | `TM_S3_PREFIX` | S3 오브젝트 Key prefix | `ai-defense/audit/` |
-| `TM_S3_REGION` | S3 버킷 리전 | Cloud팀 결정 후 입력 |
+| `TM_S3_REGION` | S3 버킷 리전 | ap-northeast-2 (기본값) |
 | `TM_PG_URL` | PostgreSQL 접속 URL | `postgresql://user:pass@host:5432/db` |
-| `TM_ADMIN_SHARED_TOKEN` | Admin Console 접근 공통 토큰 | 운영 환경에서 반드시 설정 |
-| `TM_ADMIN_READONLY_TOKEN` | Admin Console 읽기 전용 토큰 | 운영 환경에서 반드시 설정 |
+| **[LLM]** | | |
 | `TM_OFFLINE_LLM_API_KEY` | 오프라인 최적화용 LLM API Key | OpenAI API Key와 동일 형식 |
 | `TM_OFFLINE_LLM_ENDPOINT` | LLM API 엔드포인트 | `https://api.openai.com/v1` |
 | `TM_OFFLINE_LLM_MODEL` | 사용할 LLM 모델명 | `gpt-5-mini` |
+| **[System]** | | |
+| `APP_PORT` | 서버 바인드 포트 | `8000` |
+| `CI` | 개발/테스트용 플래그 | **운영 환경에서는 반드시 비워둘 것** (true 설정 시 Redis 미사용 및 In-MemoryFallback) |
+| **[Tuning]** | | |
 | `TM_T0_MAX` / `TM_T1_MAX` / `TM_T2_MAX` | 위험도 티어 임계치 | 0.20 / 0.50 / 0.80 |
+| `TM_TIER_HYSTERESIS_MARGIN` | 히스테리시스 마진 | 0.02 |
+| `TM_RISK_ALPHA` | 리스크 가중치 (Alpha) | 0.30 |
 | `TM_SESSION_STATE_TTL_SECONDS` | 세션 유지 시간 (초) | 1800 |
 | `TM_BLOCK_TTL_SECONDS` | 차단 세션 TTL (초) | 1800 |
+| `TM_S3_GRACE_TTL_SECONDS` | VQA 유예 기간 (초) | 180 |
+| `TM_POLICY_CACHE_SECONDS` | 정책 캐시 유효 시간 (초) | 5 |
 | `TM_CHALLENGE_TTL_SECONDS` | VQA 챌린지 만료 시간 (초) | 15 |
+| `TM_CHALLENGE_VERIFY_TIMEOUT_MS` | VQA 검증 타임아웃 (ms) | 200 |
 | `TM_CHALLENGE_MAX_ATTEMPTS` | VQA 챌린지 최대 시도 횟수 | 2 |
 | `TM_CHALLENGE_HALT_SECONDS` | 초과 시 임시 잠금 시간 (초) | 30 |
+| `TM_S3_VERIFY_UNAVAILABLE_MODE` | VQA 불가 시 동작 모드 | `fail_close` |
 | `TM_THROTTLE_DELAY_MS_T1` | T1 티어 딜레이 주입 (ms) | 80 |
 | `TM_THROTTLE_DELAY_MS_T2` | T2 티어 딜레이 주입 (ms) | 250 |
+| `TM_THROTTLE_MAX_DELAY_MS` | 최대 딜레이 제한 (ms) | 2000 |
 | `TM_TURNSTILE_ENABLED` | Turnstile 검증 활성화 여부 | `true` |
+| `TM_TURNSTILE_VERIFY_TIMEOUT_MS` | Turnstile 검증 타임아웃 (ms) | 500 |
+| `TM_TURNSTILE_CACHE_TTL_SECONDS` | Turnstile 결과 캐시 시간 (초) | 600 |
 | `TM_DEFENSE_AUDIT_LOG_PATH` | 로컬 Audit 로그 파일 경로 | `logs/defense_decision_audit.jsonl` |
-| `APP_PORT` | 서버 바인드 포트 | `8000` |
-| `CI` | CI 환경 여부 (`true` 시 Redis 미사용) | 비워두면 Redis 사용 |
 
 > [!NOTE]
 > Tuning 변수(`TM_T0_MAX`, `TM_THROTTLE_*` 등)는 서버 기동 시 초기 기본값으로만 사용됩니다. 운영 중 방어 정책은 오프라인 LLM 최적화 파이프라인이 `PolicySnapshot`을 통해 동적으로 업데이트하므로, 일반적으로 이 값들을 수동으로 변경할 필요는 없습니다.
@@ -200,7 +212,7 @@ AI Defense 코드에 `RedisStateStore`가 **이미 구현**되어 있습니다. 
 - Raw telemetry (VQA 포인터 이벤트) 원본 보존
 
 ### 4.2 현재 상태
-현재는 **로컬 JSONL 파일**에만 기록 중. AI팀에서 S3 자동 업로드 코드(`S3Uploader`)를 `dev` 브랜치에 구현 중이며, 완료 후 코드와 함께 env var 스펙이 확정됩니다. **Cloud팀은 하기 스펙으로 인프라만 선행 준비**해 주세요.
+AI Defense 코드에 `S3Uploader`가 **구현 완료**되어 있습니다. 환경변수(`TM_S3_BUCKET`)가 설정되면 주기적으로 로컬 로그를 S3로 업로드합니다.
 
 ### 4.3 환경변수 스펙
 
@@ -245,7 +257,7 @@ AI Defense 코드에 `RedisStateStore`가 **이미 구현**되어 있습니다. 
 - KPI 집계, 튜닝 데이터 분석, 리포트 대시보드
 
 ### 5.2 현재 상태
-ETL 모듈(`etl_worker.py`) AI팀 구현 중. 완료 시 env var 스펙을 전달드리겠습니다. **Cloud팀은 하기 스펙으로 인프라만 선행 준비**해 주세요.
+ETL 모듈(`etl_worker.py`) **구현 완료**. S3에 적재된 JSONL 데이터를 읽어 DB로 옮기는 작업을 수행합니다. **Cloud팀은 하기 스펙으로 DB 인스턴스만 프로비저닝**해 주세요.
 
 ### 5.3 환경변수 스펙
 
@@ -343,4 +355,4 @@ spec:
 ---
 
 > [!IMPORTANT]
-> **핵심 요약**: **MVP에서는 Redis와 Istio만 필요합니다.** S3와 PostgreSQL은 Staging 이상에서 필요하며, AI팀이 코드를 완성한 뒤 확정 env var 스펙을 전달드리겠습니다. Cloud팀은 staging/prod 인프라를 미리 프로비저닝해 주시면 연동이 빨라집니다.
+> **핵심 요약**: **MVP에서는 Redis와 Istio가 필수입니다.** S3와 PostgreSQL은 Staging 이상의 환경에서 판정 기록 보존 및 분석을 위해 필요하며, 모든 연동 코드는 준비되었으므로 환경변수만 주입해주시면 즉시 가동됩니다.

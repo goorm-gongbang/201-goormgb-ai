@@ -7,6 +7,8 @@ Includes Prometheus metrics instrumentation.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import time
 import uuid
@@ -25,7 +27,11 @@ from ..d0_mvp.api.runtime import DefenseRuntime as D0DefenseRuntime
 from ..d0_mvp.core.enums import DefenseAction as D0DefenseAction
 from ..d0_mvp.core.enums import FlowState as D0FlowState
 from ..d0_mvp.core.models import CheckRequest as D0CheckRequest
-from .audit import DefenseDecisionAuditLogger
+from .audit import (
+    DefenseDecisionAuditLogger,
+    S3Uploader,
+    rotate_and_upload_audit_log,
+)
 from .challenge_runtime import ChallengeConfig, ChallengeRuntime
 from .models import (
     ChallengeEventIngestRequest,
@@ -53,10 +59,44 @@ EVALUATE_REQUESTS = Counter(
 instrumentator = Instrumentator()
 
 
+logger = logging.getLogger(__name__)
+
+# S3 Archiver Config
+_S3_BUCKET = os.getenv("TM_S3_BUCKET")
+_S3_PREFIX = os.getenv("TM_S3_PREFIX", "ai-defense/audit/")
+_S3_REGION = os.getenv("TM_S3_REGION")
+_S3_INTERVAL = int(os.getenv("TM_S3_ARCHIVE_INTERVAL_SECONDS", "3600"))
+
+_S3_UPLOADER = S3Uploader(bucket=_S3_BUCKET, prefix=_S3_PREFIX, region=_S3_REGION) if _S3_BUCKET else None
+
+
+async def _s3_archive_loop():
+    """Background loop to periodically upload logs to S3."""
+    if not _S3_UPLOADER:
+        logger.info("S3 Archiving is disabled (TM_S3_BUCKET not set).")
+        return
+
+    logger.info("Starting S3 Archiving Loop (Interval: %ds)", _S3_INTERVAL)
+    while True:
+        try:
+            await asyncio.sleep(_S3_INTERVAL)
+            rotate_and_upload_audit_log(_audit, _S3_UPLOADER)
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.error("Error in S3 archiving loop: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan: Startup/Shutdown hooks."""
+    archive_task = asyncio.create_task(_s3_archive_loop())
     yield
+    archive_task.cancel()
+    try:
+        await archive_task
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(
