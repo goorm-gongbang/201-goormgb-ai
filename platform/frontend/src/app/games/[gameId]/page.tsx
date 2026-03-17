@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { getGame, postBookingEntry, postQueueEnter, getOrCreateSessionId, resetSessionId } from '@/services/api';
+import { getGame, postBookingEntry, postQueueEnter, getOrCreateSessionId } from '@/services/api';
 import { usePreferenceStore } from '@/stores/usePreferenceStore';
 import BookingCard from '@/components/BookingCard';
 import GameInfoTabs from '@/components/GameInfoTabs';
@@ -53,7 +53,7 @@ export default function GameDetailPage() {
 
     try {
       setBookingLoading(true);
-      const sessionId = resetSessionId();
+      const sessionId = getOrCreateSessionId();
 
       const queueResponse = await postQueueEnter({
         sessionId,

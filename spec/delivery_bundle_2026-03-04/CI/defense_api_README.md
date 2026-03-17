@@ -16,9 +16,9 @@
   - challenge difficulty/attempt limit
 
 ## Canonical Files
-- OpenAPI: `CI/openapi-defense.v2.yaml`
-- Dockerfile: `CI/Dockerfile.ai-defense`
-- 실제 구현체: `src/traffic_master_ai/defense/api/main.py`
+- OpenAPI: `/Users/jangjihyeon/201-goormgb-ai/spec/delivery_bundle_2026-03-04/CI/openapi-defense.v2.yaml`
+- Mock service code: `/Users/jangjihyeon/201-goormgb-ai/spec/delivery_bundle_2026-03-04/CI/ai_defense_api_main.py`
+- Dockerfile: `/Users/jangjihyeon/201-goormgb-ai/spec/delivery_bundle_2026-03-04/CI/Dockerfile.ai-defense`
 
 ## Runtime Action Vocabulary
 - `none`
@@ -34,9 +34,6 @@
 - `POST /challenge/start`
 - `POST /challenge/event`
 - `POST /challenge/verify`
-- `GET /runtime/{session_id}`
-- `POST /runtime/vqa/mark`
-- `GET /meta/storage`
 
 ## Local Run
 ```bash
@@ -48,20 +45,12 @@ export TM_AI_DEFENSE_PORT=8000
 python -m uvicorn traffic_master_ai.defense.api.main:app --host "${TM_AI_DEFENSE_HOST}" --port "${TM_AI_DEFENSE_PORT}"
 ```
 
-## Docker Run (via pilot)
-```bash
-cd /Users/jangjihyeon/201-goormgb-ai/pilot/istio_adapter_local
-docker-compose up -d --build
-```
-
 ## Quick Verify
 ```bash
 curl "http://localhost:${TM_AI_DEFENSE_PORT:-8000}/healthz"
 curl "http://localhost:${TM_AI_DEFENSE_PORT:-8000}/openapi.json"
 curl -X POST "http://localhost:${TM_AI_DEFENSE_PORT:-8000}/evaluate" \
   -H "content-type: application/json" \
-  -H "X-Session-Id: sess-ci" \
-  -H "X-Trace-Id: trc-ci-1" \
   -d '{"session_id":"sess-ci","path":"/api/holds","method":"POST","timestamp":1772500000000}'
 ```
 

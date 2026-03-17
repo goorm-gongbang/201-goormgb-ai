@@ -445,7 +445,7 @@ public class SecurityService {
         double totalDistance = drag.path("total_distance").asDouble(0.0);
         double linearDistance = drag.path("linear_distance").asDouble(0.0);
         double curvature = drag.path("curvature").asDouble(0.0);
-        if (totalDistance < 15.0 || linearDistance < 5.0 || curvature < 1.005 || curvature > 18.0) {
+        if (totalDistance < 30.0 || linearDistance < 10.0 || curvature < 1.02 || curvature > 12.0) {
             return TelemetryVerdict.fail("DRAG_PATTERN_INVALID");
         }
 

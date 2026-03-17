@@ -1,2 +1,1 @@
-"""AI Defense mock API package for cloud/ext_authz integration."""
-
+# AI Defense API package

@@ -37,7 +37,6 @@ class EvaluateRequest(BaseModel):
     correlation_id: str | None = None
     path: str = Field(min_length=1)
     method: str = Field(min_length=1, description="HTTP method such as GET/POST")
-    user_id: str | None = Field(default=None, description="End-user identifier (userId) extracted from JWT")
     timestamp: int = Field(ge=0, description="Unix epoch milliseconds")
     headers: dict[str, str] = Field(default_factory=dict)
 
