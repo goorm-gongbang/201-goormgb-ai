@@ -17,6 +17,6 @@ logs/
 # Ignore local OS junk
 .DS_Store
 
-# Ignore documentation at root
-README.md
-!src/traffic_master_ai/defense/api/README.md
+# Allow basic metadata for hatchling build
+!README.md
+!pyproject.toml
