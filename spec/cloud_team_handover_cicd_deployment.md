@@ -410,7 +410,7 @@ Authz Adapter에서 AI 서버로 호출하는 핵심 API입니다.
 | 필드 | 구분 | 성격 | 비고 |
 |---|---|---|---|
 | `action` | **VQA Pass (NONE)** | 정상 통과 | VQA를 이미 통과했거나, 아직 통과할 단계가 아님. |
-| `action` | **VQA Gate (CHALLENGE)** | **플로우 강제** | (리스크 무관) 필수 VQA 단계를 건너뛴 경우. **어댑터는 428 에러 반환 필수**. |
+| `action` | **VQA Required (CHALLENGE)** | **관문 검증** | (리스크 무관) 서비스 단계상 VQA가 필요함. **어댑터는 428 에러 반환 필수**. |
 | `action` | **Defense (THROTTLE)** | 지연 방어 | 위험 티어(T1/T2) 진입. `x-throttle-ms` 만큼 클라이언트 응답 지연. |
 | `action` | **Defense (BLOCK)** | 즉시 차단 | 확정 봇 또는 위험 티어(T3) 진입. 즉시 403 Forbidden 처리. |
 
