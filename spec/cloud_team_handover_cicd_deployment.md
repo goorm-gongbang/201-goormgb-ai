@@ -407,12 +407,12 @@ Authz Adapter에서 AI 서버로 호출하는 핵심 API입니다.
 }
 ```
 
-| 필드 | 설명 | 비고 |
-|---|---|---|
-| `action` | `NONE` | 정상 트래픽. 추가 조치 없음. |
-| `action` | `CHALLENGE` | **VQA 필수 단계**. (리스크와 무관하게) 서비스 플로우상 검증이 필요한 상태(S3/S4 진입 등). |
-| `action` | `THROTTLE` | 위험 티어(T1/T2) 진입. `x-throttle-ms` 만큼 클라이언트 응답 지연 권장. |
-| `action` | `BLOCK` | 확정 봇 또는 위험 티어(T3) 진입. 즉시 403 Forbidden 처리. |
+| 필드 | 구분 | 성격 | 비고 |
+|---|---|---|---|
+| `action` | **VQA Pass (NONE)** | 정상 통과 | VQA를 이미 통과했거나, 아직 통과할 단계가 아님. |
+| `action` | **VQA Gate (CHALLENGE)** | **플로우 강제** | (리스크 무관) 필수 VQA 단계를 건너뛴 경우. **어댑터는 428 에러 반환 필수**. |
+| `action` | **Defense (THROTTLE)** | 지연 방어 | 위험 티어(T1/T2) 진입. `x-throttle-ms` 만큼 클라이언트 응답 지연. |
+| `action` | **Defense (BLOCK)** | 즉시 차단 | 확정 봇 또는 위험 티어(T3) 진입. 즉시 403 Forbidden 처리. |
 
 ---
 
