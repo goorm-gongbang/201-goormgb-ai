@@ -28,7 +28,7 @@ jobs:
 
       - name: Run defense API container
         run: |
-          docker run -d --rm \
+          docker run -d \
             --name tm-ai-defense-ci \
             -p 18000:8000 \
             -e TM_RUNTIME_STATE_BACKEND=memory \
@@ -42,6 +42,7 @@ jobs:
             if [ -z "$(docker ps --filter name=tm-ai-defense-ci --format '{{.Names}}')" ]; then
               echo "Defense API container exited before health check"
               docker ps -a --filter name=tm-ai-defense-ci || true
+              docker inspect tm-ai-defense-ci || true
               docker logs tm-ai-defense-ci || true
               exit 1
             fi
@@ -53,11 +54,15 @@ jobs:
           done
 
           echo "Defense API health check failed"
+          docker ps -a --filter name=tm-ai-defense-ci || true
+          docker inspect tm-ai-defense-ci || true
           docker logs tm-ai-defense-ci || true
           exit 1
 
       - name: Cleanup
         if: always()
         run: |
+          docker ps -a --filter name=tm-ai-defense-ci || true
           docker logs tm-ai-defense-ci || true
           docker stop tm-ai-defense-ci || true
+          docker rm tm-ai-defense-ci || true
