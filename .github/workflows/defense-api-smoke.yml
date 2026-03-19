@@ -33,10 +33,19 @@ jobs:
             -p 18000:8000 \
             -e TM_RUNTIME_STATE_BACKEND=memory \
             tm-ai-defense:ci
+          sleep 2
+          docker ps -a --filter name=tm-ai-defense-ci
 
       - name: Wait for health check
         run: |
           for i in $(seq 1 20); do
+            if [ -z "$(docker ps --filter name=tm-ai-defense-ci --format '{{.Names}}')" ]; then
+              echo "Defense API container exited before health check"
+              docker ps -a --filter name=tm-ai-defense-ci || true
+              docker logs tm-ai-defense-ci || true
+              exit 1
+            fi
+
             if curl -fsS http://localhost:18000/healthz; then
               exit 0
             fi
