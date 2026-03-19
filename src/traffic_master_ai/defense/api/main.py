@@ -90,6 +90,7 @@ async def _s3_archive_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan: Startup/Shutdown hooks."""
+    archive_task = asyncio.create_task(_s3_archive_loop())
     yield
     archive_task.cancel()
     try:

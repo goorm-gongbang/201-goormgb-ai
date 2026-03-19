@@ -5,18 +5,15 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Install build dependencies and include README for metadata generation
+# Copy package metadata and source before install so the wheel is built
+# from the actual application contents in one step.
 COPY pyproject.toml README.md ./
+COPY src ./src
 
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir "hatchling" \
-    && pip install --no-cache-dir ".[defense_api]"
-
-# Copy source code
-COPY src ./src
-
-# Install again to ensure entry points are mapped correctly (if needed by hatch)
-RUN pip install --no-cache-dir ".[defense_api]"
+    && pip install --no-cache-dir ".[defense_api]" \
+    && python -c "import httpx, fastapi, uvicorn; print('dependency check ok')"
 
 EXPOSE 8000
 
