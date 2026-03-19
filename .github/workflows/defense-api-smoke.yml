@@ -31,6 +31,7 @@ jobs:
           docker run -d \
             --name tm-ai-defense-ci \
             -p 18000:8000 \
+            -e CI=true \
             -e TM_RUNTIME_STATE_BACKEND=memory \
             tm-ai-defense:ci
           sleep 2
