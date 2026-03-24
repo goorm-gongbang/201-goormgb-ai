@@ -5,6 +5,8 @@ Legacy endpoints are preserved as compatibility routes.
 Includes Prometheus metrics instrumentation.
 """
 
+# Dev cicd test
+
 from __future__ import annotations
 
 import asyncio
