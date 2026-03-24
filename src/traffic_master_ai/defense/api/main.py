@@ -8,6 +8,7 @@ Includes Prometheus metrics instrumentation.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import time
@@ -16,13 +17,10 @@ from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from prometheus_client import Counter
 from prometheus_fastapi_instrumentator import Instrumentator
 
-from ..d0_mvp.api.admin_console import create_admin_console_router
-from ..d0_mvp.api.challenge_api import create_challenge_router as create_d0_challenge_router
-from ..d0_mvp.api.check import create_check_router
 from ..d0_mvp.api.runtime import DefenseRuntime as D0DefenseRuntime
 from ..d0_mvp.core.enums import DefenseAction as D0DefenseAction
 from ..d0_mvp.core.enums import FlowState as D0FlowState
@@ -34,6 +32,16 @@ from .audit import (
 )
 from .challenge_runtime import ChallengeConfig, ChallengeRuntime
 from .models import (
+    AiChallengeStartRequest,
+    AiChallengeStartResponse,
+    AiChallengeVerifyRequest,
+    AiChallengeVerifyResponse,
+    AiEvaluateRequest,
+    AiEvaluateResponse,
+    AiPrecheckQueueEnterRequest,
+    AiPrecheckQueueEnterResponse,
+    AiTelemetryIngestRequest,
+    AiTelemetryIngestResponse,
     ChallengeEventIngestRequest,
     ChallengeEventIngestResponse,
     ChallengeStartRequest,
@@ -42,10 +50,12 @@ from .models import (
     ChallengeVerifyResponse,
     EvaluateRequest,
     EvaluateResponse,
+    EvaluateTelemetryFeatures,
     HealthResponse,
     RuntimeStateSnapshot,
     RuntimeVqaMarkRequest,
     RuntimeVqaMarkResponse,
+    TelemetrySummary,
 )
 from .state import build_runtime_store_from_env
 
@@ -66,6 +76,13 @@ _S3_BUCKET = os.getenv("TM_S3_BUCKET")
 _S3_PREFIX = os.getenv("TM_S3_PREFIX", "ai-defense/audit/")
 _S3_REGION = os.getenv("TM_S3_REGION")
 _S3_INTERVAL = int(os.getenv("TM_S3_ARCHIVE_INTERVAL_SECONDS", "3600"))
+_TURNSTILE_SECRET_KEY = os.getenv("TM_TURNSTILE_SECRET_KEY", "").strip()
+_TURNSTILE_SITEVERIFY_URL = os.getenv(
+    "TM_TURNSTILE_SITEVERIFY_URL",
+    "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+)
+_TURNSTILE_TIMEOUT_MS = int(os.getenv("TM_TURNSTILE_VERIFY_TIMEOUT_MS", "500"))
+_PRECHECK_TTL_MS = int(os.getenv("TM_PRECHECK_TTL_MS", "300000"))
 
 _S3_UPLOADER = S3Uploader(bucket=_S3_BUCKET, prefix=_S3_PREFIX, region=_S3_REGION) if _S3_BUCKET else None
 
@@ -117,32 +134,23 @@ _audit = DefenseDecisionAuditLogger.from_env()
 _challenge_runtime = ChallengeRuntime(ChallengeConfig.from_env())
 _d0_runtime = D0DefenseRuntime()
 
-# [Gap Closing] Load Backend Sanction URL from env
-BE_SANCTION_URL = os.getenv("TM_BACKEND_SANCTION_URL")
+# Backend runtime sanction endpoint
+BE_RUNTIME_SANCTIONS_URL = os.getenv("TM_BACKEND_RUNTIME_SANCTIONS_URL") or os.getenv(
+    "TM_BACKEND_SANCTION_URL"
+)
 
 
-async def _send_be_sanction(user_id: str, reason: str):
-    """Asynchronously notify backend to revoke user session."""
-    if not BE_SANCTION_URL or not user_id:
+async def _send_be_runtime_sanction(sid: str):
+    """Asynchronously notify backend to apply runtime sanction by sid."""
+    if not BE_RUNTIME_SANCTIONS_URL or not sid:
         return
 
     async with httpx.AsyncClient(timeout=2.0) as client:
         try:
-            payload = {
-                "userId": user_id,
-                "reason": f"[AI-Defense] {reason}",
-                "action": "REVOKE_SESSION",
-            }
-            await client.post(BE_SANCTION_URL, json=payload)
+            await client.post(BE_RUNTIME_SANCTIONS_URL, json={"sid": sid})
         except Exception:
             # Shield AI performance from BE failures
             pass
-
-
-# Expose teammate runtime routers directly.
-app.include_router(create_check_router(_d0_runtime))
-app.include_router(create_d0_challenge_router(_d0_runtime))
-app.include_router(create_admin_console_router(_d0_runtime))
 
 
 @app.get("/healthz", response_model=HealthResponse, tags=["health"])
@@ -150,12 +158,12 @@ async def healthz() -> HealthResponse:
     return HealthResponse(status="ok", service="ai-defense", version="v2")
 
 
-@app.get("/readyz", response_model=HealthResponse, tags=["health"])
+@app.get("/readyz", response_model=HealthResponse, tags=["health"], include_in_schema=False)
 async def readyz() -> HealthResponse:
     return HealthResponse(status="ok", service="ai-defense", version="v2")
 
 
-@app.get("/runtime/{session_id}", response_model=RuntimeStateSnapshot, tags=["state"])
+@app.get("/runtime/{session_id}", response_model=RuntimeStateSnapshot, tags=["state"], include_in_schema=False)
 async def runtime_state(session_id: str) -> RuntimeStateSnapshot:
     snap = _state_store.get(session_id)
     if snap is not None:
@@ -176,46 +184,7 @@ async def runtime_state(session_id: str) -> RuntimeStateSnapshot:
     return bridged
 
 
-@app.post("/evaluate", response_model=EvaluateResponse, tags=["decision"])
-async def evaluate(req: EvaluateRequest, background_tasks: BackgroundTasks) -> EvaluateResponse:
-    started_at = time.perf_counter()
-    now_ms = int(time.time() * 1000)
-
-    d0_check_req = _legacy_request_to_d0_check(req)
-    d0_eval_req = _d0_runtime.check_request_to_evaluate(d0_check_req)
-    telemetry_features = _legacy_features_to_d0(req)
-    if telemetry_features:
-        d0_eval_req.context.features = telemetry_features
-    try:
-        out = _d0_runtime.evaluate(d0_eval_req)
-    except Exception as exc:  # noqa: BLE001 - fail-open policy
-        out = _d0_runtime.fail_open_on_unavailable(request=d0_eval_req, error=exc)
-
-    resp = _legacy_response_from_d0(req=req, started_at=started_at, out=out)
-
-    # [Gap Closing] Trigger async backend sanction if status is BLOCK
-    if resp.action == "BLOCK" and req.user_id:
-        background_tasks.add_task(
-            _send_be_sanction, user_id=req.user_id, reason=resp.reason or "AI identified as BOT"
-        )
-
-    # Record metrics
-    EVALUATE_REQUESTS.labels(path=req.path, method=req.method, decision=resp.action).inc()
-
-    snap = _legacy_snapshot_from_d0_state(
-        session_id=req.session_id,
-        d0_state=_d0_runtime.session_state.get(req.session_id),
-        policy_version=out.policy.policy_version,
-        challenge_max_attempts=out.policy.challenge_max_attempts,
-        now_ms=now_ms,
-    )
-    _state_store.upsert(req.session_id, snap)
-    _audit.log(req, resp, snap)
-    return resp
-
-
-@app.post("/challenge/start", response_model=ChallengeStartResponse, tags=["challenge"])
-async def challenge_start(req: ChallengeStartRequest) -> ChallengeStartResponse:
+async def _start_challenge_internal(req: ChallengeStartRequest) -> ChallengeStartResponse:
     snap = _state_store.get(req.session_id) or RuntimeStateSnapshot()
     resp, next_snap = _challenge_runtime.start(req, snap)
     _state_store.upsert(req.session_id, next_snap)
@@ -233,17 +202,7 @@ async def challenge_start(req: ChallengeStartRequest) -> ChallengeStartResponse:
     return resp
 
 
-@app.post("/challenge/event", response_model=ChallengeEventIngestResponse, tags=["challenge"])
-async def challenge_event(req: ChallengeEventIngestRequest) -> ChallengeEventIngestResponse:
-    try:
-        resp = _challenge_runtime.ingest_events(req)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return resp
-
-
-@app.post("/challenge/verify", response_model=ChallengeVerifyResponse, tags=["challenge"])
-async def challenge_verify(req: ChallengeVerifyRequest) -> ChallengeVerifyResponse:
+async def _verify_challenge_internal(req: ChallengeVerifyRequest) -> ChallengeVerifyResponse:
     snap = _state_store.get(req.session_id) or RuntimeStateSnapshot()
     try:
         resp, next_snap = _challenge_runtime.verify(req, snap)
@@ -266,12 +225,196 @@ async def challenge_verify(req: ChallengeVerifyRequest) -> ChallengeVerifyRespon
     return resp
 
 
-@app.get("/meta/storage", tags=["state"])
+@app.post("/ai/precheck/queue-enter", response_model=AiPrecheckQueueEnterResponse, tags=["precheck"])
+async def ai_precheck_queue_enter(
+    req: AiPrecheckQueueEnterRequest,
+    x_auth_sid: str | None = Header(default=None, alias="X-Auth-Sid"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> AiPrecheckQueueEnterResponse:
+    sid = _resolve_session_id(x_auth_sid, authorization)
+    now_ms = int(time.time() * 1000)
+    passed = await _verify_turnstile_token(req.turnstile_token)
+    snap = _get_or_create_snapshot(sid, now_ms)
+    next_snap = snap.model_copy(
+        update={
+            "turnstile_verified": passed,
+            "turnstile_verified_at_ms": now_ms if passed else 0,
+            "updated_ts_ms": now_ms,
+        }
+    )
+    _state_store.upsert(sid, next_snap)
+    return AiPrecheckQueueEnterResponse(result="PASS" if passed else "FAIL")
+
+
+@app.post("/ai/telemetry/ingest", response_model=AiTelemetryIngestResponse, tags=["telemetry"])
+async def ai_telemetry_ingest(
+    req: AiTelemetryIngestRequest,
+    x_auth_sid: str | None = Header(default=None, alias="X-Auth-Sid"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> AiTelemetryIngestResponse:
+    sid = _resolve_session_id(x_auth_sid, authorization)
+    now_ms = int(time.time() * 1000)
+    snap = _get_or_create_snapshot(sid, now_ms)
+    update: dict[str, Any] = {"updated_ts_ms": now_ms}
+    summary = _summary_to_snapshot_dict(req.summary)
+    if req.stage == "QUEUE_ENTER_PRECLICK":
+        update["latest_queue_enter_preclick_summary"] = summary
+        update["latest_queue_enter_preclick_at_ms"] = now_ms
+    else:
+        update["latest_seat_stage_summary"] = summary
+        update["latest_seat_stage_at_ms"] = now_ms
+    _state_store.upsert(sid, snap.model_copy(update=update))
+    return AiTelemetryIngestResponse(result="ACCEPTED")
+
+
+@app.post("/ai/evaluate", response_model=AiEvaluateResponse, tags=["decision"])
+async def ai_evaluate(
+    req: AiEvaluateRequest,
+    background_tasks: BackgroundTasks,
+) -> AiEvaluateResponse:
+    sid = req.context.sid
+    now_ms = int(time.time() * 1000)
+    snap = _get_or_create_snapshot(sid, now_ms)
+
+    if req.event.event_type == "QUEUE_ENTER" and not _precheck_is_valid(snap, now_ms):
+        return AiEvaluateResponse(decision={"action": "BLOCK"})
+
+    if req.event.event_type == "SEAT_ENTRY" and not snap.vqa_passed:
+        return AiEvaluateResponse(decision={"action": "REQUIRE_S3"})
+
+    legacy_req = _build_legacy_request_from_target(
+        sid=sid,
+        event_type=req.event.event_type,
+        request_path=req.event.request_path,
+        request_method=req.event.request_method,
+        now_ms=now_ms,
+        snap=snap,
+    )
+    legacy_resp, _ = _execute_legacy_evaluate(legacy_req)
+    action = _target_action_from_legacy(legacy_resp.action)
+    if action == "BLOCK":
+        background_tasks.add_task(_send_be_runtime_sanction, sid=sid)
+    return AiEvaluateResponse(decision={"action": action})
+
+
+@app.post("/ai/challenge/start", response_model=AiChallengeStartResponse, tags=["challenge"])
+async def ai_challenge_start(
+    req: AiChallengeStartRequest,
+    x_auth_sid: str | None = Header(default=None, alias="X-Auth-Sid"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> AiChallengeStartResponse:
+    sid = _resolve_session_id(x_auth_sid, authorization)
+    start_req = ChallengeStartRequest(session_id=sid, flow_state="S3", challenge_type="catch_ball")
+    resp = await _start_challenge_internal(start_req)
+    snap = _get_or_create_snapshot(sid, int(time.time() * 1000))
+    _state_store.upsert(
+        sid,
+        snap.model_copy(
+            update={
+                "active_challenge_id": resp.challenge_id,
+                "active_challenge_token": resp.challenge_token,
+                "active_challenge_expires_at_ms": resp.expires_at_ms,
+                "updated_ts_ms": resp.issued_at_ms,
+            }
+        ),
+    )
+    return AiChallengeStartResponse(
+        challengeId=resp.challenge_id,
+        attemptLimit=resp.attempt_limit,
+        expiresAtMs=resp.expires_at_ms,
+        publicConfig={
+            "gameDurationMs": int(resp.public_params.get("timing_track_ms", 1600)),
+            "countdownMs": 2000,
+        },
+    )
+
+
+@app.post("/ai/challenge/verify", response_model=AiChallengeVerifyResponse, tags=["challenge"])
+async def ai_challenge_verify(
+    req: AiChallengeVerifyRequest,
+    x_auth_sid: str | None = Header(default=None, alias="X-Auth-Sid"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> AiChallengeVerifyResponse:
+    sid = _resolve_session_id(x_auth_sid, authorization)
+    now_ms = int(time.time() * 1000)
+    snap = _get_or_create_snapshot(sid, now_ms)
+
+    if not snap.active_challenge_id or snap.active_challenge_id != req.challenge_id:
+        return AiChallengeVerifyResponse(result="FAIL", remainingAttempts=0, target="/matches")
+    if snap.active_challenge_expires_at_ms and snap.active_challenge_expires_at_ms < now_ms:
+        return AiChallengeVerifyResponse(result="FAIL", remainingAttempts=0, target="/matches")
+
+    glove = req.final_answer.glove_pos_norm
+    feature_summary = req.feature_summary.model_dump(by_alias=True)
+    caught = req.final_answer.catch_triggered
+    in_bounds = 0.0 <= glove.get("x", -1.0) <= 1.0 and 0.0 <= glove.get("y", -1.0) <= 1.0
+    plausible = (
+        feature_summary["avgVelocity"] > 0
+        and feature_summary["pathRatio"] > 0
+        and feature_summary["linearityRatio"] >= 0
+    )
+    passed = caught and in_bounds and plausible
+
+    next_attempts = snap.vqa_attempt_count + 1
+    remaining = max(snap.vqa_retry_limit - next_attempts, 0)
+    if passed:
+        next_snap = snap.model_copy(
+            update={
+                "vqa_required": False,
+                "vqa_passed": True,
+                "vqa_last_result": "PASSED",
+                "vqa_attempt_count": next_attempts,
+                "vqa_behavior_score": float(feature_summary["linearityRatio"]),
+                "active_challenge_id": None,
+                "active_challenge_token": "",
+                "active_challenge_expires_at_ms": None,
+                "updated_ts_ms": now_ms,
+            }
+        )
+        _state_store.upsert(sid, next_snap)
+        _audit.log_challenge_event(
+            session_id=sid,
+            challenge_id=req.challenge_id,
+            event_type="CHALLENGE_VERIFIED",
+            payload={"result": "PASS", "featureSummary": feature_summary},
+        )
+        return AiChallengeVerifyResponse(result="PASS", remainingAttempts=remaining, target="")
+
+    next_snap = snap.model_copy(
+        update={
+            "vqa_required": True,
+            "vqa_passed": False,
+            "vqa_last_result": "FAILED" if remaining > 0 else "BLOCKED",
+            "vqa_attempt_count": next_attempts,
+            "challenge_fail_count": snap.challenge_fail_count + 1,
+            "updated_ts_ms": now_ms,
+            "active_challenge_id": snap.active_challenge_id if remaining > 0 else None,
+            "active_challenge_token": snap.active_challenge_token if remaining > 0 else "",
+            "active_challenge_expires_at_ms": (
+                snap.active_challenge_expires_at_ms if remaining > 0 else None
+            ),
+        }
+    )
+    _state_store.upsert(sid, next_snap)
+    _audit.log_challenge_event(
+        session_id=sid,
+        challenge_id=req.challenge_id,
+        event_type="CHALLENGE_VERIFIED",
+        payload={"result": "FAIL", "featureSummary": feature_summary},
+    )
+    return AiChallengeVerifyResponse(
+        result="FAIL",
+        remainingAttempts=remaining,
+        target="" if remaining > 0 else "/matches",
+    )
+
+
+@app.get("/meta/storage", tags=["state"], include_in_schema=False)
 async def storage_meta() -> dict[str, str]:
     return {"runtime_state_backend": _state_backend}
 
 
-@app.post("/runtime/vqa/mark", response_model=RuntimeVqaMarkResponse, tags=["state"])
+@app.post("/runtime/vqa/mark", response_model=RuntimeVqaMarkResponse, tags=["state"], include_in_schema=False)
 async def runtime_mark_vqa(req: RuntimeVqaMarkRequest) -> RuntimeVqaMarkResponse:
     now_ms = int(time.time() * 1000)
     snap = _state_store.get(req.session_id) or RuntimeStateSnapshot(updated_ts_ms=now_ms)
@@ -309,6 +452,144 @@ async def runtime_mark_vqa(req: RuntimeVqaMarkRequest) -> RuntimeVqaMarkResponse
         defense_tier=next_snap.defense_tier,
         updated_ts_ms=next_snap.updated_ts_ms,
     )
+
+
+def _get_or_create_snapshot(session_id: str, now_ms: int) -> RuntimeStateSnapshot:
+    snap = _state_store.get(session_id)
+    if snap is not None:
+        return snap
+    return RuntimeStateSnapshot(updated_ts_ms=now_ms)
+
+
+def _resolve_session_id(x_auth_sid: Optional[str], authorization: Optional[str]) -> str:
+    sid = (x_auth_sid or "").strip()
+    if sid:
+        return sid
+    token = (authorization or "").removeprefix("Bearer").strip()
+    if token:
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:24]
+        return f"sid_{digest}"
+    raise HTTPException(status_code=401, detail="missing auth context")
+
+
+async def _verify_turnstile_token(turnstile_token: str) -> bool:
+    token = turnstile_token.strip()
+    if not token:
+        return False
+
+    if _TURNSTILE_SECRET_KEY:
+        try:
+            timeout = max(_TURNSTILE_TIMEOUT_MS / 1000.0, 0.1)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(
+                    _TURNSTILE_SITEVERIFY_URL,
+                    data={"secret": _TURNSTILE_SECRET_KEY, "response": token},
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+                return bool(payload.get("success"))
+        except Exception:
+            return False
+
+    # Local/dev fallback semantics when external secret is not configured.
+    lowered = token.lower()
+    if lowered.startswith(("invalid", "error", "timeout", "fail")):
+        return False
+    return True
+
+
+def _summary_to_snapshot_dict(summary: TelemetrySummary) -> dict[str, float]:
+    return summary.model_dump(by_alias=True)
+
+
+def _summary_to_legacy_features(summary: dict[str, float]) -> Optional[EvaluateTelemetryFeatures]:
+    if not summary:
+        return None
+    payload: dict[str, float] = {}
+    for key in ("tremorStdDev", "linearityRatio", "avgVelocity", "dwellTime"):
+        value = summary.get(key)
+        if value is not None:
+            payload[key] = float(value)
+    if not payload:
+        return None
+    return EvaluateTelemetryFeatures.model_validate(payload)
+
+
+def _target_event_to_flow_state(event_type: str) -> str:
+    mapping = {
+        "QUEUE_ENTER": "S2",
+        "SEAT_ENTRY": "S3",
+        "RECOMMENDATION_BLOCKS": "S4",
+        "SECTION_BLOCKS": "S4",
+        "ASSIGN_HOLD": "S5",
+        "SEAT_HOLDS": "S5",
+    }
+    return mapping.get(event_type, "S0")
+
+
+def _precheck_is_valid(snap: RuntimeStateSnapshot, now_ms: int) -> bool:
+    if not snap.turnstile_verified:
+        return False
+    return now_ms - snap.turnstile_verified_at_ms <= _PRECHECK_TTL_MS
+
+
+def _target_action_from_legacy(action: str) -> str:
+    if action == "CHALLENGE":
+        return "REQUIRE_S3"
+    return action
+
+
+def _build_legacy_request_from_target(
+    *,
+    sid: str,
+    event_type: str,
+    request_path: str,
+    request_method: str,
+    now_ms: int,
+    snap: RuntimeStateSnapshot,
+) -> EvaluateRequest:
+    telemetry_features: dict[str, float] | None = None
+    if event_type == "QUEUE_ENTER":
+        telemetry_features = snap.latest_queue_enter_preclick_summary
+    elif event_type in {"RECOMMENDATION_BLOCKS", "SECTION_BLOCKS", "ASSIGN_HOLD", "SEAT_HOLDS"}:
+        telemetry_features = snap.latest_seat_stage_summary
+
+    return EvaluateRequest(
+        session_id=sid,
+        path=request_path,
+        method=request_method.upper(),
+        timestamp=now_ms,
+        headers={},
+        flow_state=_target_event_to_flow_state(event_type),
+        telemetry_features=_summary_to_legacy_features(telemetry_features or {}),
+    )
+
+
+def _execute_legacy_evaluate(req: EvaluateRequest) -> tuple[EvaluateResponse, RuntimeStateSnapshot]:
+    started_at = time.perf_counter()
+    now_ms = int(time.time() * 1000)
+
+    d0_check_req = _legacy_request_to_d0_check(req)
+    d0_eval_req = _d0_runtime.check_request_to_evaluate(d0_check_req)
+    telemetry_features = _legacy_features_to_d0(req)
+    if telemetry_features:
+        d0_eval_req.context.features = telemetry_features
+    try:
+        out = _d0_runtime.evaluate(d0_eval_req)
+    except Exception as exc:  # noqa: BLE001 - fail-open policy
+        out = _d0_runtime.fail_open_on_unavailable(request=d0_eval_req, error=exc)
+
+    resp = _legacy_response_from_d0(req=req, started_at=started_at, out=out)
+    snap = _legacy_snapshot_from_d0_state(
+        session_id=req.session_id,
+        d0_state=_d0_runtime.session_state.get(req.session_id),
+        policy_version=out.policy.policy_version,
+        challenge_max_attempts=out.policy.challenge_max_attempts,
+        now_ms=now_ms,
+    )
+    _state_store.upsert(req.session_id, snap)
+    _audit.log(req, resp, snap)
+    return resp, snap
 
 
 def _legacy_request_to_d0_check(req: EvaluateRequest) -> D0CheckRequest:
@@ -588,7 +869,7 @@ def _sync_mark_to_d0_runtime(*, req: RuntimeVqaMarkRequest, now_ms: int) -> None
         is_allow=False,
     )
 
-@app.get("/metrics", tags=["infrastructure"])
+@app.get("/metrics", tags=["infrastructure"], include_in_schema=False)
 async def metrics():
     """Expose Prometheus metrics."""
     from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
