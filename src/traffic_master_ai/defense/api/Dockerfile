@@ -13,7 +13,7 @@ COPY src ./src
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir "hatchling" \
     && pip install --no-cache-dir ".[defense_api]" \
-    && python -c "import httpx, fastapi, uvicorn; print('dependency check ok')"
+    && python -c "import httpx, fastapi, uvicorn, jwt; print('dependency check ok')"
 
 EXPOSE 8000
 
