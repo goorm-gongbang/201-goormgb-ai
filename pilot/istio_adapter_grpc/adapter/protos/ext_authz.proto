@@ -1,0 +1,189 @@
+// Envoy ext_authz v3 - Simplified for AI Defense
+// Reference: https://github.com/envoyproxy/envoy/blob/main/api/envoy/service/auth/v3/external_auth.proto
+
+syntax = "proto3";
+
+package envoy.service.auth.v3;
+
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3;authv3";
+
+// External Authorization Service
+service Authorization {
+  // Check performs authorization check based on request attributes.
+  rpc Check(CheckRequest) returns (CheckResponse) {}
+}
+
+// CheckRequest is the request to the authorization service.
+message CheckRequest {
+  // Request attributes for authorization check.
+  AttributeContext attributes = 1;
+}
+
+// AttributeContext contains request attributes.
+message AttributeContext {
+  // Source of the request (client).
+  Peer source = 1;
+
+  // Destination of the request (backend).
+  Peer destination = 2;
+
+  // HTTP request attributes.
+  HttpRequest request = 3;
+
+  // Additional context extensions.
+  map<string, string> context_extensions = 10;
+}
+
+// Peer describes the client or server.
+message Peer {
+  // Network address.
+  Address address = 1;
+
+  // Service name (optional).
+  string service = 2;
+
+  // Labels/metadata.
+  map<string, string> labels = 3;
+
+  // Principal (identity).
+  string principal = 4;
+
+  // Certificate (if mTLS).
+  string certificate = 5;
+}
+
+// Network address.
+message Address {
+  oneof address {
+    SocketAddress socket_address = 1;
+  }
+}
+
+// Socket address (IP:port).
+message SocketAddress {
+  string address = 1;
+  uint32 port_value = 2;
+}
+
+// HTTP request attributes.
+message HttpRequest {
+  // Request ID.
+  string id = 1;
+
+  // HTTP method (GET, POST, etc.).
+  string method = 2;
+
+  // Request headers (lowercase keys).
+  map<string, string> headers = 3;
+
+  // Request path.
+  string path = 4;
+
+  // Host header.
+  string host = 5;
+
+  // URL scheme (http/https).
+  string scheme = 6;
+
+  // Query string (without ?).
+  string query = 7;
+
+  // Fragment (without #).
+  string fragment = 8;
+
+  // Request body size.
+  int64 size = 9;
+
+  // Protocol (HTTP/1.1, HTTP/2).
+  string protocol = 10;
+
+  // Request body (if configured).
+  string body = 11;
+
+  // Raw body bytes.
+  bytes raw_body = 12;
+}
+
+// CheckResponse is the response from the authorization service.
+message CheckResponse {
+  // Status of the check.
+  Status status = 1;
+
+  // Response for OK.
+  OkHttpResponse ok_response = 2;
+
+  // Response for denied.
+  DeniedHttpResponse denied_response = 3;
+
+  // Dynamic metadata to set.
+  map<string, string> dynamic_metadata = 4;
+}
+
+// Status code for the check response.
+message Status {
+  // gRPC status code (0 = OK, others = error).
+  int32 code = 1;
+
+  // Status message.
+  string message = 2;
+}
+
+// OkHttpResponse is returned when the request is allowed.
+message OkHttpResponse {
+  // Headers to add to the request (sent to upstream).
+  repeated HeaderValueOption headers = 1;
+
+  // Headers to add to the response (sent to client).
+  repeated HeaderValueOption response_headers_to_add = 2;
+
+  // Query parameters to set/override.
+  repeated QueryParameter query_parameters_to_set = 3;
+
+  // Query parameters to remove.
+  repeated string query_parameters_to_remove = 4;
+}
+
+// DeniedHttpResponse is returned when the request is denied.
+message DeniedHttpResponse {
+  // HTTP status code to return.
+  HttpStatus status = 1;
+
+  // Headers to add to the response.
+  repeated HeaderValueOption headers = 2;
+
+  // Response body.
+  string body = 3;
+}
+
+// HTTP status code.
+message HttpStatus {
+  // HTTP status code enum or raw code.
+  int32 code = 1;
+}
+
+// Header key-value pair.
+message HeaderValueOption {
+  // Header key-value.
+  HeaderValue header = 1;
+
+  // Append vs replace existing headers.
+  bool append = 2;
+}
+
+// Header value.
+message HeaderValue {
+  // Header name.
+  string key = 1;
+
+  // Header value.
+  string value = 2;
+}
+
+// Query parameter.
+message QueryParameter {
+  // Parameter name.
+  string key = 1;
+
+  // Parameter value.
+  string value = 2;
+}

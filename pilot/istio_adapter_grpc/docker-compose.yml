@@ -1,0 +1,48 @@
+version: "3.8"
+
+services:
+  authz-adapter-grpc:
+    build:
+      context: ./adapter
+      dockerfile: Dockerfile
+    ports:
+      - "9001:9001"
+    environment:
+      - AI_DEFENSE_URL=http://ai-defense:8000/evaluate
+      - AI_DEFENSE_TIMEOUT_SEC=0.8
+      - GRPC_PORT=9001
+      - GRPC_WORKERS=10
+      - TM_AUTHZ_CHECK_METHODS=POST,GET
+      - TM_AUTHZ_CHECK_PATH_PREFIXES=/queue/,/seat/
+    depends_on:
+      - ai-defense
+    networks:
+      - ai-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import grpc; channel = grpc.insecure_channel('localhost:9001'); grpc.channel_ready_future(channel).result(timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  ai-defense:
+    image: ai-defense:latest
+    build:
+      context: ../../src/traffic_master_ai/defense/api
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    networks:
+      - ai-network
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - ai-network
+
+networks:
+  ai-network:
+    driver: bridge
