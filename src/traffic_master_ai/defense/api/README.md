@@ -16,17 +16,12 @@ python -m uvicorn traffic_master_ai.defense.api.main:app --host 0.0.0.0 --port 8
 ```
 
 ## API endpoints
-- `POST /ai/precheck`
+- `POST /ai/precheck/queue-enter`
 - `POST /ai/telemetry/ingest`
 - `POST /ai/challenge/start`
 - `POST /ai/challenge/verify`
 - `POST /ai/evaluate`
 - `GET /healthz`
-
-## Runtime state key
-- direct route state는 `sid + matchId` 복합 키로 분리한다.
-- 같은 계정으로 여러 경기/탭을 동시에 열어도 telemetry 최신 요약이 섞이지 않게 하기 위한 기준이다.
-- `/ai/evaluate`는 `requestPath`의 `/matches/{matchId}`를 파싱해 같은 키를 조회한다.
 
 ## Internal-only routes (Swagger 비노출)
 - `GET /readyz`
@@ -85,17 +80,17 @@ python -m uvicorn traffic_master_ai.defense.api.main:app --host 0.0.0.0 --port 8
 
 ## Target route local examples
 ```bash
-curl -X POST http://127.0.0.1:8010/ai/precheck \
-  -H 'Authorization: Bearer <access_token>' \
+curl -X POST http://127.0.0.1:8010/ai/precheck/queue-enter \
+  -H 'X-Auth-Sid: sid_local_dev' \
   -H 'Content-Type: application/json' \
-  -d '{"matchId":687,"cfToken":"ok-token"}'
+  -d '{"matchId":687,"turnstileToken":"ok-token"}'
 ```
 
 ```bash
 curl -X POST http://127.0.0.1:8010/ai/telemetry/ingest \
-  -H 'Authorization: Bearer <access_token>' \
+  -H 'X-Auth-Sid: sid_local_dev' \
   -H 'Content-Type: application/json' \
-  -d '{"matchId":687,"stage":"QUEUE_ENTER_PRECLICK","events":[{"type":"mousemove","tsMs":1773817200000,"xNorm":0.42,"yNorm":0.77},{"type":"click","tsMs":1773817200200,"xNorm":0.47,"yNorm":0.80,"button":0}]}'
+  -d '{"stage":"QUEUE_ENTER_PRECLICK","summary":{"tremorStdDev":1.0,"linearityRatio":0.8,"avgVelocity":10.0,"dwellTime":20.0,"pathRatio":1.1}}'
 ```
 
 ```bash

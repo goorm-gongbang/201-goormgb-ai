@@ -5,9 +5,12 @@ Legacy endpoints are preserved as compatibility routes.
 Includes Prometheus metrics instrumentation.
 """
 
+# Dev cicd test
+
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import math
 import os
@@ -18,8 +21,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 import httpx
-import jwt
-from fastapi import BackgroundTasks, Body, FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from prometheus_client import Counter
 from prometheus_fastapi_instrumentator import Instrumentator
 
@@ -40,8 +42,8 @@ from .models import (
     AiChallengeVerifyResponse,
     AiEvaluateRequest,
     AiEvaluateResponse,
-    AiPrecheckRequest,
-    AiPrecheckResponse,
+    AiPrecheckQueueEnterRequest,
+    AiPrecheckQueueEnterResponse,
     AiTelemetryIngestRequest,
     AiTelemetryIngestResponse,
     ChallengeEventIngestRequest,
@@ -58,6 +60,7 @@ from .models import (
     RuntimeStateSnapshot,
     RuntimeVqaMarkRequest,
     RuntimeVqaMarkResponse,
+    TelemetrySummary,
 )
 from .state import build_runtime_store_from_env
 
@@ -229,20 +232,16 @@ async def _verify_challenge_internal(req: ChallengeVerifyRequest) -> ChallengeVe
     return resp
 
 
-@app.post("/ai/precheck", response_model=AiPrecheckResponse, tags=["precheck"])
-async def ai_precheck(
-    request: Request,
-    req: AiPrecheckRequest,
+@app.post("/ai/precheck/queue-enter", response_model=AiPrecheckQueueEnterResponse, tags=["precheck"])
+async def ai_precheck_queue_enter(
+    req: AiPrecheckQueueEnterRequest,
+    x_auth_sid: str | None = Header(default=None, alias="X-Auth-Sid"),
     authorization: str | None = Header(default=None, alias="Authorization"),
-) -> AiPrecheckResponse:
-    sid = _resolve_session_id(
-        request.headers.get("X-Auth-Sid") or request.headers.get("X-Session-Id"),
-        authorization,
-    )
-    state_key = _build_state_key(sid, req.match_id)
+) -> AiPrecheckQueueEnterResponse:
+    sid = _resolve_session_id(x_auth_sid, authorization)
     now_ms = int(time.time() * 1000)
-    passed = await _verify_turnstile_token(req.cf_token)
-    snap = _get_or_create_snapshot(state_key, now_ms)
+    passed = await _verify_turnstile_token(req.turnstile_token)
+    snap = _get_or_create_snapshot(sid, now_ms)
     next_snap = snap.model_copy(
         update={
             "turnstile_verified": passed,
@@ -250,102 +249,29 @@ async def ai_precheck(
             "updated_ts_ms": now_ms,
         }
     )
-    _state_store.upsert(state_key, next_snap)
-    return AiPrecheckResponse(allowed=passed)
+    _state_store.upsert(sid, next_snap)
+    return AiPrecheckQueueEnterResponse(result="PASS" if passed else "FAIL")
 
 
 @app.post("/ai/telemetry/ingest", response_model=AiTelemetryIngestResponse, tags=["telemetry"])
 async def ai_telemetry_ingest(
-    request: Request,
-    req: AiTelemetryIngestRequest = Body(
-        ...,
-        openapi_examples={
-            "queueEnterPreclick": {
-                "summary": "QUEUE_ENTER_PRECLICK raw batch 예시",
-                "description": "queue enter 직전 segment raw event batch를 보내고, AI가 summary를 계산하는 형태",
-                "value": {
-                    "matchId": 687,
-                    "stage": "QUEUE_ENTER_PRECLICK",
-                    "events": [
-                        {
-                            "type": "mousemove",
-                            "tsMs": 1773817200000,
-                            "xNorm": 0.42,
-                            "yNorm": 0.77,
-                        },
-                        {
-                            "type": "mousemove",
-                            "tsMs": 1773817200050,
-                            "xNorm": 0.43,
-                            "yNorm": 0.78,
-                        },
-                        {
-                            "type": "click",
-                            "tsMs": 1773817200200,
-                            "xNorm": 0.47,
-                            "yNorm": 0.80,
-                            "button": 0,
-                        },
-                    ],
-                },
-            },
-            "seatStage": {
-                "summary": "SEAT_STAGE raw batch 예시",
-                "description": "좌석 탐색 segment의 raw event batch를 보내고, AI가 최신 summary를 갱신하는 형태",
-                "value": {
-                    "matchId": 687,
-                    "stage": "SEAT_STAGE",
-                    "events": [
-                        {
-                            "type": "mousemove",
-                            "tsMs": 1773817230000,
-                            "xNorm": 0.62,
-                            "yNorm": 0.54,
-                        },
-                        {
-                            "type": "mousemove",
-                            "tsMs": 1773817230050,
-                            "xNorm": 0.64,
-                            "yNorm": 0.55,
-                        },
-                        {
-                            "type": "click",
-                            "tsMs": 1773817230100,
-                            "xNorm": 0.66,
-                            "yNorm": 0.56,
-                            "button": 0,
-                        },
-                    ],
-                },
-            },
-        },
-    ),
+    req: AiTelemetryIngestRequest,
+    x_auth_sid: str | None = Header(default=None, alias="X-Auth-Sid"),
     authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> AiTelemetryIngestResponse:
-    sid = _resolve_session_id(
-        request.headers.get("X-Auth-Sid") or request.headers.get("X-Session-Id"),
-        authorization,
-    )
-    state_key = _build_state_key(sid, req.match_id)
+    sid = _resolve_session_id(x_auth_sid, authorization)
     now_ms = int(time.time() * 1000)
-    snap = _get_or_create_snapshot(state_key, now_ms)
+    snap = _get_or_create_snapshot(sid, now_ms)
     update: dict[str, Any] = {"updated_ts_ms": now_ms}
-    summary = _compute_summary_from_raw_events(req.events)
-    summary["stage"] = req.stage
-    summary["matchId"] = float(req.match_id)
-    summary["ingestedAtMs"] = float(now_ms)
-    summary["eventCount"] = float(len(req.events))
+    summary = _summary_to_snapshot_dict(req.summary)
     if req.stage == "QUEUE_ENTER_PRECLICK":
         update["latest_queue_enter_preclick_summary"] = summary
         update["latest_queue_enter_preclick_at_ms"] = now_ms
-    elif req.stage == "VQA_CHALLENGE":
-        update["latest_vqa_challenge_summary"] = summary
-        update["latest_vqa_challenge_at_ms"] = now_ms
     else:
         update["latest_seat_stage_summary"] = summary
         update["latest_seat_stage_at_ms"] = now_ms
-    _state_store.upsert(state_key, snap.model_copy(update=update))
-    return AiTelemetryIngestResponse(accepted=True)
+    _state_store.upsert(sid, snap.model_copy(update=update))
+    return AiTelemetryIngestResponse(result="ACCEPTED")
 
 
 @app.post("/ai/evaluate", response_model=AiEvaluateResponse, tags=["decision"])
@@ -354,10 +280,8 @@ async def ai_evaluate(
     background_tasks: BackgroundTasks,
 ) -> AiEvaluateResponse:
     sid = req.context.sid
-    match_id = _extract_match_id_from_request_path(req.event.request_path)
-    state_key = _build_state_key(sid, match_id)
     now_ms = int(time.time() * 1000)
-    snap = _get_or_create_snapshot(state_key, now_ms)
+    snap = _get_or_create_snapshot(sid, now_ms)
 
     if req.event.event_type == "QUEUE_ENTER" and not _precheck_is_valid(snap, now_ms):
         return AiEvaluateResponse(decision={"action": "BLOCK"})
@@ -365,12 +289,8 @@ async def ai_evaluate(
     if req.event.event_type == "SEAT_ENTRY" and not snap.vqa_passed:
         return AiEvaluateResponse(decision={"action": "REQUIRE_S3"})
 
-    soft_action = _feature_soft_action(event_type=req.event.event_type, snap=snap)
-    if soft_action is not None:
-        return AiEvaluateResponse(decision={"action": soft_action})
-
     legacy_req = _build_legacy_request_from_target(
-        state_key=state_key,
+        sid=sid,
         event_type=req.event.event_type,
         request_path=req.event.request_path,
         request_method=req.event.request_method,
@@ -386,24 +306,16 @@ async def ai_evaluate(
 
 @app.post("/ai/challenge/start", response_model=AiChallengeStartResponse, tags=["challenge"])
 async def ai_challenge_start(
-    request: Request,
     req: AiChallengeStartRequest,
+    x_auth_sid: str | None = Header(default=None, alias="X-Auth-Sid"),
     authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> AiChallengeStartResponse:
-    sid = _resolve_session_id(
-        request.headers.get("X-Auth-Sid") or request.headers.get("X-Session-Id"),
-        authorization,
-    )
-    state_key = _build_state_key(sid, req.match_id)
-    start_req = ChallengeStartRequest(
-        session_id=state_key,
-        flow_state="S3",
-        challenge_type="catch_ball",
-    )
+    sid = _resolve_session_id(x_auth_sid, authorization)
+    start_req = ChallengeStartRequest(session_id=sid, flow_state="S3", challenge_type="catch_ball")
     resp = await _start_challenge_internal(start_req)
-    snap = _get_or_create_snapshot(state_key, int(time.time() * 1000))
+    snap = _get_or_create_snapshot(sid, int(time.time() * 1000))
     _state_store.upsert(
-        state_key,
+        sid,
         snap.model_copy(
             update={
                 "active_challenge_id": resp.challenge_id,
@@ -415,37 +327,40 @@ async def ai_challenge_start(
     )
     return AiChallengeStartResponse(
         challengeId=resp.challenge_id,
-        remainingAttempts=max(resp.attempt_limit - snap.vqa_attempt_count, 0),
+        attemptLimit=resp.attempt_limit,
         expiresAtMs=resp.expires_at_ms,
+        publicConfig={
+            "gameDurationMs": int(resp.public_params.get("timing_track_ms", 1600)),
+            "countdownMs": 2000,
+        },
     )
 
 
 @app.post("/ai/challenge/verify", response_model=AiChallengeVerifyResponse, tags=["challenge"])
 async def ai_challenge_verify(
-    request: Request,
     req: AiChallengeVerifyRequest,
+    x_auth_sid: str | None = Header(default=None, alias="X-Auth-Sid"),
     authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> AiChallengeVerifyResponse:
-    sid = _resolve_session_id(
-        request.headers.get("X-Auth-Sid") or request.headers.get("X-Session-Id"),
-        authorization,
-    )
-    state_key = _build_state_key(sid, req.match_id)
+    sid = _resolve_session_id(x_auth_sid, authorization)
     now_ms = int(time.time() * 1000)
-    snap = _get_or_create_snapshot(state_key, now_ms)
+    snap = _get_or_create_snapshot(sid, now_ms)
 
     if not snap.active_challenge_id or snap.active_challenge_id != req.challenge_id:
-        return AiChallengeVerifyResponse(success=False, remainingAttempts=0)
+        return AiChallengeVerifyResponse(result="FAIL", remainingAttempts=0, target="/matches")
     if snap.active_challenge_expires_at_ms and snap.active_challenge_expires_at_ms < now_ms:
-        return AiChallengeVerifyResponse(success=False, remainingAttempts=0)
+        return AiChallengeVerifyResponse(result="FAIL", remainingAttempts=0, target="/matches")
 
-    feature_summary = snap.latest_vqa_challenge_summary or {}
-    in_bounds = 0.0 <= req.catch_x_norm <= 1.0 and 0.0 <= req.catch_y_norm <= 1.0
-    timely = req.catch_ts_ms <= (snap.active_challenge_expires_at_ms or now_ms)
-    plausible = True
-    if feature_summary:
-        plausible = bool(feature_summary.get("mousePointCount", 0.0) >= 2.0)
-    passed = req.caught and in_bounds and timely and plausible
+    glove = req.final_answer.glove_pos_norm
+    feature_summary = req.feature_summary.model_dump(by_alias=True)
+    caught = req.final_answer.catch_triggered
+    in_bounds = 0.0 <= glove.get("x", -1.0) <= 1.0 and 0.0 <= glove.get("y", -1.0) <= 1.0
+    plausible = (
+        feature_summary["avgVelocity"] > 0
+        and feature_summary["pathRatio"] > 0
+        and feature_summary["linearityRatio"] >= 0
+    )
+    passed = caught and in_bounds and plausible
 
     next_attempts = snap.vqa_attempt_count + 1
     remaining = max(snap.vqa_retry_limit - next_attempts, 0)
@@ -456,29 +371,21 @@ async def ai_challenge_verify(
                 "vqa_passed": True,
                 "vqa_last_result": "PASSED",
                 "vqa_attempt_count": next_attempts,
-                "vqa_behavior_score": float(feature_summary.get("linearityRatio", 0.0)),
+                "vqa_behavior_score": float(feature_summary["linearityRatio"]),
                 "active_challenge_id": None,
                 "active_challenge_token": "",
                 "active_challenge_expires_at_ms": None,
                 "updated_ts_ms": now_ms,
             }
         )
-        _state_store.upsert(state_key, next_snap)
+        _state_store.upsert(sid, next_snap)
         _audit.log_challenge_event(
-            session_id=state_key,
+            session_id=sid,
             challenge_id=req.challenge_id,
             event_type="CHALLENGE_VERIFIED",
-            payload={
-                "matchId": req.match_id,
-                "result": "PASS",
-                "caught": req.caught,
-                "catchTsMs": req.catch_ts_ms,
-                "catchXNorm": req.catch_x_norm,
-                "catchYNorm": req.catch_y_norm,
-                "featureSummary": feature_summary,
-            },
+            payload={"result": "PASS", "featureSummary": feature_summary},
         )
-        return AiChallengeVerifyResponse(success=True, remainingAttempts=remaining)
+        return AiChallengeVerifyResponse(result="PASS", remainingAttempts=remaining, target="")
 
     next_snap = snap.model_copy(
         update={
@@ -495,22 +402,18 @@ async def ai_challenge_verify(
             ),
         }
     )
-    _state_store.upsert(state_key, next_snap)
+    _state_store.upsert(sid, next_snap)
     _audit.log_challenge_event(
-        session_id=state_key,
+        session_id=sid,
         challenge_id=req.challenge_id,
         event_type="CHALLENGE_VERIFIED",
-        payload={
-            "matchId": req.match_id,
-            "result": "FAIL",
-            "caught": req.caught,
-            "catchTsMs": req.catch_ts_ms,
-            "catchXNorm": req.catch_x_norm,
-            "catchYNorm": req.catch_y_norm,
-            "featureSummary": feature_summary,
-        },
+        payload={"result": "FAIL", "featureSummary": feature_summary},
     )
-    return AiChallengeVerifyResponse(success=False, remainingAttempts=remaining)
+    return AiChallengeVerifyResponse(
+        result="FAIL",
+        remainingAttempts=remaining,
+        target="" if remaining > 0 else "/matches",
+    )
 
 
 @app.get("/meta/storage", tags=["state"], include_in_schema=False)
@@ -565,33 +468,14 @@ def _get_or_create_snapshot(session_id: str, now_ms: int) -> RuntimeStateSnapsho
     return RuntimeStateSnapshot(updated_ts_ms=now_ms)
 
 
-def _build_state_key(sid: str, match_id: int) -> str:
-    return f"{sid}:{match_id}"
-
-
-def _extract_match_id_from_request_path(request_path: str) -> int:
-    match = _MATCH_ID_PATH_RE.search(request_path)
-    if match is None:
-        raise HTTPException(status_code=400, detail="matchId not found in requestPath")
-    return int(match.group("match_id"))
-
-
-def _resolve_session_id(
-    x_auth_sid: Optional[str],
-    authorization: Optional[str],
-) -> str:
+def _resolve_session_id(x_auth_sid: Optional[str], authorization: Optional[str]) -> str:
     sid = (x_auth_sid or "").strip()
     if sid:
         return sid
     token = (authorization or "").removeprefix("Bearer").strip()
     if token:
-        try:
-            payload = jwt.decode(token, options={"verify_signature": False})
-            token_sid = str(payload.get("sid", "")).strip()
-            if token_sid:
-                return token_sid
-        except Exception:
-            pass
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:24]
+        return f"sid_{digest}"
     raise HTTPException(status_code=401, detail="missing auth context")
 
 
@@ -621,122 +505,15 @@ async def _verify_turnstile_token(turnstile_token: str) -> bool:
     return True
 
 
-def _extract_pointer_points(events: list[RawTelemetryEvent]) -> list[tuple[int, float, float]]:
-    points: list[tuple[int, float, float]] = []
-    virtual_canvas_px = 1000.0
-    for event in events:
-        if event.type not in {"mousemove", "mousedown", "mouseup", "click"}:
-            continue
-        if event.x_norm is None or event.y_norm is None:
-            continue
-        points.append(
-            (
-                int(event.ts_ms),
-                float(event.x_norm) * virtual_canvas_px,
-                float(event.y_norm) * virtual_canvas_px,
-            )
-        )
-    points.sort(key=lambda item: item[0])
-    return points
-
-
-def _perpendicular_distance(
-    ax: float,
-    ay: float,
-    bx: float,
-    by: float,
-    px: float,
-    py: float,
-) -> float:
-    dx = bx - ax
-    dy = by - ay
-    denom = math.hypot(dx, dy)
-    if denom <= 1e-6:
-        return 0.0
-    return abs(dx * (ay - py) - (ax - px) * dy) / denom
-
-
-def _stddev(values: list[float]) -> float:
-    if len(values) <= 1:
-        return 0.0
-    mean = sum(values) / len(values)
-    variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
-    return math.sqrt(max(variance, 0.0))
-
-
-def _compute_summary_from_raw_events(events: list[RawTelemetryEvent]) -> dict[str, float]:
-    points = _extract_pointer_points(events)
-    summary: dict[str, float] = {
-        "mousePointCount": float(len(points)),
-        "totalDist": 0.0,
-        "linearDist": 0.0,
-        "linearityRatio": 0.0,
-        "avgVelocity": 0.0,
-        "tremorStdDev": 0.0,
-        "dwellTime": 0.0,
-        "pathRatio": 0.0,
-    }
-    if len(points) < 2:
-        return summary
-
-    total_dist = 0.0
-    dwell_time_ms = 0.0
-    dwell_radius_px = 3.0
-    dwell_speed_px_per_sec = 30.0
-    for (ts0, x0, y0), (ts1, x1, y1) in zip(points, points[1:]):
-        segment_dist = math.hypot(x1 - x0, y1 - y0)
-        total_dist += segment_dist
-        dt_ms = max(float(ts1 - ts0), 0.0)
-        speed_px_per_sec = (segment_dist / (dt_ms / 1000.0)) if dt_ms > 1e-6 else 0.0
-        if segment_dist <= dwell_radius_px or speed_px_per_sec <= dwell_speed_px_per_sec:
-            dwell_time_ms += dt_ms
-
-    _, ax, ay = points[0]
-    first_ts, _, _ = points[0]
-    last_ts, bx, by = points[-1]
-    linear_dist = math.hypot(bx - ax, by - ay)
-    duration_s = max((last_ts - first_ts) / 1000.0, 1e-6)
-    linearity_ratio = linear_dist / total_dist if total_dist > 1e-6 else 0.0
-    avg_velocity = total_dist / duration_s if duration_s > 1e-6 else 0.0
-    path_ratio = total_dist / max(linear_dist, 1e-6) if total_dist > 1e-6 else 0.0
-
-    tremor_samples: list[float] = []
-    if linear_dist > 20.0:
-        for _, px, py in points[1:-1]:
-            tremor_samples.append(_perpendicular_distance(ax, ay, bx, by, px, py))
-
-    summary.update(
-        {
-            "totalDist": total_dist,
-            "linearDist": linear_dist,
-            "linearityRatio": linearity_ratio,
-            "avgVelocity": avg_velocity,
-            "tremorStdDev": _stddev(tremor_samples),
-            "dwellTime": dwell_time_ms,
-            "pathRatio": path_ratio,
-        }
-    )
-    summary["isLinearPath"] = _is_linear_path(linearity_ratio, path_ratio)
-    summary["botRisk"] = _compute_bot_risk(summary)
-    return summary
+def _summary_to_snapshot_dict(summary: TelemetrySummary) -> dict[str, float]:
+    return summary.model_dump(by_alias=True)
 
 
 def _summary_to_legacy_features(summary: dict[str, float]) -> Optional[EvaluateTelemetryFeatures]:
     if not summary:
         return None
-    point_count = _opt_int(summary.get("mousePointCount"))
-    if point_count is not None and point_count < 2:
-        return None
     payload: dict[str, float] = {}
-    for key in (
-        "tremorStdDev",
-        "linearityRatio",
-        "avgVelocity",
-        "dwellTime",
-        "pathRatio",
-        "totalDist",
-        "linearDist",
-    ):
+    for key in ("tremorStdDev", "linearityRatio", "avgVelocity", "dwellTime"):
         value = summary.get(key)
         if value is not None:
             payload[key] = float(value)
@@ -757,75 +534,6 @@ def _target_event_to_flow_state(event_type: str) -> str:
     return mapping.get(event_type, "S0")
 
 
-def _normalize(value: float, lower: float, upper: float) -> float:
-    if upper <= lower:
-        return 0.0
-    return max(0.0, min(1.0, (value - lower) / (upper - lower)))
-
-
-def _is_unnatural_velocity(avg_velocity: float) -> float:
-    if avg_velocity <= 50.0:
-        return 0.0
-    if avg_velocity >= 1500.0:
-        return 1.0
-    return (avg_velocity - 50.0) / (1500.0 - 50.0)
-
-
-def _is_linear_path(linearity_ratio: float, path_ratio: float) -> float:
-    return 1.0 if linearity_ratio >= 0.92 and path_ratio <= 1.10 else 0.0
-
-
-def _compute_bot_risk(summary: dict[str, float]) -> float:
-    tremor = max(0.0, min(6.0, float(summary.get("tremorStdDev", 0.0))))
-    linearity = max(0.0, min(1.0, float(summary.get("linearityRatio", 0.0))))
-    velocity = max(0.0, min(4000.0, float(summary.get("avgVelocity", 0.0))))
-    dwell = max(0.0, min(2000.0, float(summary.get("dwellTime", 0.0))))
-    path_ratio = max(1.0, min(3.0, float(summary.get("pathRatio", 1.0))))
-    linear_path = _is_linear_path(linearity, path_ratio)
-    risk = (
-        0.35 * (1.0 - _normalize(tremor, 0.0, 6.0))
-        + 0.25 * linearity
-        + 0.15 * _is_unnatural_velocity(velocity)
-        + 0.15 * (1.0 - _normalize(dwell, 0.0, 2000.0))
-        + 0.10 * linear_path
-    )
-    return max(0.0, min(1.0, risk))
-
-
-def _feature_soft_action(
-    *,
-    event_type: str,
-    snap: RuntimeStateSnapshot,
-) -> Optional[str]:
-    if event_type == "QUEUE_ENTER":
-        summary = snap.latest_queue_enter_preclick_summary
-        require_s3_threshold = 0.78
-        throttle_threshold = 0.62
-    elif event_type in {"RECOMMENDATION_BLOCKS", "SECTION_BLOCKS", "ASSIGN_HOLD", "SEAT_HOLDS"}:
-        summary = snap.latest_seat_stage_summary
-        require_s3_threshold = 0.74
-        throttle_threshold = 0.58
-    else:
-        return None
-
-    if not summary:
-        return None
-
-    point_count = _opt_int(summary.get("mousePointCount"))
-    if point_count is None or point_count < 2:
-        return None
-
-    risk = _to_float(summary.get("botRisk"))
-    if risk is None:
-        return None
-
-    if risk >= require_s3_threshold:
-        return "REQUIRE_S3"
-    if risk >= throttle_threshold:
-        return "THROTTLE"
-    return None
-
-
 def _precheck_is_valid(snap: RuntimeStateSnapshot, now_ms: int) -> bool:
     if not snap.turnstile_verified:
         return False
@@ -840,7 +548,7 @@ def _target_action_from_legacy(action: str) -> str:
 
 def _build_legacy_request_from_target(
     *,
-    state_key: str,
+    sid: str,
     event_type: str,
     request_path: str,
     request_method: str,
@@ -854,7 +562,7 @@ def _build_legacy_request_from_target(
         telemetry_features = snap.latest_seat_stage_summary
 
     return EvaluateRequest(
-        session_id=state_key,
+        session_id=sid,
         path=request_path,
         method=request_method.upper(),
         timestamp=now_ms,
