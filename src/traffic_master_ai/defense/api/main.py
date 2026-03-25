@@ -12,7 +12,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import math
 import os
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -54,6 +56,7 @@ from .models import (
     EvaluateResponse,
     EvaluateTelemetryFeatures,
     HealthResponse,
+    RawTelemetryEvent,
     RuntimeStateSnapshot,
     RuntimeVqaMarkRequest,
     RuntimeVqaMarkResponse,
@@ -72,6 +75,8 @@ instrumentator = Instrumentator()
 
 
 logger = logging.getLogger(__name__)
+
+_MATCH_ID_PATH_RE = re.compile(r"/matches/(?P<match_id>\d+)(?:/|$)")
 
 # S3 Archiver Config
 _S3_BUCKET = os.getenv("TM_S3_BUCKET")
