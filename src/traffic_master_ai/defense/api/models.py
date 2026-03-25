@@ -12,7 +12,8 @@ DefenseActionStr = Literal["NONE", "CHALLENGE", "THROTTLE", "GATE", "BLOCK"]
 ChallengeTypeStr = Literal["queue_gate", "catch_ball"]
 ChallengeResultStr = Literal["PASSED", "FAILED", "BLOCKED", "EXPIRED"]
 PointerEventTypeStr = Literal["down", "move", "up", "click"]
-TelemetryStageStr = Literal["QUEUE_ENTER_PRECLICK", "SEAT_STAGE"]
+CanonicalTelemetryStageStr = Literal["QUEUE_ENTER_PRECLICK", "SEAT_STAGE", "VQA_CHALLENGE"]
+CanonicalTelemetryEventTypeStr = Literal["mousemove", "mousedown", "mouseup", "click"]
 TargetDefenseActionStr = Literal["NONE", "THROTTLE", "REQUIRE_S3", "BLOCK"]
 TargetChallengeResultStr = Literal["PASS", "FAIL"]
 TargetEvaluateEventTypeStr = Literal[
@@ -130,10 +131,12 @@ class RuntimeStateSnapshot(BaseModel):
     active_challenge_token: str = ""
     turnstile_verified: bool = False
     turnstile_verified_at_ms: int = 0
-    latest_queue_enter_preclick_summary: dict[str, float] = Field(default_factory=dict)
+    latest_queue_enter_preclick_summary: dict[str, Any] = Field(default_factory=dict)
     latest_queue_enter_preclick_at_ms: int = 0
-    latest_seat_stage_summary: dict[str, float] = Field(default_factory=dict)
+    latest_seat_stage_summary: dict[str, Any] = Field(default_factory=dict)
     latest_seat_stage_at_ms: int = 0
+    latest_vqa_challenge_summary: dict[str, Any] = Field(default_factory=dict)
+    latest_vqa_challenge_at_ms: int = 0
     vqa_behavior_score: float = 0.0
 
     model_config = {"extra": "forbid"}
@@ -246,139 +249,19 @@ class RuntimeVqaMarkResponse(BaseModel):
     updated_ts_ms: int
 
 
-class AiPrecheckQueueEnterRequest(BaseModel):
+class AiPrecheckRequest(BaseModel):
     """Frontend -> AI direct route for queue-enter precheck."""
 
     match_id: int = Field(alias="matchId", ge=0)
-    turnstile_token: str = Field(alias="turnstileToken", min_length=1)
+    cf_token: str = Field(alias="cfToken", min_length=1)
 
     model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
-class AiPrecheckQueueEnterResponse(BaseModel):
+class AiPrecheckResponse(BaseModel):
     """Minimal queue-enter precheck response."""
 
-    result: Literal["PASS", "FAIL"]
-
-    model_config = {"extra": "forbid"}
-
-
-class AiTelemetryIngestRequest(BaseModel):
-    """Frontend -> AI direct route for async telemetry ingest."""
-
-    stage: TelemetryStageStr
-    summary: TelemetrySummary
-
-    model_config = {"extra": "forbid"}
-
-
-class AiTelemetryIngestResponse(BaseModel):
-    """Minimal telemetry ingest response."""
-
-    result: Literal["ACCEPTED"]
-
-    model_config = {"extra": "forbid"}
-
-
-class AiEvaluateEvent(BaseModel):
-    """Authz Adapter -> AI event envelope."""
-
-    event_type: TargetEvaluateEventTypeStr = Field(alias="eventType")
-    request_path: str = Field(alias="requestPath", min_length=1)
-    request_method: str = Field(alias="requestMethod", min_length=1)
-
-    model_config = {"populate_by_name": True, "extra": "forbid"}
-
-
-class AiEvaluateContext(BaseModel):
-    """Authz Adapter -> AI context envelope."""
-
-    sid: str = Field(min_length=1)
-
-    model_config = {"extra": "forbid"}
-
-
-class AiEvaluateRequest(BaseModel):
-    """Authz Adapter -> AI evaluate request for target /ai/evaluate."""
-
-    event: AiEvaluateEvent
-    context: AiEvaluateContext
-
-    model_config = {"extra": "forbid"}
-
-
-class AiEvaluateDecision(BaseModel):
-    """Minimal target decision payload."""
-
-    action: TargetDefenseActionStr
-
-    model_config = {"extra": "forbid"}
-
-
-class AiEvaluateResponse(BaseModel):
-    """Minimal target evaluate response."""
-
-    decision: AiEvaluateDecision
-
-    model_config = {"extra": "forbid"}
-
-
-class AiChallengeStartRequest(BaseModel):
-    """Frontend -> AI direct route for challenge issuance."""
-
-    match_id: int = Field(alias="matchId", ge=0)
-
-    model_config = {"populate_by_name": True, "extra": "forbid"}
-
-
-class AiChallengeStartPublicConfig(BaseModel):
-    """Small public config payload exposed to frontend."""
-
-    game_duration_ms: int = Field(alias="gameDurationMs", ge=0)
-    countdown_ms: int = Field(alias="countdownMs", ge=0)
-
-    model_config = {"populate_by_name": True, "extra": "forbid"}
-
-
-class AiChallengeStartResponse(BaseModel):
-    """Minimal target challenge-start response."""
-
-    challenge_id: str = Field(alias="challengeId")
-    attempt_limit: int = Field(alias="attemptLimit", ge=0)
-    expires_at_ms: int = Field(alias="expiresAtMs", ge=0)
-    public_config: AiChallengeStartPublicConfig = Field(alias="publicConfig")
-
-    model_config = {"populate_by_name": True, "extra": "forbid"}
-
-
-class AiChallengeVerifyFinalAnswer(BaseModel):
-    """Frontend -> AI final answer payload."""
-
-    catch_ts_ms: int = Field(alias="catchTsMs", ge=0)
-    glove_pos_norm: dict[str, float] = Field(alias="glovePosNorm")
-    catch_triggered: bool = Field(alias="catchTriggered")
-
-    model_config = {"populate_by_name": True, "extra": "forbid"}
-
-
-class AiChallengeVerifyRequest(BaseModel):
-    """Frontend -> AI challenge verification request."""
-
-    challenge_id: str = Field(alias="challengeId", min_length=1)
-    final_answer: AiChallengeVerifyFinalAnswer = Field(alias="finalAnswer")
-    feature_summary: TelemetrySummary = Field(alias="featureSummary")
-
-    model_config = {"populate_by_name": True, "extra": "forbid"}
-
-
-class AiChallengeVerifyResponse(BaseModel):
-    """Minimal target challenge-verify response."""
-
-    result: TargetChallengeResultStr
-    remaining_attempts: int = Field(alias="remainingAttempts", ge=0)
-    target: str = ""
-
-    model_config = {"populate_by_name": True, "extra": "forbid"}
+    allowed: bool
 
     model_config = {"extra": "forbid"}
 
