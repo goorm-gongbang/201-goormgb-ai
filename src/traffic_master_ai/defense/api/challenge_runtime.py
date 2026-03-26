@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import os
 import random
 import time
 import uuid
@@ -17,6 +16,7 @@ from .models import (
     ChallengeTypeStr,
     RuntimeStateSnapshot,
 )
+from .settings import read_float, read_int, read_str
 
 
 @dataclass(slots=True)
@@ -29,12 +29,12 @@ class ChallengeConfig:
     timing_window_ms: int = 260
 
     @staticmethod
-    def from_env() -> ChallengeConfig:
+    def from_settings() -> ChallengeConfig:
         return ChallengeConfig(
-            secret=os.getenv("TM_CHALLENGE_SECRET", "tm-local-dev-secret"),
-            ttl_ms=int(os.getenv("TM_CHALLENGE_TTL_MS", "120000")),
-            catch_radius_px=float(os.getenv("TM_CHALLENGE_CATCH_RADIUS_PX", "38")),
-            timing_window_ms=int(os.getenv("TM_CHALLENGE_TIMING_WINDOW_MS", "260")),
+            secret=read_str("TM_CHALLENGE_SECRET", "tm-local-dev-secret"),
+            ttl_ms=read_int("TM_CHALLENGE_TTL_MS", 120000),
+            catch_radius_px=read_float("TM_CHALLENGE_CATCH_RADIUS_PX", 38.0),
+            timing_window_ms=read_int("TM_CHALLENGE_TIMING_WINDOW_MS", 260),
         )
 
 

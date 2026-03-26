@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-import os
 import re
 import time
 import uuid
@@ -55,7 +54,8 @@ from .models import (
     RuntimeVqaMarkRequest,
     RuntimeVqaMarkResponse,
 )
-from .state import build_runtime_store_from_env
+from .settings import ENV_FILE_PATH, read_int, read_str
+from .state import build_runtime_store_from_settings
 
 # Custom Metrics
 EVALUATE_REQUESTS = Counter(
@@ -79,17 +79,17 @@ _POST_VQA_GUARD_EVENT_TYPES: set[str] = {
 }
 
 # S3 Archiver Config
-_S3_BUCKET = os.getenv("TM_S3_BUCKET")
-_S3_PREFIX = os.getenv("TM_S3_PREFIX", "ai-defense/audit/")
-_S3_REGION = os.getenv("TM_S3_REGION")
-_S3_INTERVAL = int(os.getenv("TM_S3_ARCHIVE_INTERVAL_SECONDS", "3600"))
-_TURNSTILE_SECRET_KEY = os.getenv("TM_TURNSTILE_SECRET_KEY", "").strip()
-_TURNSTILE_SITEVERIFY_URL = os.getenv(
+_S3_BUCKET = read_str("TM_S3_BUCKET", "").strip() or None
+_S3_PREFIX = read_str("TM_S3_PREFIX", "ai-defense/audit/")
+_S3_REGION = read_str("TM_S3_REGION", "").strip() or None
+_S3_INTERVAL = read_int("TM_S3_ARCHIVE_INTERVAL_SECONDS", 3600)
+_TURNSTILE_SECRET_KEY = read_str("TM_TURNSTILE_SECRET_KEY", "").strip()
+_TURNSTILE_SITEVERIFY_URL = read_str(
     "TM_TURNSTILE_SITEVERIFY_URL",
     "https://challenges.cloudflare.com/turnstile/v0/siteverify",
 )
-_TURNSTILE_TIMEOUT_MS = int(os.getenv("TM_TURNSTILE_VERIFY_TIMEOUT_MS", "500"))
-_PRECHECK_TTL_MS = int(os.getenv("TM_PRECHECK_TTL_MS", "300000"))
+_TURNSTILE_TIMEOUT_MS = read_int("TM_TURNSTILE_VERIFY_TIMEOUT_MS", 500)
+_PRECHECK_TTL_MS = read_int("TM_PRECHECK_TTL_MS", 300000)
 
 _S3_UPLOADER = S3Uploader(bucket=_S3_BUCKET, prefix=_S3_PREFIX, region=_S3_REGION) if _S3_BUCKET else None
 
@@ -97,7 +97,7 @@ _S3_UPLOADER = S3Uploader(bucket=_S3_BUCKET, prefix=_S3_PREFIX, region=_S3_REGIO
 async def _s3_archive_loop():
     """Background loop to periodically upload logs to S3."""
     if not _S3_UPLOADER:
-        logger.info("S3 Archiving is disabled (TM_S3_BUCKET not set).")
+        logger.info("S3 Archiving is disabled (%s TM_S3_BUCKET not set).", ENV_FILE_PATH)
         return
 
     logger.info("Starting S3 Archiving Loop (Interval: %ds)", _S3_INTERVAL)
@@ -136,21 +136,19 @@ app = FastAPI(
 # [Gap Closing] Instrument app at the start (to allow middleware addition)
 instrumentator.instrument(app)
 
-_state_store, _state_backend = build_runtime_store_from_env()
-_audit = DefenseDecisionAuditLogger.from_env()
-_challenge_runtime = ChallengeRuntime(ChallengeConfig.from_env())
+_state_store, _state_backend = build_runtime_store_from_settings()
+_audit = DefenseDecisionAuditLogger.from_settings()
+_challenge_runtime = ChallengeRuntime(ChallengeConfig.from_settings())
 _d0_runtime = D0DefenseRuntime()
 
 # Backend runtime sanction endpoint
-BE_RUNTIME_SANCTIONS_URL = os.getenv("TM_BACKEND_RUNTIME_SANCTIONS_URL") or os.getenv(
-    "TM_BACKEND_SANCTION_URL"
-)
+BE_RUNTIME_SANCTIONS_URL = read_str("TM_BACKEND_RUNTIME_SANCTIONS_URL", "").strip()
 
 
 async def _send_be_runtime_sanction(sid: str):
     """Asynchronously notify backend to apply runtime sanction by sid.
 
-    NOTE: 현재 이 함수는 TM_BACKEND_RUNTIME_SANCTIONS_URL 미설정으로 비활성 상태이다.
+    NOTE: 현재 이 함수는 `.env.local`의 TM_BACKEND_RUNTIME_SANCTIONS_URL 미설정으로 비활성 상태이다.
     sid는 202 authz-adapter가 ingress 시점에 추출한 값(JWT signature 검증 없는 fallback 포함)이며,
     backend sanction identity로 신뢰할 수 없다.
 

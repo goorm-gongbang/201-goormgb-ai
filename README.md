@@ -131,6 +131,8 @@ source .venv/bin/activate
 python -m uvicorn traffic_master_ai.defense.api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
+`defense/api`는 `src/traffic_master_ai/defense/api/.env.local`만 읽습니다.
+
 ## 5. 헬스체크
 
 ```bash

@@ -14,6 +14,10 @@ pip install -e ".[defense_api]"
 python -m uvicorn traffic_master_ai.defense.api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
+## Local env loading
+- `defense/api` 런타임은 `src/traffic_master_ai/defense/api/.env.local`만 읽는다.
+- 설정 로딩은 `src/traffic_master_ai/defense/api/settings.py`에서 단일 처리한다.
+
 ## Public API endpoints
 - `POST /ai/precheck`
 - `POST /ai/telemetry/ingest`
@@ -53,7 +57,7 @@ python -m uvicorn traffic_master_ai.defense.api.main:app --host 0.0.0.0 --port 8
 - `TM_CHALLENGE_TIMING_WINDOW_MS` (default `260`)
 
 ### Runtime sanction callback
-- `TM_BACKEND_RUNTIME_SANCTIONS_URL` (`TM_BACKEND_SANCTION_URL` fallback)
+- `TM_BACKEND_RUNTIME_SANCTIONS_URL`
 
 ### Audit / archive
 - `TM_DEFENSE_AUDIT_LOG_PATH` (default `logs/defense_decision_audit.jsonl`)

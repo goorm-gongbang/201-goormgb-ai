@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 from threading import Lock
 from typing import Protocol
 
 from .models import RuntimeStateSnapshot
+from .settings import read_int, read_str
 
 
 class RuntimeStateStore(Protocol):
@@ -84,14 +84,14 @@ class RedisStateStore(RuntimeStateStore):
         )
 
 
-def build_runtime_store_from_env() -> tuple[RuntimeStateStore, str]:
-    """Build runtime state store from environment settings.
+def build_runtime_store_from_settings() -> tuple[RuntimeStateStore, str]:
+    """Build runtime state store from `.env.local` settings.
 
     Returns:
         Tuple of (store, backend_name).
     """
-    ttl = int(os.getenv("TM_SESSION_STATE_TTL_SECONDS", "1800"))
-    redis_url = os.getenv("TM_REDIS_URL", "").strip()
+    ttl = read_int("TM_SESSION_STATE_TTL_SECONDS", 1800)
+    redis_url = read_str("TM_REDIS_URL", "").strip()
 
     if redis_url:
         try:

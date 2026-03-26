@@ -1,4 +1,5 @@
 import os
+import uuid
 
 from fastapi.testclient import TestClient
 
@@ -14,12 +15,16 @@ def _headers(session_id: str) -> dict[str, str]:
     return {"X-Session-Id": session_id}
 
 
+def _session_id(prefix: str) -> str:
+    return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+
 def _state_key(session_id: str) -> str:
     return f"{session_id}:{MATCH_ID}"
 
 
 def test_ai_challenge_start_returns_target_contract() -> None:
-    session_id = "sess-ai-start-1"
+    session_id = _session_id("sess-ai-start")
     response = client.post(
         "/ai/challenge/start",
         json={"matchId": MATCH_ID},
@@ -38,7 +43,7 @@ def test_ai_challenge_start_returns_target_contract() -> None:
 
 
 def test_ai_challenge_verify_retries_then_blocks() -> None:
-    session_id = "sess-ai-verify-block-1"
+    session_id = _session_id("sess-ai-verify-block")
     start = client.post(
         "/ai/challenge/start",
         json={"matchId": MATCH_ID},
@@ -90,7 +95,7 @@ def test_ai_challenge_verify_retries_then_blocks() -> None:
 
 
 def test_ai_challenge_verify_success_marks_runtime_passed() -> None:
-    session_id = "sess-ai-verify-pass-1"
+    session_id = _session_id("sess-ai-verify-pass")
     start = client.post(
         "/ai/challenge/start",
         json={"matchId": MATCH_ID},
@@ -125,7 +130,7 @@ def test_ai_challenge_verify_success_marks_runtime_passed() -> None:
 
 
 def test_ai_challenge_verify_rejects_mismatched_challenge_id() -> None:
-    session_id = "sess-ai-verify-mismatch-1"
+    session_id = _session_id("sess-ai-verify-mismatch")
     start = client.post(
         "/ai/challenge/start",
         json={"matchId": MATCH_ID},

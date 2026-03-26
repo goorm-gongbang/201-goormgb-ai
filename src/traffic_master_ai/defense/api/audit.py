@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
 from typing import Any
 
 from .models import EvaluateRequest, EvaluateResponse, RuntimeStateSnapshot
+from .settings import read_str
 
 
 class S3Uploader:
@@ -42,8 +42,8 @@ class DefenseDecisionAuditLogger:
         self._lock = Lock()
 
     @classmethod
-    def from_env(cls) -> DefenseDecisionAuditLogger:
-        path = os.getenv("TM_DEFENSE_AUDIT_LOG_PATH", "logs/defense_decision_audit.jsonl")
+    def from_settings(cls) -> DefenseDecisionAuditLogger:
+        path = read_str("TM_DEFENSE_AUDIT_LOG_PATH", "logs/defense_decision_audit.jsonl")
         return cls(path=path)
 
     def log(
