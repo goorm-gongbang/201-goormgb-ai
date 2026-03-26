@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from dataclasses import dataclass
 
 from .models import DefenseActionStr, EvaluateRequest, EvaluateResponse, RuntimeStateSnapshot
-from .settings import read_int, read_str
 from .state import RuntimeStateStore
 
 _TIER_RANK = {"T0": 0, "T1": 1, "T2": 2, "T3": 3}
@@ -31,43 +31,53 @@ class PolicyConfig:
     throttle_light_ms: int = 200
     throttle_strong_ms: int = 1800
     high_value_paths: tuple[str, ...] = (
-        "/queue/matches/",
-        "/seat/matches/",
+        "/api/holds",
+        "/api/payments",
+        "/api/orders",
+        "/api/booking/entry",
+        "/api/seats/select",
     )
     vqa_gate_paths: tuple[str, ...] = (
-        "/queue/matches/",
-        "/seat/matches/",
+        "/api/queue/complete",
+        "/api/holds",
+        "/api/payments",
+        "/api/orders",
+        "/api/booking/entry",
+        "/api/seats/select",
     )
     challenge_api_paths: tuple[str, ...] = (
-        "/ai/challenge/start",
-        "/ai/challenge/verify",
+        "/challenge/start",
+        "/challenge/event",
+        "/challenge/verify",
+        "/api/security/challenge",
+        "/api/security/verify",
     )
 
     @staticmethod
-    def from_settings() -> PolicyConfig:
+    def from_env() -> PolicyConfig:
         return PolicyConfig(
-            policy_version=read_str("TM_DEFENSE_POLICY_VERSION", "def-pol-2.0.0"),
-            challenge_fail_threshold=read_int("TM_CHALLENGE_FAIL_THRESHOLD", 3),
-            repetitive_t1_threshold=read_int("TM_REPETITIVE_PATTERN_T1_THRESHOLD", 1),
-            repetitive_t2_threshold=read_int("TM_REPETITIVE_PATTERN_T2_THRESHOLD", 3),
-            throttle_light_ms=read_int("TM_T1_THROTTLE_MS", 200),
-            throttle_strong_ms=read_int("TM_T2_THROTTLE_MS", 1800),
+            policy_version=os.getenv("TM_DEFENSE_POLICY_VERSION", "def-pol-2.0.0"),
+            challenge_fail_threshold=int(os.getenv("TM_CHALLENGE_FAIL_THRESHOLD", "3")),
+            repetitive_t1_threshold=int(os.getenv("TM_REPETITIVE_PATTERN_T1_THRESHOLD", "1")),
+            repetitive_t2_threshold=int(os.getenv("TM_REPETITIVE_PATTERN_T2_THRESHOLD", "3")),
+            throttle_light_ms=int(os.getenv("TM_T1_THROTTLE_MS", "200")),
+            throttle_strong_ms=int(os.getenv("TM_T2_THROTTLE_MS", "1800")),
             high_value_paths=_csv_tuple(
-                read_str(
+                os.getenv(
                     "TM_HIGH_VALUE_PATH_PREFIXES",
-                    "/queue/matches/,/seat/matches/",
+                    "/api/holds,/api/payments,/api/orders,/api/booking/entry,/api/seats/select",
                 )
             ),
             vqa_gate_paths=_csv_tuple(
-                read_str(
+                os.getenv(
                     "TM_VQA_GATE_PATH_PREFIXES",
-                    "/queue/matches/,/seat/matches/",
+                    "/api/queue/complete,/api/holds,/api/payments,/api/orders,/api/booking/entry,/api/seats/select",
                 )
             ),
             challenge_api_paths=_csv_tuple(
-                read_str(
+                os.getenv(
                     "TM_CHALLENGE_API_PATH_PREFIXES",
-                    "/ai/challenge/start,/ai/challenge/verify",
+                    "/challenge/start,/challenge/event,/challenge/verify,/api/security/challenge,/api/security/verify",
                 )
             ),
         )
@@ -304,6 +314,8 @@ class DecisionPolicy:
 
     def _requires_vqa(self, req: EvaluateRequest, state: RuntimeStateSnapshot) -> bool:
         if state.vqa_passed:
+            return False
+        if req.method.upper() != "POST":
             return False
         if any(req.path.startswith(prefix) for prefix in self._cfg.challenge_api_paths):
             return False

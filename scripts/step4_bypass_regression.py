@@ -3,21 +3,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import urllib.error
-import urllib.parse
 import urllib.request
 import uuid
 
 
-def _post(url: str, payload: dict, session_id: str):
+def _post(url: str, payload: dict):
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
         method="POST",
-        headers={
-            "content-type": "application/json",
-            "x-session-id": session_id,
-        },
+        headers={"content-type": "application/json"},
     )
     try:
         with urllib.request.urlopen(req, timeout=8) as r:
@@ -31,152 +28,107 @@ def _post(url: str, payload: dict, session_id: str):
         return e.code, parsed
 
 
-def _get(url: str):
-    req = urllib.request.Request(url, method="GET")
-    try:
-        with urllib.request.urlopen(req, timeout=8) as r:
-            return r.status, json.loads(r.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8")
-        try:
-            parsed = json.loads(body)
-        except Exception:
-            parsed = {"raw": body}
-        return e.code, parsed
-
-
-def _start(base: str, session_id: str, match_id: int):
+def _start(base: str, session_id: str):
     status, body = _post(
-        f"{base}/ai/challenge/start",
-        {"matchId": match_id},
-        session_id=session_id,
+        f"{base}/challenge/start",
+        {"session_id": session_id, "flow_state": "S3", "challenge_type": "catch_ball"},
     )
     if status != 200:
         raise RuntimeError(f"challenge/start failed: status={status} body={body}")
     return body
 
 
-def _verify(
-    base: str,
-    session_id: str,
-    match_id: int,
-    challenge_id: str,
-    *,
-    caught: bool,
-    catch_ts_ms: int,
-    catch_x_norm: float,
-    catch_y_norm: float,
-):
+def _verify(base: str, session_id: str, challenge_id: str, challenge_token: str, final_click_ts_ms: int | None = None):
     payload = {
-        "matchId": match_id,
-        "challengeId": challenge_id,
-        "caught": caught,
-        "catchTsMs": catch_ts_ms,
-        "catchXNorm": catch_x_norm,
-        "catchYNorm": catch_y_norm,
+        "session_id": session_id,
+        "challenge_id": challenge_id,
+        "challenge_token": challenge_token,
     }
-    return _post(f"{base}/ai/challenge/verify", payload, session_id=session_id)
+    if final_click_ts_ms is not None:
+        payload["final_click_ts_ms"] = final_click_ts_ms
+    return _post(f"{base}/challenge/verify", payload)
+
+
+def _ingest(base: str, session_id: str, challenge_id: str, challenge_token: str, events: list[dict]):
+    return _post(
+        f"{base}/challenge/event",
+        {
+            "session_id": session_id,
+            "challenge_id": challenge_id,
+            "challenge_token": challenge_token,
+            "events": events,
+        },
+    )
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Step4 bypass regression for /ai challenge contract")
+    parser = argparse.ArgumentParser(description="Step4 bypass regression for challenge runtime")
     parser.add_argument("--base", default="http://127.0.0.1:8000")
-    parser.add_argument("--match-id", type=int, default=687)
     args = parser.parse_args()
 
     results: list[dict] = []
-    match_id = int(args.match_id)
 
-    # Case 1: first fail should decrement attempts.
+    # Case 1: no raw events -> must fail
     sid1 = f"st4-case1-{uuid.uuid4().hex[:8]}"
-    ch1 = _start(args.base, sid1, match_id)
-    st1, v1 = _verify(
-        args.base,
-        sid1,
-        match_id,
-        ch1["challengeId"],
-        caught=False,
-        catch_ts_ms=1,
-        catch_x_norm=0.5,
-        catch_y_norm=0.5,
-    )
-    case1_ok = st1 == 200 and v1.get("success") is False and v1.get("remainingAttempts") == 1
+    ch1 = _start(args.base, sid1)
+    st1, v1 = _verify(args.base, sid1, ch1["challenge_id"], ch1["challenge_token"])
+    case1_ok = st1 == 200 and v1.get("passed") is False
     results.append(
         {
-            "case": "FIRST_FAIL_DECREMENTS_ATTEMPTS",
+            "case": "NO_EVENTS_SHOULD_FAIL",
             "ok": case1_ok,
             "status": st1,
-            "body": v1,
+            "result": v1.get("result"),
+            "reason": v1.get("reason"),
         }
     )
 
-    # Case 2: second fail should consume retries and block.
+    # Case 2: impossible speed injection -> must fail (with enough events).
     sid2 = f"st4-case2-{uuid.uuid4().hex[:8]}"
-    ch2 = _start(args.base, sid2, match_id)
-    st2a, v2a = _verify(
+    ch2 = _start(args.base, sid2)
+    fast_events = [{"t_ms": 0, "x": 10, "y": 10, "event": "down"}]
+    # Keep jump distance below TELEPORT threshold(220), but speed > max_speed(3.8 px/ms).
+    # dt=1ms, dx=30px => speed=30 px/ms (impossible).
+    x = 10
+    y = 10
+    for t in range(1, 29):
+        x += 30
+        y += 2
+        fast_events.append({"t_ms": t, "x": x, "y": y, "event": "move"})
+    fast_events.append({"t_ms": 29, "x": x, "y": y, "event": "click"})
+
+    st2_ing, _ = _ingest(
         args.base,
         sid2,
-        match_id,
-        ch2["challengeId"],
-        caught=False,
-        catch_ts_ms=1,
-        catch_x_norm=0.5,
-        catch_y_norm=0.5,
+        ch2["challenge_id"],
+        ch2["challenge_token"],
+        events=fast_events,
     )
-    st2b, v2b = _verify(
-        args.base,
-        sid2,
-        match_id,
-        ch2["challengeId"],
-        caught=False,
-        catch_ts_ms=2,
-        catch_x_norm=0.5,
-        catch_y_norm=0.5,
-    )
-    state_key = urllib.parse.quote(f"{sid2}:{match_id}", safe="")
-    st2rt, runtime2 = _get(f"{args.base}/runtime/{state_key}")
-    case2_ok = (
-        st2a == 200
-        and st2b == 200
-        and v2a.get("remainingAttempts") == 1
-        and v2b.get("success") is False
-        and v2b.get("remainingAttempts") == 0
-        and st2rt == 200
-        and runtime2.get("vqa_last_result") == "BLOCKED"
-    )
+    st2, v2 = _verify(args.base, sid2, ch2["challenge_id"], ch2["challenge_token"])
+    case2_ok = st2_ing == 200 and st2 == 200 and v2.get("passed") is False
     results.append(
         {
-            "case": "SECOND_FAIL_BLOCKS",
+            "case": "IMPOSSIBLE_SPEED_SHOULD_FAIL",
             "ok": case2_ok,
-            "status_first_verify": st2a,
-            "status_second_verify": st2b,
-            "status_runtime": st2rt,
-            "first_body": v2a,
-            "second_body": v2b,
-            "runtime_vqa_last_result": runtime2.get("vqa_last_result"),
+            "ingest_status": st2_ing,
+            "status": st2,
+            "result": v2.get("result"),
+            "reason": v2.get("reason"),
         }
     )
 
-    # Case 3: mismatched challenge id should fail immediately.
+    # Case 3: token/session binding mismatch -> must be rejected (400)
     sid3 = f"st4-case3-{uuid.uuid4().hex[:8]}"
-    _ = _start(args.base, sid3, match_id)
-    st3, v3 = _verify(
-        args.base,
-        sid3,
-        match_id,
-        "CH_INVALID",
-        caught=True,
-        catch_ts_ms=1,
-        catch_x_norm=0.4,
-        catch_y_norm=0.6,
-    )
-    case3_ok = st3 == 200 and v3.get("success") is False and v3.get("remainingAttempts") == 0
+    sid3_other = f"{sid3}-other"
+    ch3 = _start(args.base, sid3)
+    st3, v3 = _verify(args.base, sid3_other, ch3["challenge_id"], ch3["challenge_token"])
+    case3_ok = st3 == 400
     results.append(
         {
-            "case": "MISMATCHED_CHALLENGE_ID_FAILS",
+            "case": "TOKEN_BINDING_MISMATCH_REJECTED",
             "ok": case3_ok,
             "status": st3,
-            "body": v3,
+            "detail": v3,
         }
     )
 

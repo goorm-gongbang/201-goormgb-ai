@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import BaseModel, Field
 
 FlowStateStr = Literal["S0", "S1", "S2", "S3", "S4", "S4R", "S5", "S5R", "S6", "SX"]
 DefenseTierStr = Literal["T0", "T1", "T2", "T3"]
 DefenseActionStr = Literal["NONE", "CHALLENGE", "THROTTLE", "GATE", "BLOCK"]
 ChallengeTypeStr = Literal["queue_gate", "catch_ball"]
 ChallengeResultStr = Literal["PASSED", "FAILED", "BLOCKED", "EXPIRED"]
-CanonicalTelemetryEventTypeStr = Literal["mousemove", "mousedown", "mouseup", "click"]
+PointerEventTypeStr = Literal["down", "move", "up", "click"]
 CanonicalTelemetryStageStr = Literal["QUEUE_ENTER_PRECLICK", "SEAT_STAGE", "VQA_CHALLENGE"]
+CanonicalTelemetryEventTypeStr = Literal["mousemove", "mousedown", "mouseup", "click"]
 TargetDefenseActionStr = Literal["NONE", "THROTTLE", "REQUIRE_S3", "BLOCK"]
+TargetChallengeResultStr = Literal["PASS", "FAIL"]
 TargetEvaluateEventTypeStr = Literal[
     "QUEUE_ENTER",
     "SEAT_ENTRY",
@@ -35,6 +37,18 @@ class EvaluateTelemetryFeatures(BaseModel):
     dwell_time: float | None = Field(default=None, alias="dwellTime")
     path_ratio: float | None = Field(default=None, alias="pathRatio")
     timestamp: int | None = None
+
+    model_config = {"populate_by_name": True, "extra": "forbid"}
+
+
+class TelemetrySummary(BaseModel):
+    """Compact five-feature telemetry summary used by target /ai routes."""
+
+    tremor_std_dev: float = Field(alias="tremorStdDev")
+    linearity_ratio: float = Field(alias="linearityRatio")
+    avg_velocity: float = Field(alias="avgVelocity")
+    dwell_time: float = Field(alias="dwellTime")
+    path_ratio: float = Field(alias="pathRatio")
 
     model_config = {"populate_by_name": True, "extra": "forbid"}
 
@@ -114,13 +128,14 @@ class RuntimeStateSnapshot(BaseModel):
     vqa_last_result: ChallengeResultStr | None = None
     active_challenge_id: str | None = None
     active_challenge_expires_at_ms: int | None = None
+    active_challenge_token: str = ""
     turnstile_verified: bool = False
     turnstile_verified_at_ms: int = 0
-    latest_queue_enter_preclick_summary: dict[str, float] = Field(default_factory=dict)
+    latest_queue_enter_preclick_summary: dict[str, Any] = Field(default_factory=dict)
     latest_queue_enter_preclick_at_ms: int = 0
-    latest_seat_stage_summary: dict[str, float] = Field(default_factory=dict)
+    latest_seat_stage_summary: dict[str, Any] = Field(default_factory=dict)
     latest_seat_stage_at_ms: int = 0
-    latest_vqa_challenge_summary: dict[str, float] = Field(default_factory=dict)
+    latest_vqa_challenge_summary: dict[str, Any] = Field(default_factory=dict)
     latest_vqa_challenge_at_ms: int = 0
     vqa_behavior_score: float = 0.0
 
@@ -144,10 +159,72 @@ class ChallengeStartResponse(BaseModel):
     session_id: str
     challenge_id: str
     challenge_type: ChallengeTypeStr
+    challenge_token: str
     issued_at_ms: int
     expires_at_ms: int
     attempt_limit: int
     public_params: dict[str, float | int | str | bool]
+
+    model_config = {"extra": "forbid"}
+
+
+class ChallengePointerEvent(BaseModel):
+    """Raw client pointer event used for server-side verification."""
+
+    t_ms: int = Field(ge=0)
+    x: float
+    y: float
+    event: PointerEventTypeStr
+
+    model_config = {"extra": "forbid"}
+
+
+class ChallengeEventIngestRequest(BaseModel):
+    """Raw challenge events upload."""
+
+    session_id: str = Field(min_length=1)
+    challenge_id: str = Field(min_length=1)
+    challenge_token: str = Field(min_length=1)
+    events: list[ChallengePointerEvent] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
+class ChallengeEventIngestResponse(BaseModel):
+    """Accepted event count response."""
+
+    session_id: str
+    challenge_id: str
+    accepted_events: int
+    total_events: int
+
+    model_config = {"extra": "forbid"}
+
+
+class ChallengeVerifyRequest(BaseModel):
+    """Challenge verification request."""
+
+    session_id: str = Field(min_length=1)
+    challenge_id: str = Field(min_length=1)
+    challenge_token: str = Field(min_length=1)
+    final_click_ts_ms: int | None = Field(default=None, ge=0)
+
+    model_config = {"extra": "forbid"}
+
+
+class ChallengeVerifyResponse(BaseModel):
+    """Server-side verification result."""
+
+    session_id: str
+    challenge_id: str
+    result: ChallengeResultStr
+    passed: bool
+    attempts_used: int
+    attempts_left: int
+    defense_tier: DefenseTierStr
+    action: DefenseActionStr
+    reason: str | None = None
+    headers_to_add: dict[str, str] = Field(default_factory=dict)
 
     model_config = {"extra": "forbid"}
 
@@ -176,11 +253,7 @@ class AiPrecheckRequest(BaseModel):
     """Frontend -> AI direct route for queue-enter precheck."""
 
     match_id: int = Field(alias="matchId", ge=0)
-    cf_token: str = Field(
-        min_length=1,
-        validation_alias=AliasChoices("cfToken", "turnstileToken"),
-        serialization_alias="cfToken",
-    )
+    cf_token: str = Field(alias="cfToken", min_length=1)
 
     model_config = {"populate_by_name": True, "extra": "forbid"}
 
@@ -191,6 +264,18 @@ class AiPrecheckResponse(BaseModel):
     allowed: bool
 
     model_config = {"extra": "forbid"}
+
+
+class RawTelemetryEvent(BaseModel):
+    """Frontend raw telemetry event batch item."""
+
+    type: CanonicalTelemetryEventTypeStr
+    ts_ms: int = Field(alias="tsMs", ge=0)
+    x_norm: float | None = Field(default=None, alias="xNorm", ge=0.0, le=1.0)
+    y_norm: float | None = Field(default=None, alias="yNorm", ge=0.0, le=1.0)
+    button: Literal[0, 1, 2] | None = None
+
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 class AiTelemetryIngestRequest(BaseModel):
@@ -205,7 +290,7 @@ class AiTelemetryIngestRequest(BaseModel):
             "VQA_CHALLENGE = 보안 관문 상호작용 구간."
         )
     )
-    events: list["RawTelemetryEvent"] = Field(default_factory=list)
+    events: list[RawTelemetryEvent] = Field(default_factory=list)
 
     model_config = {"populate_by_name": True, "extra": "forbid"}
 
@@ -284,7 +369,7 @@ class AiChallengeVerifyRequest(BaseModel):
 
     match_id: int = Field(alias="matchId", ge=0)
     challenge_id: str = Field(alias="challengeId", min_length=1)
-    caught: bool = False
+    caught: bool
     catch_ts_ms: int = Field(alias="catchTsMs", ge=0)
     catch_x_norm: float = Field(alias="catchXNorm", ge=0.0, le=1.0)
     catch_y_norm: float = Field(alias="catchYNorm", ge=0.0, le=1.0)
@@ -297,17 +382,5 @@ class AiChallengeVerifyResponse(BaseModel):
 
     success: bool
     remaining_attempts: int = Field(alias="remainingAttempts", ge=0)
-
-    model_config = {"populate_by_name": True, "extra": "forbid"}
-
-
-class RawTelemetryEvent(BaseModel):
-    """Frontend raw telemetry event batch item."""
-
-    type: CanonicalTelemetryEventTypeStr
-    ts_ms: int = Field(alias="tsMs", ge=0)
-    x_norm: float | None = Field(default=None, alias="xNorm", ge=0.0, le=1.0)
-    y_norm: float | None = Field(default=None, alias="yNorm", ge=0.0, le=1.0)
-    button: Literal[0, 1, 2] | None = None
 
     model_config = {"populate_by_name": True, "extra": "forbid"}

@@ -1,0 +1,23 @@
+# Ignore directories that are not needed for the AI Defense API build
+platform/
+pilot/
+spec/
+tests/
+logs/
+.venv/
+.git/
+.gradle/
+.agent/
+.handover/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.vscode/
+
+# Ignore local OS junk
+.DS_Store
+
+# Allow root files needed for build
+!README.md
+!pyproject.toml
+!src/traffic_master_ai/defense/api/README.md

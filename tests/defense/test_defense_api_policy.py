@@ -13,8 +13,8 @@ def test_vqa_gate_requires_challenge_once_after_queue() -> None:
     policy, store = _policy()
     req = EvaluateRequest(
         session_id="sess-1",
-        path="/seat/matches/687/seat-groups",
-        method="GET",
+        path="/api/holds",
+        method="POST",
         timestamp=1772500000000,
     )
 
@@ -41,7 +41,7 @@ def test_repetitive_pattern_t2_gates_high_value_write() -> None:
     )
     req = EvaluateRequest(
         session_id="sess-2",
-        path="/seat/matches/687/seat-holds",
+        path="/api/holds",
         method="POST",
         timestamp=1772500000000,
         repetitive_pattern_count=3,
@@ -61,7 +61,7 @@ def test_challenge_fail_threshold_blocks() -> None:
     policy, _ = _policy()
     req = EvaluateRequest(
         session_id="sess-3",
-        path="/queue/matches/687/enter",
+        path="/api/holds",
         method="POST",
         timestamp=1772500000000,
         challenge_fail_count=3,
@@ -90,7 +90,7 @@ def test_s6_does_not_insert_new_challenge() -> None:
     )
     req = EvaluateRequest(
         session_id="sess-4",
-        path="/seat/matches/687/seat-holds",
+        path="/api/payments",
         method="POST",
         timestamp=1772500000000,
         flow_state="S6",
@@ -120,7 +120,7 @@ def test_t3_without_decisive_hit_uses_gate_not_forced_block() -> None:
     )
     req = EvaluateRequest(
         session_id="sess-t3-1",
-        path="/seat/matches/687/recommendations/blocks/block-1/assign",
+        path="/api/holds",
         method="POST",
         timestamp=1772500000000,
         defense_tier="T3",

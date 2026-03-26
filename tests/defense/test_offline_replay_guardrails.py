@@ -22,7 +22,7 @@ def _sample_records() -> list[dict[str, object]]:
                 "risk_score": 0.81,
                 "rule_hits": ["R1_REPETITIVE_PATTERN_T2"],
                 "method": "POST",
-                "path": "/seat/matches/687/seat-holds",
+                "path": "/api/holds",
             }
         )
     rows.append(
@@ -50,7 +50,7 @@ def _sample_records() -> list[dict[str, object]]:
                 "risk_score": 0.1,
                 "rule_hits": [],
                 "method": "GET",
-                "path": "/seat/matches/687/seat-groups",
+                "path": "/api/seats",
             }
         )
     rows.append(
@@ -131,7 +131,7 @@ def test_queue_gate_denies_with_pass_is_labeled_human() -> None:
             "risk_score": 0.4,
             "rule_hits": ["S3_QUEUE_EXIT_VQA_REQUIRED"],
             "method": "POST",
-            "path": "/seat/matches/687/seat-holds",
+            "path": "/api/holds",
         },
         {
             "event_type": "CHALLENGE_VERIFIED",
@@ -156,7 +156,7 @@ def test_replay_builder_can_force_label_mix() -> None:
                 "risk_score": 0.45,
                 "rule_hits": [],
                 "method": "GET",
-                "path": "/seat/matches/687/recommendations/blocks",
+                "path": "/api/seats",
             }
         ]
     )

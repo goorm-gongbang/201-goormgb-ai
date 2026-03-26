@@ -1,7 +1,7 @@
 """Unified FastAPI app for AI Defense.
 
 Primary runtime logic follows teammate D0-MVP implementation.
-Public contract is `/ai/*` target routes for frontend integration.
+Legacy endpoints are preserved as compatibility routes.
 Includes Prometheus metrics instrumentation.
 """
 
@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
 import re
 import time
 import uuid
@@ -43,8 +44,12 @@ from .models import (
     AiPrecheckResponse,
     AiTelemetryIngestRequest,
     AiTelemetryIngestResponse,
+    ChallengeEventIngestRequest,
+    ChallengeEventIngestResponse,
     ChallengeStartRequest,
     ChallengeStartResponse,
+    ChallengeVerifyRequest,
+    ChallengeVerifyResponse,
     EvaluateRequest,
     EvaluateResponse,
     EvaluateTelemetryFeatures,
@@ -54,8 +59,7 @@ from .models import (
     RuntimeVqaMarkRequest,
     RuntimeVqaMarkResponse,
 )
-from .settings import ENV_FILE_PATH, read_int, read_str
-from .state import build_runtime_store_from_settings
+from .state import build_runtime_store_from_env
 
 # Custom Metrics
 EVALUATE_REQUESTS = Counter(
@@ -70,26 +74,19 @@ instrumentator = Instrumentator()
 logger = logging.getLogger(__name__)
 
 _MATCH_ID_PATH_RE = re.compile(r"/matches/(?P<match_id>\d+)(?:/|$)")
-_POST_VQA_GUARD_EVENT_TYPES: set[str] = {
-    "SEAT_ENTRY",
-    "RECOMMENDATION_BLOCKS",
-    "SECTION_BLOCKS",
-    "ASSIGN_HOLD",
-    "SEAT_HOLDS",
-}
 
 # S3 Archiver Config
-_S3_BUCKET = read_str("TM_S3_BUCKET", "").strip() or None
-_S3_PREFIX = read_str("TM_S3_PREFIX", "ai-defense/audit/")
-_S3_REGION = read_str("TM_S3_REGION", "").strip() or None
-_S3_INTERVAL = read_int("TM_S3_ARCHIVE_INTERVAL_SECONDS", 3600)
-_TURNSTILE_SECRET_KEY = read_str("TM_TURNSTILE_SECRET_KEY", "").strip()
-_TURNSTILE_SITEVERIFY_URL = read_str(
+_S3_BUCKET = os.getenv("TM_S3_BUCKET")
+_S3_PREFIX = os.getenv("TM_S3_PREFIX", "ai-defense/audit/")
+_S3_REGION = os.getenv("TM_S3_REGION")
+_S3_INTERVAL = int(os.getenv("TM_S3_ARCHIVE_INTERVAL_SECONDS", "3600"))
+_TURNSTILE_SECRET_KEY = os.getenv("TM_TURNSTILE_SECRET_KEY", "").strip()
+_TURNSTILE_SITEVERIFY_URL = os.getenv(
     "TM_TURNSTILE_SITEVERIFY_URL",
     "https://challenges.cloudflare.com/turnstile/v0/siteverify",
 )
-_TURNSTILE_TIMEOUT_MS = read_int("TM_TURNSTILE_VERIFY_TIMEOUT_MS", 500)
-_PRECHECK_TTL_MS = read_int("TM_PRECHECK_TTL_MS", 300000)
+_TURNSTILE_TIMEOUT_MS = int(os.getenv("TM_TURNSTILE_VERIFY_TIMEOUT_MS", "500"))
+_PRECHECK_TTL_MS = int(os.getenv("TM_PRECHECK_TTL_MS", "300000"))
 
 _S3_UPLOADER = S3Uploader(bucket=_S3_BUCKET, prefix=_S3_PREFIX, region=_S3_REGION) if _S3_BUCKET else None
 
@@ -97,7 +94,7 @@ _S3_UPLOADER = S3Uploader(bucket=_S3_BUCKET, prefix=_S3_PREFIX, region=_S3_REGIO
 async def _s3_archive_loop():
     """Background loop to periodically upload logs to S3."""
     if not _S3_UPLOADER:
-        logger.info("S3 Archiving is disabled (%s TM_S3_BUCKET not set).", ENV_FILE_PATH)
+        logger.info("S3 Archiving is disabled (TM_S3_BUCKET not set).")
         return
 
     logger.info("Starting S3 Archiving Loop (Interval: %ds)", _S3_INTERVAL)
@@ -127,8 +124,8 @@ app = FastAPI(
     title="Traffic Master AI Defense API",
     version="v2",
     description=(
-        "Unified defense API. D0-MVP runtime is canonical and `/ai/*` routes are "
-        "the public integration contract."
+        "Unified defense API. D0-MVP runtime is canonical; legacy challenge/runtime "
+        "contracts remain for compatibility."
     ),
     lifespan=lifespan,
 )
@@ -136,27 +133,19 @@ app = FastAPI(
 # [Gap Closing] Instrument app at the start (to allow middleware addition)
 instrumentator.instrument(app)
 
-_state_store, _state_backend = build_runtime_store_from_settings()
-_audit = DefenseDecisionAuditLogger.from_settings()
-_challenge_runtime = ChallengeRuntime(ChallengeConfig.from_settings())
+_state_store, _state_backend = build_runtime_store_from_env()
+_audit = DefenseDecisionAuditLogger.from_env()
+_challenge_runtime = ChallengeRuntime(ChallengeConfig.from_env())
 _d0_runtime = D0DefenseRuntime()
 
 # Backend runtime sanction endpoint
-BE_RUNTIME_SANCTIONS_URL = read_str("TM_BACKEND_RUNTIME_SANCTIONS_URL", "").strip()
+BE_RUNTIME_SANCTIONS_URL = os.getenv("TM_BACKEND_RUNTIME_SANCTIONS_URL") or os.getenv(
+    "TM_BACKEND_SANCTION_URL"
+)
 
 
 async def _send_be_runtime_sanction(sid: str):
-    """Asynchronously notify backend to apply runtime sanction by sid.
-
-    NOTE: 현재 이 함수는 `.env.local`의 TM_BACKEND_RUNTIME_SANCTIONS_URL 미설정으로 비활성 상태이다.
-    sid는 202 authz-adapter가 ingress 시점에 추출한 값(JWT signature 검증 없는 fallback 포함)이며,
-    backend sanction identity로 신뢰할 수 없다.
-
-    재활성화 조건:
-      1. 202 -> 201 계약에 sidSource / sidTrusted 필드 추가
-      2. sidTrusted=True 인 경우에만 호출
-      3. TM_BACKEND_RUNTIME_SANCTIONS_URL 환경변수 설정
-    """
+    """Asynchronously notify backend to apply runtime sanction by sid."""
     if not BE_RUNTIME_SANCTIONS_URL or not sid:
         return
 
@@ -212,6 +201,29 @@ async def _start_challenge_internal(req: ChallengeStartRequest) -> ChallengeStar
             "attempt_limit": resp.attempt_limit,
             "expires_at_ms": resp.expires_at_ms,
             "public_params": resp.public_params,
+        },
+    )
+    return resp
+
+
+async def _verify_challenge_internal(req: ChallengeVerifyRequest) -> ChallengeVerifyResponse:
+    snap = _state_store.get(req.session_id) or RuntimeStateSnapshot()
+    try:
+        resp, next_snap = _challenge_runtime.verify(req, snap)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    _state_store.upsert(req.session_id, next_snap)
+    _audit.log_challenge_event(
+        session_id=req.session_id,
+        challenge_id=req.challenge_id,
+        event_type="CHALLENGE_VERIFIED",
+        payload={
+            "result": resp.result,
+            "passed": resp.passed,
+            "attempts_used": resp.attempts_used,
+            "attempts_left": resp.attempts_left,
+            "reason": resp.reason,
         },
     )
     return resp
@@ -350,8 +362,12 @@ async def ai_evaluate(
     if req.event.event_type == "QUEUE_ENTER" and not _precheck_is_valid(snap, now_ms):
         return AiEvaluateResponse(decision={"action": "BLOCK"})
 
-    if req.event.event_type in _POST_VQA_GUARD_EVENT_TYPES and not snap.vqa_passed:
+    if req.event.event_type == "SEAT_ENTRY" and not snap.vqa_passed:
         return AiEvaluateResponse(decision={"action": "REQUIRE_S3"})
+
+    soft_action = _feature_soft_action(event_type=req.event.event_type, snap=snap)
+    if soft_action is not None:
+        return AiEvaluateResponse(decision={"action": soft_action})
 
     legacy_req = _build_legacy_request_from_target(
         state_key=state_key,
@@ -364,8 +380,6 @@ async def ai_evaluate(
     legacy_resp, _ = _execute_legacy_evaluate(legacy_req)
     action = _target_action_from_legacy(legacy_resp.action)
     if action == "BLOCK":
-        # TODO(sanction): sid는 202가 추출한 unverified 값으로 sanction identity 부적합.
-        # TM_BACKEND_RUNTIME_SANCTIONS_URL 미설정 상태로 현재 비활성. 재활성 시 sidTrusted 확인 필요.
         background_tasks.add_task(_send_be_runtime_sanction, sid=sid)
     return AiEvaluateResponse(decision={"action": action})
 
@@ -393,6 +407,7 @@ async def ai_challenge_start(
         snap.model_copy(
             update={
                 "active_challenge_id": resp.challenge_id,
+                "active_challenge_token": resp.challenge_token,
                 "active_challenge_expires_at_ms": resp.expires_at_ms,
                 "updated_ts_ms": resp.issued_at_ms,
             }
@@ -443,6 +458,7 @@ async def ai_challenge_verify(
                 "vqa_attempt_count": next_attempts,
                 "vqa_behavior_score": float(feature_summary.get("linearityRatio", 0.0)),
                 "active_challenge_id": None,
+                "active_challenge_token": "",
                 "active_challenge_expires_at_ms": None,
                 "updated_ts_ms": now_ms,
             }
@@ -473,6 +489,7 @@ async def ai_challenge_verify(
             "challenge_fail_count": snap.challenge_fail_count + 1,
             "updated_ts_ms": now_ms,
             "active_challenge_id": snap.active_challenge_id if remaining > 0 else None,
+            "active_challenge_token": snap.active_challenge_token if remaining > 0 else "",
             "active_challenge_expires_at_ms": (
                 snap.active_challenge_expires_at_ms if remaining > 0 else None
             ),
@@ -775,6 +792,40 @@ def _compute_bot_risk(summary: dict[str, float]) -> float:
     return max(0.0, min(1.0, risk))
 
 
+def _feature_soft_action(
+    *,
+    event_type: str,
+    snap: RuntimeStateSnapshot,
+) -> Optional[str]:
+    if event_type == "QUEUE_ENTER":
+        summary = snap.latest_queue_enter_preclick_summary
+        require_s3_threshold = 0.78
+        throttle_threshold = 0.62
+    elif event_type in {"RECOMMENDATION_BLOCKS", "SECTION_BLOCKS", "ASSIGN_HOLD", "SEAT_HOLDS"}:
+        summary = snap.latest_seat_stage_summary
+        require_s3_threshold = 0.74
+        throttle_threshold = 0.58
+    else:
+        return None
+
+    if not summary:
+        return None
+
+    point_count = _opt_int(summary.get("mousePointCount"))
+    if point_count is None or point_count < 2:
+        return None
+
+    risk = _to_float(summary.get("botRisk"))
+    if risk is None:
+        return None
+
+    if risk >= require_s3_threshold:
+        return "REQUIRE_S3"
+    if risk >= throttle_threshold:
+        return "THROTTLE"
+    return None
+
+
 def _precheck_is_valid(snap: RuntimeStateSnapshot, now_ms: int) -> bool:
     if not snap.turnstile_verified:
         return False
@@ -783,9 +834,7 @@ def _precheck_is_valid(snap: RuntimeStateSnapshot, now_ms: int) -> bool:
 
 def _target_action_from_legacy(action: str) -> str:
     if action == "CHALLENGE":
-        # Public /ai contract: REQUIRE_S3 is controlled only by the explicit
-        # post-VQA guard in ai_evaluate.
-        return "THROTTLE"
+        return "REQUIRE_S3"
     return action
 
 
