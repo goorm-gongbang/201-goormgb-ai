@@ -124,7 +124,7 @@ class RuntimeStateSnapshot(BaseModel):
     vqa_required: bool = True
     vqa_passed: bool = False
     vqa_attempt_count: int = 0
-    vqa_retry_limit: int = 2
+    vqa_retry_limit: int = 3
     vqa_last_result: ChallengeResultStr | None = None
     active_challenge_id: str | None = None
     active_challenge_expires_at_ms: int | None = None

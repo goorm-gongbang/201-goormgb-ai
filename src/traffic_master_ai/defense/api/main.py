@@ -358,6 +358,12 @@ async def ai_evaluate(
     state_key = _build_state_key(sid, match_id)
     now_ms = int(time.time() * 1000)
     snap = _get_or_create_snapshot(state_key, now_ms)
+    snap = _hydrate_match_state_from_sid_vqa_mark(
+        sid=sid,
+        state_key=state_key,
+        snap=snap,
+        now_ms=now_ms,
+    )
 
     if req.event.event_type == "QUEUE_ENTER" and not _precheck_is_valid(snap, now_ms):
         return AiEvaluateResponse(decision={"action": "BLOCK"})
@@ -450,8 +456,10 @@ async def ai_challenge_verify(
     next_attempts = snap.vqa_attempt_count + 1
     remaining = max(snap.vqa_retry_limit - next_attempts, 0)
     if passed:
+        next_flow = "S4" if snap.flow_state == "S3" else snap.flow_state
         next_snap = snap.model_copy(
             update={
+                "flow_state": next_flow,
                 "vqa_required": False,
                 "vqa_passed": True,
                 "vqa_last_result": "PASSED",
@@ -464,6 +472,14 @@ async def ai_challenge_verify(
             }
         )
         _state_store.upsert(state_key, next_snap)
+        _sync_mark_to_d0_runtime(
+            req=RuntimeVqaMarkRequest(
+                session_id=state_key,
+                vqa_passed=True,
+                flow_state=next_flow,
+            ),
+            now_ms=now_ms,
+        )
         _audit.log_challenge_event(
             session_id=state_key,
             challenge_id=req.challenge_id,
@@ -496,6 +512,14 @@ async def ai_challenge_verify(
         }
     )
     _state_store.upsert(state_key, next_snap)
+    _sync_mark_to_d0_runtime(
+        req=RuntimeVqaMarkRequest(
+            session_id=state_key,
+            vqa_passed=False,
+            flow_state=next_snap.flow_state,
+        ),
+        now_ms=now_ms,
+    )
     _audit.log_challenge_event(
         session_id=state_key,
         challenge_id=req.challenge_id,
@@ -563,6 +587,50 @@ def _get_or_create_snapshot(session_id: str, now_ms: int) -> RuntimeStateSnapsho
     if snap is not None:
         return snap
     return RuntimeStateSnapshot(updated_ts_ms=now_ms)
+
+
+def _hydrate_match_state_from_sid_vqa_mark(
+    *,
+    sid: str,
+    state_key: str,
+    snap: RuntimeStateSnapshot,
+    now_ms: int,
+) -> RuntimeStateSnapshot:
+    """Project sid-level /runtime/vqa/mark result into sid:matchId state.
+
+    Backend SecurityService currently syncs VQA pass/fail by sid only.
+    /ai/evaluate uses sid:matchId state key, so we mirror sid-level PASS state
+    into the scoped key before applying post-VQA guard.
+    """
+    if snap.vqa_passed or sid == state_key:
+        return snap
+
+    sid_snap = _state_store.get(sid)
+    if sid_snap is None or not sid_snap.vqa_passed:
+        return snap
+
+    next_flow = sid_snap.flow_state if sid_snap.flow_state != "S0" else snap.flow_state
+    promoted = snap.model_copy(
+        update={
+            "flow_state": next_flow,
+            "vqa_required": False,
+            "vqa_passed": True,
+            "vqa_last_result": "PASSED",
+            "active_challenge_id": None,
+            "active_challenge_expires_at_ms": None,
+            "updated_ts_ms": now_ms,
+        }
+    )
+    _state_store.upsert(state_key, promoted)
+    _sync_mark_to_d0_runtime(
+        req=RuntimeVqaMarkRequest(
+            session_id=state_key,
+            vqa_passed=True,
+            flow_state=promoted.flow_state,
+        ),
+        now_ms=now_ms,
+    )
+    return promoted
 
 
 def _build_state_key(sid: str, match_id: int) -> str:
