@@ -36,6 +36,12 @@ defense_api = [
     "boto3>=1.34.0",
     "sqlalchemy>=2.0.0",
     "psycopg2-binary>=2.9.0",
+    # OpenTelemetry
+    "opentelemetry-sdk>=1.27.0",
+    "opentelemetry-api>=1.27.0",
+    "opentelemetry-exporter-otlp>=1.27.0",
+    "opentelemetry-instrumentation-fastapi>=0.48b0",
+    "opentelemetry-exporter-prometheus>=0.48b0",
 ]
 
 [project.scripts]
