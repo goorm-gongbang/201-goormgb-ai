@@ -28,7 +28,7 @@ def _bot_session_rows(session_id: str) -> list[dict[str, object]]:
                 "risk_score": 0.78,
                 "rule_hits": ["R1_REPETITIVE_PATTERN_T2"],
                 "method": "POST",
-                "path": "/api/holds",
+                "path": "/seat/matches/687/seat-holds",
             }
         )
     rows.append(
@@ -61,7 +61,7 @@ def test_offline_batch_skips_when_log_count_below_threshold(tmp_path: Path) -> N
                 "risk_score": 0.05,
                 "rule_hits": [],
                 "method": "GET",
-                "path": "/api/seats",
+                "path": "/seat/matches/687/seat-groups",
             }
         ],
     )
@@ -142,7 +142,7 @@ def test_offline_batch_triage_auto_bot_and_human_without_llm_key(tmp_path: Path)
                 "risk_score": 0.05,
                 "rule_hits": [],
                 "method": "GET",
-                "path": "/api/seats",
+                "path": "/seat/matches/687/seat-groups",
             },
             {
                 "event_type": "EVALUATE",
@@ -152,7 +152,7 @@ def test_offline_batch_triage_auto_bot_and_human_without_llm_key(tmp_path: Path)
                 "risk_score": 0.1,
                 "rule_hits": [],
                 "method": "GET",
-                "path": "/api/sections",
+                "path": "/seat/matches/687/sections/A1/blocks",
             },
             {
                 "event_type": "CHALLENGE_VERIFIED",
@@ -196,7 +196,7 @@ def test_offline_batch_triage_routes_ambiguous_to_llm(tmp_path: Path) -> None:
                 "risk_score": 0.41,
                 "rule_hits": [],
                 "method": "POST",
-                "path": "/api/holds",
+                "path": "/seat/matches/687/seat-holds",
             },
             {
                 "event_type": "EVALUATE",
@@ -206,7 +206,7 @@ def test_offline_batch_triage_routes_ambiguous_to_llm(tmp_path: Path) -> None:
                 "risk_score": 0.46,
                 "rule_hits": [],
                 "method": "GET",
-                "path": "/api/seats",
+                "path": "/seat/matches/687/recommendations/blocks",
             },
             {
                 "event_type": "CHALLENGE_VERIFIED",

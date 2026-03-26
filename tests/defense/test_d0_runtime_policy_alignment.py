@@ -106,7 +106,7 @@ def test_check_route_preserves_correlation_header_and_audit_meta(
             "X-TM-TestMode": "true",
         },
         json={
-            "upstreamPath": "/api/availability",
+            "upstreamPath": "/seat/matches/687/seat-groups",
             "upstreamMethod": "GET",
             "flowState": "S1",
         },
@@ -140,7 +140,7 @@ def test_tm_test_mode_header_rejected_when_disabled(
             "X-TM-TestMode": "true",
         },
         json={
-            "upstreamPath": "/api/availability",
+            "upstreamPath": "/seat/matches/687/seat-groups",
             "upstreamMethod": "GET",
             "flowState": "S1",
         },
@@ -167,7 +167,7 @@ def test_block_deny_response_contains_terminal_reason(tmp_path: Path) -> None:
             "X-Trace-Id": "trace-blocked-1",
         },
         json={
-            "upstreamPath": "/api/availability",
+            "upstreamPath": "/seat/matches/687/seat-groups",
             "upstreamMethod": "GET",
             "flowState": "S1",
         },

@@ -46,7 +46,7 @@ def test_build_check_request_requires_flow_state() -> None:
             session_id="sess-check-1",
             trace_id="trace-check-1",
             body={
-                "upstreamPath": "/api/availability",
+                "upstreamPath": "/seat/matches/687/seat-groups",
                 "upstreamMethod": "GET",
             },
         )
@@ -61,7 +61,7 @@ def test_build_evaluate_request_rejects_missing_required_fields() -> None:
                 "event": {
                     "eventType": "API_CALL_OBS",
                     "flowState": "S2",
-                    "requestPath": "/api/availability",
+                    "requestPath": "/seat/matches/687/seat-groups",
                     "requestMethod": "GET",
                 },
                 "context": {
@@ -78,7 +78,7 @@ def test_build_evaluate_request_rejects_missing_required_fields() -> None:
                 "event": {
                     "eventType": "API_CALL_OBS",
                     "tsMs": 1710000000000,
-                    "requestPath": "/api/availability",
+                    "requestPath": "/seat/matches/687/seat-groups",
                     "requestMethod": "GET",
                 },
                 "context": {
@@ -98,7 +98,7 @@ def test_build_evaluate_request_rejects_non_object_context_fields() -> None:
                     "eventType": "API_CALL_OBS",
                     "tsMs": 1710000000001,
                     "flowState": "S2",
-                    "requestPath": "/api/availability",
+                    "requestPath": "/seat/matches/687/seat-groups",
                     "requestMethod": "GET",
                 },
                 "context": {
