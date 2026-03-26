@@ -12,6 +12,27 @@ from typing import Any
 from .models import EvaluateRequest, EvaluateResponse, RuntimeStateSnapshot
 
 
+class S3Uploader:
+    """Best-effort S3 uploader used by background archive loop."""
+
+    def __init__(self, *, bucket: str, prefix: str = "", region: str | None = None) -> None:
+        self._bucket = bucket
+        self._prefix = prefix
+        self._region = region
+
+    def upload_file(self, src: Path, key: str) -> None:
+        try:
+            import boto3  # type: ignore
+        except Exception:
+            return
+
+        kwargs: dict[str, Any] = {}
+        if self._region:
+            kwargs["region_name"] = self._region
+        client = boto3.client("s3", **kwargs)
+        client.upload_file(str(src), self._bucket, key)
+
+
 class DefenseDecisionAuditLogger:
     """Writes one JSON object per line for each decision."""
 
@@ -82,3 +103,26 @@ class DefenseDecisionAuditLogger:
         )
         with self._lock, self._path.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
+
+
+def rotate_and_upload_audit_log(audit: DefenseDecisionAuditLogger, uploader: S3Uploader) -> None:
+    """Rotate current audit log and upload rotated file to S3."""
+
+    src_path = audit._path
+    if not src_path.exists() or src_path.stat().st_size <= 0:
+        return
+
+    now = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    rotated_name = f"{src_path.name}.{now}"
+    rotated_path = src_path.with_name(rotated_name)
+
+    with audit._lock:
+        if not src_path.exists() or src_path.stat().st_size <= 0:
+            return
+        src_path.rename(rotated_path)
+
+    key = f"{uploader._prefix}{rotated_name}"
+    try:
+        uploader.upload_file(rotated_path, key)
+    finally:
+        rotated_path.unlink(missing_ok=True)

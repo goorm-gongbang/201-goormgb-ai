@@ -31,26 +31,16 @@ class PolicyConfig:
     throttle_light_ms: int = 200
     throttle_strong_ms: int = 1800
     high_value_paths: tuple[str, ...] = (
-        "/api/holds",
-        "/api/payments",
-        "/api/orders",
-        "/api/booking/entry",
-        "/api/seats/select",
+        "/queue/matches/",
+        "/seat/matches/",
     )
     vqa_gate_paths: tuple[str, ...] = (
-        "/api/queue/complete",
-        "/api/holds",
-        "/api/payments",
-        "/api/orders",
-        "/api/booking/entry",
-        "/api/seats/select",
+        "/queue/matches/",
+        "/seat/matches/",
     )
     challenge_api_paths: tuple[str, ...] = (
-        "/challenge/start",
-        "/challenge/event",
-        "/challenge/verify",
-        "/api/security/challenge",
-        "/api/security/verify",
+        "/ai/challenge/start",
+        "/ai/challenge/verify",
     )
 
     @staticmethod
@@ -65,19 +55,19 @@ class PolicyConfig:
             high_value_paths=_csv_tuple(
                 os.getenv(
                     "TM_HIGH_VALUE_PATH_PREFIXES",
-                    "/api/holds,/api/payments,/api/orders,/api/booking/entry,/api/seats/select",
+                    "/queue/matches/,/seat/matches/",
                 )
             ),
             vqa_gate_paths=_csv_tuple(
                 os.getenv(
                     "TM_VQA_GATE_PATH_PREFIXES",
-                    "/api/queue/complete,/api/holds,/api/payments,/api/orders,/api/booking/entry,/api/seats/select",
+                    "/queue/matches/,/seat/matches/",
                 )
             ),
             challenge_api_paths=_csv_tuple(
                 os.getenv(
                     "TM_CHALLENGE_API_PATH_PREFIXES",
-                    "/challenge/start,/challenge/event,/challenge/verify,/api/security/challenge,/api/security/verify",
+                    "/ai/challenge/start,/ai/challenge/verify",
                 )
             ),
         )
@@ -314,8 +304,6 @@ class DecisionPolicy:
 
     def _requires_vqa(self, req: EvaluateRequest, state: RuntimeStateSnapshot) -> bool:
         if state.vqa_passed:
-            return False
-        if req.method.upper() != "POST":
             return False
         if any(req.path.startswith(prefix) for prefix in self._cfg.challenge_api_paths):
             return False
