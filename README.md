@@ -123,7 +123,7 @@ TM_API_PROXY_TARGET=http://localhost:10000 npm run dev
 
 ### 방법 C: AI Defense 단독 실행 (디버깅용)
 
-프록시 없이 AI API만 직접 띄워서 `/evaluate`, `/check`, `/docs`를 점검할 때 사용합니다.
+프록시 없이 AI API만 직접 띄워서 `/ai/precheck`, `/ai/evaluate`, `/ai/challenge/*`, `/docs`를 점검할 때 사용합니다.
 
 ```bash
 cd /Users/jangjihyeon/201-goormgb-ai
@@ -202,7 +202,7 @@ python -m traffic_master_ai.attack.a1_mvp.main --dry-run
 VQA는 S3 고정 보안 관문입니다.
 
 - 프론트는 Catch Ball 미니게임을 표시하고, 플레이 요약 텔레메트리를 생성합니다.
-- 검증 요청(`/defense/challenge/verify`)으로 정답/텔레메트리를 전달합니다.
+- 검증 요청(`/ai/challenge/verify`)으로 정답/텔레메트리를 전달합니다.
 - 방어 런타임은 결과를 반영해 다음 액션을 결정합니다.
 - 결과가 `BLOCKED`인 경우 프론트는 챌린지 재시도가 아니라 `/terminal`로 종단 처리됩니다.
 

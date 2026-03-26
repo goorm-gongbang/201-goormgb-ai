@@ -1,11 +1,10 @@
 # AI Defense Runtime API (v2)
 
 ## Scope
-- Deterministic runtime decision API for `ext_authz` adapter.
-- ACT v2 action model: `NONE | CHALLENGE | THROTTLE | GATE | BLOCK`.
-- Queue-exit mandatory VQA gate (one-time per session).
-- Challenge protocol includes signed token, one-time consume semantics, raw-event ingestion, and server-side verdict.
-- Runtime decision path does **not** use LLM (offline/post-analysis only).
+- `101-goormgb-frontend`의 AI Telemetry SDK와 직접 맞춘 `/ai/*` 계약 API.
+- Runtime 결정 경로는 deterministic 정책 기반이며 online LLM 호출을 하지 않는다.
+- VQA 챌린지 계약은 `start/verify` 2개만 사용한다.
+- `challengeToken`, `/challenge/event` 경로는 현재 계약 범위에서 사용하지 않는다.
 
 ## Run (local)
 ```bash
@@ -15,71 +14,92 @@ pip install -e ".[defense_api]"
 python -m uvicorn traffic_master_ai.defense.api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-## API endpoints
-- `POST /evaluate`
-- `POST /challenge/start`
-- `POST /challenge/event`
-- `POST /challenge/verify`
-- `GET /runtime/{session_id}`
+## Public API endpoints
+- `POST /ai/precheck`
+- `POST /ai/telemetry/ingest`
+- `POST /ai/challenge/start`
+- `POST /ai/challenge/verify`
+- `POST /ai/evaluate`
 - `GET /healthz`
+
+## Internal routes (Swagger 비노출)
 - `GET /readyz`
+- `GET /runtime/{state_key}` (`state_key = {sid}:{matchId}`)
+- `POST /runtime/vqa/mark`
 - `GET /meta/storage`
+- `GET /metrics`
 
-## Header vocabulary
-- `x-defense-action: none|challenge|throttle|gate|block`
-- `x-defense-actions: comma-separated action list`
-- `x-defense-tier: T0|T1|T2|T3`
-- `x-defense-policy-version: string`
-- `x-throttle-ms: int` (when throttled)
-- `x-challenge-type: queue_gate` (when challenged)
-- `x-gate-mode: high-value-write` (when gated)
-- `x-block-reason: string` (when blocked)
+## Runtime state key
+- 상태 저장 키는 `{sid}:{matchId}`를 사용한다.
+- 동일 사용자 다중 경기/탭에서도 telemetry summary가 섞이지 않도록 분리한다.
+- `/ai/evaluate`는 `requestPath`에서 `/matches/{matchId}`를 파싱해 동일 키를 조회한다.
 
-## Runtime store config
-- `TM_REDIS_URL`: Redis URL (`redis://localhost:6379/0`)
-- `TM_SESSION_STATE_TTL_SECONDS`: session state TTL (default `1800`)
-- Redis not configured/fails -> in-memory fallback.
+## Config
+### Runtime store
+- `TM_REDIS_URL` (예: `redis://localhost:6379/0`)
+- `TM_SESSION_STATE_TTL_SECONDS` (default `1800`)
+- Redis 미설정/실패 시 in-memory fallback.
 
-## Challenge config
+### Precheck
+- `TM_TURNSTILE_SECRET_KEY`
+- `TM_TURNSTILE_SITEVERIFY_URL` (default Cloudflare siteverify)
+- `TM_TURNSTILE_VERIFY_TIMEOUT_MS` (default `500`)
+- `TM_PRECHECK_TTL_MS` (default `300000`)
+
+### Challenge
 - `TM_CHALLENGE_SECRET` (server-only secret)
 - `TM_CHALLENGE_TTL_MS` (default `120000`)
-- `TM_CHALLENGE_RETRY_LIMIT` (default `2`)
-- `TM_CHALLENGE_MAX_EVENTS` (default `6000`)
-- `TM_CHALLENGE_MIN_EVENTS` (default `25`)
-- `TM_CHALLENGE_MIN_DURATION_MS` (default `400`)
-- `TM_CHALLENGE_MAX_DURATION_MS` (default `7000`)
-- `TM_CHALLENGE_MAX_SPEED_PX_PER_MS` (default `3.8`)
-- `TM_CHALLENGE_MAX_JUMP_PX` (default `220`)
 - `TM_CHALLENGE_CATCH_RADIUS_PX` (default `38`)
 - `TM_CHALLENGE_TIMING_WINDOW_MS` (default `260`)
 
-## Policy config
-- `TM_DEFENSE_POLICY_VERSION` (default `def-pol-2.0.0`)
-- `TM_REPETITIVE_PATTERN_T1_THRESHOLD` (default `1`)
-- `TM_REPETITIVE_PATTERN_T2_THRESHOLD` (default `3`)
-- `TM_CHALLENGE_FAIL_THRESHOLD` (default `3`)
-- `TM_T1_THROTTLE_MS` (default `200`)
-- `TM_T2_THROTTLE_MS` (default `1800`)
-- `TM_VQA_GATE_PATH_PREFIXES` (default `/api/queue/complete,/api/holds,/api/payments,/api/seats/select`)
-- `TM_HIGH_VALUE_PATH_PREFIXES` (default `/api/holds,/api/payments,/api/seats/select`)
+### Runtime sanction callback
+- `TM_BACKEND_RUNTIME_SANCTIONS_URL` (`TM_BACKEND_SANCTION_URL` fallback)
 
-## Audit log
+### Audit / archive
 - `TM_DEFENSE_AUDIT_LOG_PATH` (default `logs/defense_decision_audit.jsonl`)
-- `evaluate` decisions and challenge lifecycle events are append-only JSONL.
+- `TM_S3_BUCKET`
+- `TM_S3_PREFIX` (default `ai-defense/audit/`)
+- `TM_S3_REGION`
+- `TM_S3_ARCHIVE_INTERVAL_SECONDS` (default `3600`)
 
-## Offline LLM batch (post-analysis only)
-- Runtime path does not call LLM.
-- Batch runner consumes decision logs and emits review artifacts:
+## Local cURL examples
 ```bash
-cd /Users/jangjihyeon/201-goormgb-ai
-python scripts/step5_offline_llm_batch.py --min-log-count 1 --mode mock
+curl -X POST http://127.0.0.1:8000/ai/precheck \
+  -H 'X-Session-Id: sid_local_dev' \
+  -H 'Content-Type: application/json' \
+  -d '{"matchId":687,"cfToken":"ok-token"}'
 ```
-- Outputs:
-  - `logs/offline_judge_results.jsonl`
-  - `logs/offline_policy_patch_candidates.json`
-  - `logs/offline_batch_summary.json`
+
+```bash
+curl -X POST http://127.0.0.1:8000/ai/telemetry/ingest \
+  -H 'X-Session-Id: sid_local_dev' \
+  -H 'Content-Type: application/json' \
+  -d '{"matchId":687,"stage":"QUEUE_ENTER_PRECLICK","events":[{"type":"mousemove","tsMs":1773817200000,"xNorm":0.42,"yNorm":0.77},{"type":"click","tsMs":1773817200200,"xNorm":0.47,"yNorm":0.80,"button":0}]}'
+```
+
+```bash
+curl -X POST http://127.0.0.1:8000/ai/challenge/start \
+  -H 'X-Session-Id: sid_local_dev' \
+  -H 'Content-Type: application/json' \
+  -d '{"matchId":687}'
+```
+
+```bash
+curl -X POST http://127.0.0.1:8000/ai/challenge/verify \
+  -H 'X-Session-Id: sid_local_dev' \
+  -H 'Content-Type: application/json' \
+  -d '{"matchId":687,"challengeId":"CH_xxx","caught":true,"catchTsMs":1773817228123,"catchXNorm":0.45,"catchYNorm":0.88}'
+```
+
+```bash
+curl -X POST http://127.0.0.1:8000/ai/evaluate \
+  -H 'Content-Type: application/json' \
+  -d '{"event":{"eventType":"QUEUE_ENTER","requestPath":"/queue/matches/687/enter","requestMethod":"POST"},"context":{"sid":"sid_local_dev"}}'
+```
+
+## Smoke script
+- `/ai` 계약 기준 로컬 점검: `python src/traffic_master_ai/defense/api/examples/local_e2e_check.py`
 
 ## OpenAPI
 - Swagger UI: `http://localhost:8000/docs`
 - OpenAPI JSON: `http://localhost:8000/openapi.json`
-- Handover snapshot: `/Users/jangjihyeon/201-goormgb-ai/.handover/specs/defense_api/openapi-defense.v2.yaml`

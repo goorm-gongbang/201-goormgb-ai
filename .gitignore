@@ -108,3 +108,15 @@ platform/backend/behavior_bank.jsonl
 
 # ─── Delivery Bundles (generated handoff copies) ───
 spec/delivery_bundle_*/
+
+# ─── Local docs / handoff drafts ───
+spec/_local/*
+spec/*.md
+spec/*.dbml
+!spec/README.md
+!spec/_local/ai_defense_inner_architecture.md
+!spec/_local/ai_defense_inner_architecture_excalidraw.md
+!spec/_local/istio_ai_adapter_integration_contract.md
+
+# ─── Local scratch virtualenvs ───
+.venv-httpx-check/
