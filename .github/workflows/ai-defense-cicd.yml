@@ -83,12 +83,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run -d --rm \
-            --name ai-defense-smoke \
+          CONTAINER_NAME="ai-defense-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker run -d \
+            --name "${CONTAINER_NAME}" \
             -p "${SMOKE_PORT}:${CONTAINER_PORT}" \
             "${{ steps.meta.outputs.image_sha_tag }}"
 
           for i in $(seq 1 30); do
+            if ! docker ps --filter "name=^/${CONTAINER_NAME}$" --filter "status=running" --format "{{.Names}}" | grep -q .; then
+              echo "Container exited before healthz became ready."
+              break
+            fi
             if curl -fsS "http://127.0.0.1:${SMOKE_PORT}/healthz" >/dev/null 2>&1; then
               echo "Healthz check passed."
               exit 0
@@ -96,8 +106,10 @@ jobs:
             sleep 1
           done
 
-          echo "Healthz check failed. Container logs:"
-          docker logs ai-defense-smoke || true
+          echo "Healthz check failed. Container status:"
+          docker ps -a --filter "name=^/${CONTAINER_NAME}$" || true
+          echo "Container logs:"
+          docker logs "${CONTAINER_NAME}" || true
           exit 1
 
       - name: Login to GHCR
