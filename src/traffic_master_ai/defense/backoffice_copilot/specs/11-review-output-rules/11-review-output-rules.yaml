@@ -1,0 +1,231 @@
+document:
+  id: "11-review-output-rules"
+  type: "review_output_rules"
+  version: "v3"
+  status: "draft"
+
+purpose:
+  summary: >
+    Define DB-first output contract. PostgreSQL two-table persistence is the formal output,
+    and export files are downstream artifacts generated from DB rows.
+  audience:
+    - developers
+    - coding_agents
+    - reviewers
+
+output_priority:
+  ordered:
+    - "persist_post_review_runs"
+    - "persist_post_review_session_results"
+    - "generate_exports_if_needed"
+  rule: "export success cannot replace DB persistence success"
+
+storage_policy:
+  primary_store: "PostgreSQL"
+  clickhouse_for_minimal_result_storage: false
+  s3_as_default_result_storage: false
+  only_allowed_tables:
+    - "post_review_runs"
+    - "post_review_session_results"
+
+table_contract_overview:
+  post_review_runs:
+    primary_key:
+      - "match_id"
+    columns:
+      - column_name: "match_id"
+        pg_type: "TEXT"
+        nullable: false
+        default: "none"
+        key_index: "PK"
+        meaning_ko: "실행 식별자"
+        why_needed_ko: "run 결과를 유일하게 식별하기 위해 필요"
+      - column_name: "window_start_ms"
+        pg_type: "BIGINT"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "분석 시작 시각"
+        why_needed_ko: "시간 범위 고정을 위해 필요"
+      - column_name: "window_end_ms"
+        pg_type: "BIGINT"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "분석 종료 시각"
+        why_needed_ko: "시간 범위 고정을 위해 필요"
+      - column_name: "candidate_count"
+        pg_type: "INTEGER"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "후보 수"
+        why_needed_ko: "분석 대상 규모 기록에 필요"
+      - column_name: "suspicious_count"
+        pg_type: "INTEGER"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "의심 수"
+        why_needed_ko: "핵심 결과 수치 기록에 필요"
+      - column_name: "summary_text_json"
+        pg_type: "JSONB"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "3줄 요약 배열"
+        why_needed_ko: "운영 요약 및 export 원천으로 필요"
+      - column_name: "status"
+        pg_type: "TEXT"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "실행 상태"
+        why_needed_ko: "성공/실패 판정에 필요"
+      - column_name: "created_at"
+        pg_type: "TIMESTAMPTZ"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "생성 시각"
+        why_needed_ko: "감사 추적에 필요"
+      - column_name: "updated_at"
+        pg_type: "TIMESTAMPTZ"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "수정 시각"
+        why_needed_ko: "상태 변경 추적에 필요"
+    allowed_values:
+      status:
+        - "SUCCESS"
+        - "PARTIAL_SUCCESS"
+        - "FAILED"
+
+  post_review_session_results:
+    primary_key:
+      - "match_id"
+      - "session_id"
+    columns:
+      - column_name: "match_id"
+        pg_type: "TEXT"
+        nullable: false
+        default: "none"
+        key_index: "PK component"
+        meaning_ko: "실행 식별자"
+        why_needed_ko: "run과 session 결과 연결에 필요"
+      - column_name: "session_id"
+        pg_type: "TEXT"
+        nullable: false
+        default: "none"
+        key_index: "PK component"
+        meaning_ko: "세션 식별자"
+        why_needed_ko: "세션 결과 유일 식별에 필요"
+      - column_name: "review_result"
+        pg_type: "TEXT"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "최종 레이블"
+        why_needed_ko: "분류 결과 저장 및 전송 대상 판정에 필요"
+      - column_name: "evidence_summary"
+        pg_type: "TEXT"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "근거 문장"
+        why_needed_ko: "운영 확인용 최소 설명에 필요"
+      - column_name: "session_analysis_json"
+        pg_type: "JSONB"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "분석 JSON"
+        why_needed_ko: "판단 근거 구조화 저장에 필요"
+      - column_name: "backend_delivery_status"
+        pg_type: "TEXT"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "전달 상태"
+        why_needed_ko: "전달 처리 추적에 필요"
+      - column_name: "created_at"
+        pg_type: "TIMESTAMPTZ"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "생성 시각"
+        why_needed_ko: "이력 추적에 필요"
+      - column_name: "updated_at"
+        pg_type: "TIMESTAMPTZ"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "수정 시각"
+        why_needed_ko: "상태 갱신 추적에 필요"
+    allowed_values:
+      review_result:
+        - "NORMAL"
+        - "SUSPICIOUS"
+      backend_delivery_status:
+        - "PENDING"
+        - "SENT"
+        - "FAILED"
+    delivery_rule:
+      - "store NORMAL rows is allowed"
+      - "operational delivery target is SUSPICIOUS only"
+
+export_files:
+  treated_as: "downstream artifacts from DB"
+  files:
+    - "summary.json"
+    - "suspicious_sessions.jsonl"
+    - "suspicious_sessions.csv"
+
+export_mapping:
+  summary_json:
+    - export_field: "match_id"
+      from_db: "post_review_runs.match_id"
+    - export_field: "window_start_ms"
+      from_db: "post_review_runs.window_start_ms"
+    - export_field: "window_end_ms"
+      from_db: "post_review_runs.window_end_ms"
+    - export_field: "total_candidate_sessions"
+      from_db: "post_review_runs.candidate_count"
+    - export_field: "suspicious_count"
+      from_db: "post_review_runs.suspicious_count"
+    - export_field: "summary_text"
+      from_db: "post_review_runs.summary_text_json"
+    - export_field: "status"
+      from_db: "post_review_runs.status"
+
+  suspicious_sessions:
+    filter: "review_result == SUSPICIOUS"
+    fields:
+      - export_field: "match_id"
+        from_db: "post_review_session_results.match_id"
+      - export_field: "session_id"
+        from_db: "post_review_session_results.session_id"
+      - export_field: "review_result"
+        from_db: "post_review_session_results.review_result"
+      - export_field: "evidence_summary"
+        from_db: "post_review_session_results.evidence_summary"
+      - export_field: "backend_delivery_status"
+        from_db: "post_review_session_results.backend_delivery_status"
+      - export_field: "created_at"
+        from_db: "post_review_session_results.created_at"
+      - export_field: "updated_at"
+        from_db: "post_review_session_results.updated_at"
+
+consistency_rules:
+  required:
+    - "post_review_runs.suspicious_count == count(post_review_session_results where review_result='SUSPICIOUS')"
+    - "summary_text_json length == 3"
+    - "export counts must match DB counts when export is enabled"
+
+forbidden_actions:
+  - "treat export as formal primary output"
+  - "add result tables beyond two approved tables"
+  - "store non-allowed review_result values"
+  - "send NORMAL rows to operational backend delivery"
+  - "mark success when DB persistence failed"

@@ -1,0 +1,134 @@
+document:
+  id: "30-ops-and-checks"
+  type: "ops_and_checks"
+  version: "v3"
+  status: "draft"
+
+purpose:
+  summary: >
+    Define operations and validations at PostgreSQL column level.
+    DB persistence validation is primary, export validation is downstream.
+  audience:
+    - developers
+    - coding_agents
+    - reviewers
+    - QA
+
+validation_priority:
+  ordered:
+    - "db_row_persistence_validation"
+    - "delivery_status_validation"
+    - "fallback_validation"
+    - "export_validation"
+
+pre_run_checks:
+  required:
+    - "postgres connection is available"
+    - "post_review_runs writable"
+    - "post_review_session_results writable"
+    - "match_id/window_start_ms/window_end_ms are valid"
+    - "fallback and semantic mapping configs exist"
+    - "pk conflict handling policy is explicit"
+
+column_level_db_checks:
+  post_review_runs:
+    required_row_rule: "one row by match_id must be persisted"
+    pk_rule: "match_id is PK and conflict handling policy is enforced"
+    type_rules:
+      - "match_id: TEXT"
+      - "window_start_ms: BIGINT"
+      - "window_end_ms: BIGINT"
+      - "candidate_count: INTEGER"
+      - "suspicious_count: INTEGER"
+      - "summary_text_json: JSONB"
+      - "status: TEXT"
+      - "created_at: TIMESTAMPTZ"
+      - "updated_at: TIMESTAMPTZ"
+    null_rules:
+      - "all required columns are NOT NULL"
+    allowed_value_rules:
+      - "status in {SUCCESS, PARTIAL_SUCCESS, FAILED}"
+    json_rules:
+      - "summary_text_json is array with length 3"
+    consistency_rules:
+      - "candidate_count >= suspicious_count"
+
+  post_review_session_results:
+    required_row_rule: "rows for analyzed sessions must be persisted"
+    pk_rule: "(match_id, session_id) is PK and conflict handling policy is enforced"
+    type_rules:
+      - "match_id: TEXT"
+      - "session_id: TEXT"
+      - "review_result: TEXT"
+      - "evidence_summary: TEXT"
+      - "session_analysis_json: JSONB"
+      - "backend_delivery_status: TEXT"
+      - "created_at: TIMESTAMPTZ"
+      - "updated_at: TIMESTAMPTZ"
+    null_rules:
+      - "all required columns are NOT NULL"
+    allowed_value_rules:
+      - "review_result in {NORMAL, SUSPICIOUS}"
+      - "backend_delivery_status in {PENDING, SENT, FAILED}"
+    json_rules:
+      - "session_analysis_json contains minimal SessionAnalysis structure"
+
+delivery_checks:
+  generation_rules:
+    - "backend request candidates are built only from review_result=SUSPICIOUS rows"
+    - "validation scope stops at Backend request DTO generation and adapter boundary"
+  status_update_rules:
+    - "backend response must update backend_delivery_status"
+    - "delivery-attempted rows must not keep empty backend_delivery_status"
+    - "updated_at changes when backend_delivery_status changes"
+
+stage_checks:
+  input_collection:
+    - "time-window filtering applied"
+    - "row loader outputs raw rows only"
+  candidate_extraction:
+    - "SessionSummary fields are produced"
+    - "candidate hard filters do not use payment_success/payment-stage semantics"
+  session_analysis:
+    - "SessionAnalysis required fields/arrays/fallback flag are valid"
+    - "semantic mapping interprets flowState/terminalReason/reasonCode/latest_*"
+  post_review:
+    - "review_result allowed values and evidence_summary existence are valid"
+
+fallback_checks:
+  raw_fallback:
+    - "only needs_raw_fallback=true sessions trigger raw lookup"
+    - "lookup constrained by session_id + time window"
+    - "full raw scan forbidden"
+  llm_fallback:
+    - "fallback can produce review_result/evidence_summary"
+    - "fallback usage is traceable"
+
+export_checks:
+  treated_as: "downstream"
+  files:
+    - "summary.json"
+    - "suspicious_sessions.jsonl"
+    - "suspicious_sessions.csv"
+  rules:
+    - "export counts must match DB counts"
+    - "suspicious export includes only SUSPICIOUS rows"
+    - "export failure alone does not always fail run (policy-based)"
+
+failure_classification:
+  fatal:
+    - "postgres persistence failure"
+    - "required column null/type/allowed-value violation"
+    - "unhandled PK conflict causing run interruption"
+  allowed_partial:
+    - "partial session analysis failure"
+    - "per-session llm fallback"
+    - "zero suspicious"
+    - "export failure when policy allows"
+
+agent_instructions:
+  must_follow:
+    - "Validate DB rows at column level first"
+    - "Enforce allowed values for status/review_result/backend_delivery_status"
+    - "Validate JSONB structures"
+    - "Treat export validation as downstream"

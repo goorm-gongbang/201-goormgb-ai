@@ -1,0 +1,172 @@
+document:
+  id: "01-service-overview"
+  type: "service_overview"
+  version: "v1"
+  status: "draft"
+
+purpose:
+  summary: >
+    Define the product-level scope, target flow, state model, input/output, and main processing flow
+    for the Backoffice Copilot post-review system.
+  audience:
+    - developers
+    - coding_agents
+    - reviewers
+
+service_definition:
+  one_line: >
+    A log-based post-review system that analyzes Runtime-passed sessions after a specified time window
+    and produces per-session results plus a time-window summary.
+  goals:
+    - "post-review gray-zone sessions missed by Runtime"
+    - "generate time-window summary"
+    - "persist results to PostgreSQL first and generate exports if needed"
+  non_goals:
+    - "replace realtime runtime"
+    - "execute sanctions"
+    - "auto-apply policy"
+    - "provide backoffice UI"
+    - "implement external backend server/API"
+    - "implement discord/grafana delivery"
+
+users:
+  direct:
+    - "AI team developers"
+  indirect:
+    - "operators consuming downstream exports"
+    - "infra team consuming adapter payloads"
+    - "other dev teams reading DB/export outputs"
+
+state_index:
+  model: "F-based ticketing flow"
+  states:
+    - id: "F0"
+      api: null
+      mode: "common"
+      meaning: "initial state before queue entry"
+    - id: "F1"
+      api: "POST /queue/matches/{matchId}/enter"
+      mode: "common"
+      meaning: "queue entry completed and booking conditions saved"
+    - id: "F2"
+      api: "GET /seat/matches/{matchId}/seat-groups"
+      mode: "common"
+      meaning: "entered seat domain and recommendation on/off fixed"
+    - id: "F3R"
+      api: "GET /seat/matches/{matchId}/recommendations/blocks"
+      mode: "on"
+      meaning: "recommended block list fetched"
+    - id: "F3M"
+      api: "GET /seat/matches/{matchId}/sections/{sectionId}/blocks"
+      mode: "off"
+      meaning: "manual section/block list fetched"
+    - id: "F4R"
+      api: "POST /seat/matches/{matchId}/recommendations/blocks/{blockId}/assign"
+      mode: "on"
+      meaning: "recommended mode auto-assign and hold requested"
+    - id: "F4M"
+      api: "POST /seat/matches/{matchId}/seat-holds"
+      mode: "off"
+      meaning: "manual mode seat hold requested"
+    - id: "FX"
+      api: null
+      mode: "common"
+      meaning: "terminal state including payment entry, leave, expiry, block"
+
+runtime_assumptions:
+  no_mid_vqa_recheck: true
+  removed_logic:
+    - "tier-up triggered VQA"
+    - "mid-flow extra VQA validation"
+  assumptions:
+    - "Runtime only performs realtime decisions"
+    - "tier-up does not re-trigger VQA"
+    - "Runtime-passed sessions continue the flow"
+    - "post-review is a separate layer after the time window ends"
+
+post_review_target:
+  include_conditions:
+    - "session_id exists"
+    - "activity exists in target time window"
+    - "final runtime decision is not blocked"
+    - "runtime left T1 or T2 trace"
+  detailed_rule_authority:
+    - "10-post-review-rules.md"
+    - "21-data-contract.md"
+  state_model_usage: "F-state model is interpretive aid, not standalone candidate hard filter"
+  exclude_conditions:
+    - "runtime already handled as T3 or BLOCK"
+    - "session_id missing"
+    - "no suspicious trace"
+
+inputs:
+  ordered_sources:
+    - "defense_audit_events.jsonl"
+    - "decision_audit.jsonl"
+  always_time_window_filtered: true
+  interpretation_rules:
+    - "row loader reads raw rows only"
+    - "semantic mapping interprets flowState/terminalReason/reasonCode/latest_*"
+
+outputs:
+  formal_tables:
+    - "post_review_runs"
+    - "post_review_session_results"
+  downstream_exports:
+    - "summary.json"
+    - "suspicious_sessions.jsonl"
+    - "suspicious_sessions.csv"
+  session_fields:
+    - "session_id"
+    - "review_result"
+    - "evidence_summary"
+  window_fields:
+    - "summary_text"
+    - "suspicious_sessions"
+  allowed_labels:
+    - "NORMAL"
+    - "SUSPICIOUS"
+
+processing_flow:
+  ordered_steps:
+    - "time window input"
+    - "log collection"
+    - "candidate session extraction"
+    - "session flow and suspicious signal analysis"
+    - "per-session post review"
+    - "time-window summary generation"
+    - "PostgreSQL persistence"
+    - "optional export generation"
+
+result_usage:
+  summary_json:
+    - "downstream summary generated after DB persistence"
+    - "DB-based suspicious count"
+    - "operator and infra reference"
+  suspicious_jsonl:
+    - "DB-derived machine-readable suspicious source"
+    - "possible downstream input"
+  suspicious_csv:
+    - "DB-derived human-readable operator file"
+    - "manual follow-up"
+
+out_of_scope:
+  - "admin page"
+  - "runtime realtime decision change"
+  - "mid-flow VQA recheck"
+  - "external backend server/API implementation"
+  - "discord/grafana delivery implementation"
+  - "account/token sanction execution"
+  - "policy recommendation"
+
+agent_instructions:
+  must_follow:
+    - "Use F-based state model only"
+    - "Do not reintroduce S-based state flow"
+    - "Do not assume admin APIs exist"
+    - "Do not implement mid-flow VQA recheck"
+    - "Use only log files as inputs"
+    - "Use only NORMAL and SUSPICIOUS as review_result"
+  next_documents:
+    - "10-post-review-rules.md"
+    - "20-langgraph-node-spec.md"

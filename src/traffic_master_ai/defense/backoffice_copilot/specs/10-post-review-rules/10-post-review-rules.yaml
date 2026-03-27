@@ -1,0 +1,126 @@
+document:
+  id: "10-post-review-rules"
+  type: "post_review_rules"
+  version: "v2"
+  status: "draft"
+
+purpose:
+  summary: >
+    Define domain rules for candidate extraction, session analysis,
+    raw fallback usage, LLM review, and suspicious-only backend delivery.
+  audience:
+    - developers
+    - coding_agents
+    - reviewers
+
+scope:
+  in_scope:
+    - candidate_session_extraction
+    - session_timeline_reconstruction
+    - session_analysis_generation
+    - raw_fallback_rules
+    - llm_review_rules
+    - backend_delivery_rules
+  out_of_scope:
+    - realtime_runtime_block
+    - sanction_execution
+    - policy_auto_change
+    - infra_delivery_implementation
+
+run_identity:
+  run_id_field: "match_id"
+  separate_review_run_id: false
+
+storage_policy:
+  primary_store: "PostgreSQL"
+  only_allowed_tables:
+    - "post_review_runs"
+    - "post_review_session_results"
+  intermediate_persistence_forbidden: true
+
+input_sources:
+  ordered:
+    - "defense_audit_events"
+    - "decision_audit"
+  rules:
+    - "always filter by time window"
+    - "decision_audit is narrow fallback only"
+    - "row loader reads DefenseAuditEventRow only"
+    - "semantic mapping interprets flowState/terminalReason/reasonCode/latest_*/terminal_outcome"
+    - "event interpreter consumes semantic mapping outputs without re-owning raw field interpretation"
+
+candidate_rules:
+  required_conditions:
+    - "session_id exists"
+    - "event exists in target time window"
+    - "seen_t1 or seen_t2 exists"
+    - "block_event_count == 0"
+    - "latest_action != BLOCK"
+    - "latest_tier != T3"
+    - "terminal_outcome == NOT_BLOCKED"
+  forbidden_hard_filters:
+    - "payment_success"
+    - "payment stage reached"
+  dto: "SessionSummary defined in 21-data-contract"
+
+session_analysis_rules:
+  dto: "SessionAnalysis defined in 21-data-contract"
+  rules:
+    - "build suspicious_signals by rule"
+    - "set needs_raw_fallback when evidence is insufficient"
+
+raw_fallback_rules:
+  trigger_examples:
+    - "payload parse failure"
+    - "critical interpretation field still missing after semantic mapping"
+    - "insufficient context for evidence_summary"
+  query_constraints:
+    - "must filter by session_id"
+    - "must filter by time window"
+    - "full scan forbidden"
+
+llm_rules:
+  input_dto: "LLM input DTO defined in 21-data-contract"
+  output_dto: "LLM output DTO defined in 21-data-contract"
+  allowed_labels:
+    - "NORMAL"
+    - "SUSPICIOUS"
+  forbidden:
+    - "invent unsupported facts"
+
+backend_delivery_rules:
+  request_dto: "Backend request DTO defined in 21-data-contract"
+  response_dto: "Backend response DTO defined in 21-data-contract"
+  implementation_boundary:
+    - "generate Backend request DTO"
+    - "cross adapter boundary"
+    - "update backend_delivery_status from response"
+  out_of_scope:
+    - "external backend server/API implementation"
+    - "discord/grafana live integration"
+  send_only_if:
+    - "review_result == SUSPICIOUS"
+  delivery_status_storage:
+    field: "post_review_session_results.backend_delivery_status"
+
+persistence_rules:
+  run_result_table: "post_review_runs"
+  session_result_table: "post_review_session_results"
+  consistency:
+    - "run.suspicious_count equals suspicious rows in session table"
+  export_policy:
+    - "export files are downstream artifacts after DB persistence"
+
+forbidden_actions:
+  - "reintroduce review_run_id as mandatory key"
+  - "create intermediate persistence tables"
+  - "send NORMAL sessions to backend"
+  - "add undocumented fields"
+  - "mark success when DB persistence failed"
+
+agent_instructions:
+  must_follow:
+    - "Use match_id as run identity"
+    - "Follow DTO schema from 21-data-contract"
+    - "Persist to PostgreSQL two-table model first"
+    - "Send only suspicious sessions to backend"
