@@ -11,6 +11,7 @@ from .compat import FASTAPI_AVAILABLE, FastAPI
 from .evaluate import create_evaluate_router
 from .http_errors import install_contract_exception_handler
 from .runtime import DefenseRuntime
+from .runtime_sync import create_runtime_sync_router
 
 
 def create_app(
@@ -28,6 +29,7 @@ def create_app(
     app.include_router(create_evaluate_router(rt))
     app.include_router(create_check_router(rt))
     app.include_router(create_challenge_router(rt))
+    app.include_router(create_runtime_sync_router(rt))
     if include_admin:
         app.include_router(create_admin_console_router(rt))
     return app

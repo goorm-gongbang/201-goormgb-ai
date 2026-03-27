@@ -142,3 +142,49 @@ def test_post_vqa_guard_is_bypassed_after_vqa_pass(monkeypatch) -> None:
     )
     assert response.status_code == 200
     assert response.json() == {"decision": {"action": "NONE"}}
+
+
+def test_post_vqa_guard_uses_sid_level_vqa_mark(monkeypatch) -> None:
+    sid = "sess-eval-post-vqa-sid-mark-1"
+    state_key = f"{sid}:{MATCH_ID}"
+    marked = client.post(
+        "/runtime/vqa/mark",
+        json={"session_id": sid, "vqa_passed": True, "flow_state": "S4"},
+    )
+    assert marked.status_code == 200
+    assert marked.json()["vqa_passed"] is True
+
+    def _stub_execute_legacy_evaluate(_req):
+        return (
+            EvaluateResponse(
+                allow=True,
+                session_id=state_key,
+                flow_state="S4",
+                defense_tier="T0",
+                action="NONE",
+                actions=["NONE"],
+                reason=None,
+                rule_hits=[],
+                risk_score=0.0,
+                policy_version="def-pol-2.0.0",
+                headers_to_add={},
+                decision_id="dec-test-sid-pass",
+                latency_ms=1,
+                version="v2",
+            ),
+            RuntimeStateSnapshot(updated_ts_ms=0, vqa_passed=True),
+        )
+
+    monkeypatch.setattr(api_main, "_execute_legacy_evaluate", _stub_execute_legacy_evaluate)
+
+    response = client.post(
+        "/ai/evaluate",
+        json=_evaluate_payload(
+            sid=sid,
+            event_type="SEAT_HOLDS",
+            path=f"/seat/matches/{MATCH_ID}/seat-holds",
+            method="POST",
+        ),
+    )
+    assert response.status_code == 200
+    assert response.json() == {"decision": {"action": "NONE"}}
