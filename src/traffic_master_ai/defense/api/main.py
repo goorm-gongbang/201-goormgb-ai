@@ -2,7 +2,7 @@
 
 Primary runtime logic follows teammate D0-MVP implementation.
 Legacy endpoints are preserved as compatibility routes.
-Includes Prometheus metrics instrumentation.
+Includes Prometheus metrics instrumentation + OpenTelemetry.
 """
 
 from __future__ import annotations
@@ -22,6 +22,18 @@ import jwt
 from fastapi import BackgroundTasks, Body, FastAPI, Header, HTTPException, Request
 from prometheus_client import Counter
 from prometheus_fastapi_instrumentator import Instrumentator
+
+# OpenTelemetry imports
+from opentelemetry import metrics, trace
+from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.semconv.resource import ResourceAttributes
 
 from ..d0_mvp.api.runtime import DefenseRuntime as D0DefenseRuntime
 from ..d0_mvp.core.enums import DefenseAction as D0DefenseAction
@@ -69,6 +81,50 @@ EVALUATE_REQUESTS = Counter(
 )
 
 instrumentator = Instrumentator()
+
+# =============================================================================
+# OpenTelemetry Setup
+# =============================================================================
+_OTEL_ENDPOINT = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "otel-collector.monitoring.svc.cluster.local:4317")
+_OTEL_SERVICE_NAME = os.getenv("OTEL_SERVICE_NAME", "ai-defense")
+_OTEL_ENABLED = os.getenv("OTEL_ENABLED", "true").lower() == "true"
+
+
+def _setup_opentelemetry() -> None:
+    """Configure OpenTelemetry with OTLP exporters."""
+    if not _OTEL_ENABLED:
+        logging.getLogger(__name__).info("OpenTelemetry disabled (OTEL_ENABLED=false)")
+        return
+
+    resource = Resource.create({
+        ResourceAttributes.SERVICE_NAME: _OTEL_SERVICE_NAME,
+        ResourceAttributes.SERVICE_NAMESPACE: os.getenv("OTEL_SERVICE_NAMESPACE", "dev-ai"),
+        ResourceAttributes.SERVICE_VERSION: "v2",
+    })
+
+    # Tracer setup
+    tracer_provider = TracerProvider(resource=resource)
+    try:
+        span_exporter = OTLPSpanExporter(endpoint=_OTEL_ENDPOINT, insecure=True)
+        tracer_provider.add_span_processor(BatchSpanProcessor(span_exporter))
+        trace.set_tracer_provider(tracer_provider)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Failed to setup OTLP trace exporter: %s", exc)
+
+    # Meter setup
+    try:
+        metric_exporter = OTLPMetricExporter(endpoint=_OTEL_ENDPOINT, insecure=True)
+        metric_reader = PeriodicExportingMetricReader(metric_exporter, export_interval_millis=15000)
+        meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
+        metrics.set_meter_provider(meter_provider)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Failed to setup OTLP metric exporter: %s", exc)
+
+    logging.getLogger(__name__).info("OpenTelemetry configured: endpoint=%s, service=%s", _OTEL_ENDPOINT, _OTEL_SERVICE_NAME)
+
+
+# Initialize OpenTelemetry at module load
+_setup_opentelemetry()
 
 
 logger = logging.getLogger(__name__)
@@ -132,6 +188,10 @@ app = FastAPI(
 
 # [Gap Closing] Instrument app at the start (to allow middleware addition)
 instrumentator.instrument(app)
+
+# OpenTelemetry FastAPI instrumentation (adds http_server_request_duration_seconds_* metrics)
+if _OTEL_ENABLED:
+    FastAPIInstrumentor.instrument_app(app)
 
 _state_store, _state_backend = build_runtime_store_from_env()
 _audit = DefenseDecisionAuditLogger.from_env()
