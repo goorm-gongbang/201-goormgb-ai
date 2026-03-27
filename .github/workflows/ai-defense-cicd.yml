@@ -91,6 +91,7 @@ jobs:
 
           docker run -d \
             --name "${CONTAINER_NAME}" \
+            -e CI=true \
             -p "${SMOKE_PORT}:${CONTAINER_PORT}" \
             "${{ steps.meta.outputs.image_sha_tag }}"
 
