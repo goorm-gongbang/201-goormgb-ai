@@ -82,30 +82,22 @@ def _nested_mapping(payload: Mapping[str, Any], key: str) -> Mapping[str, Any]:
 def _find_string(payload: Mapping[str, Any], *keys: str) -> str | None:
     if not payload:
         return None
-    for candidate in _walk_values(payload):
-        if candidate[0] not in keys:
+    for candidate_key, value in _iter_values(payload):
+        if candidate_key not in keys:
             continue
-        value = candidate[1]
         if isinstance(value, str) and value:
             return value
     return None
 
 
-def _walk_values(value: Any) -> tuple[tuple[str, Any], ...]:
-    found: list[tuple[str, Any]] = []
-    _collect_values(value, found)
-    return tuple(found)
-
-
-def _collect_values(value: Any, found: list[tuple[str, Any]]) -> None:
+def _iter_values(value: Any):
     if isinstance(value, Mapping):
         for key, nested in value.items():
-            key_str = str(key)
-            found.append((key_str, nested))
-            _collect_values(nested, found)
+            yield str(key), nested
+            yield from _iter_values(nested)
     elif isinstance(value, list):
         for nested in value:
-            _collect_values(nested, found)
+            yield from _iter_values(nested)
 
 
 __all__ = ["EventSemantics", "map_event_semantics"]

@@ -201,6 +201,57 @@ class SessionAnalysisTests(unittest.TestCase):
         )
         validate_session_analysis_json(analysis)
 
+    def test_fallback_provider_failure_keeps_reason_visible_without_crashing(self) -> None:
+        candidate_sessions = (
+            SessionSummary(
+                session_id="sess-error",
+                seen_t1=True,
+                seen_t2=False,
+                block_event_count=0,
+                vqa_fail_count=0,
+                throttle_event_count=0,
+                latest_flow_state="F2",
+                latest_action="NONE",
+                latest_tier="T1",
+                terminal_outcome="NOT_BLOCKED",
+            ),
+        )
+        analysis_input = AnalysisInput(
+            defense_audit_events=(
+                DefenseAuditEventRow(
+                    ts_ms=100,
+                    trace_id="trace-1",
+                    session_id="sess-error",
+                    event_type="DEF_GUARD_SCORED",
+                    payload={
+                        "flowState": "F2",
+                        "serverDecision": {"riskTier": "T1", "action": "NONE"},
+                    },
+                ),
+            ),
+            raw_audit_available=True,
+        )
+
+        def provider(*_args):
+            raise RuntimeError("unexpected provider failure")
+
+        analyses = build_session_analysis_list(
+            candidate_sessions,
+            analysis_input,
+            window_start_ms=90,
+            window_end_ms=150,
+            raw_fallback_provider=provider,
+        )
+
+        self.assertEqual(len(analyses), 1)
+        analysis = analyses[0]
+        self.assertTrue(analysis.needs_raw_fallback)
+        self.assertIn(
+            "Limited decision_audit fallback failed within the requested session window (RuntimeError).",
+            analysis.timeline_summary,
+        )
+        validate_session_analysis_json(analysis)
+
 
 if __name__ == "__main__":
     unittest.main()

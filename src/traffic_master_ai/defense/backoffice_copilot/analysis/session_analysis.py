@@ -100,6 +100,7 @@ def _build_one_session_analysis(
 
     fallback_events: tuple[InterpretedAuditEvent, ...] = ()
     fallback_error = False
+    fallback_error_reason: str | None = None
     if needs_raw_fallback and analysis_input.raw_audit_available:
         try:
             fallback_rows = fetch_limited_decision_audit_rows(
@@ -111,9 +112,10 @@ def _build_one_session_analysis(
                 ),
                 raw_fallback_provider,
             )
-        except Exception:
+        except Exception as exc:
             fallback_rows = ()
             fallback_error = True
+            fallback_error_reason = _classify_raw_fallback_failure(exc)
         fallback_events = tuple(
             interpreted
             for interpreted in interpret_analysis_input(
@@ -143,7 +145,8 @@ def _build_one_session_analysis(
         elif fallback_error:
             timeline_summary = _append_unique(
                 timeline_summary,
-                "Limited decision_audit fallback failed within the requested session window.",
+                "Limited decision_audit fallback failed within the requested session window"
+                f" ({fallback_error_reason or 'unknown_error'}).",
             )
         elif not fallback_events:
             timeline_summary = _append_unique(
@@ -188,6 +191,12 @@ def _build_one_session_analysis(
     )
     validate_session_analysis_json(analysis)
     return analysis
+
+
+def _classify_raw_fallback_failure(exc: Exception) -> str:
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    return type(exc).__name__
 
 
 def _should_trigger_raw_fallback(

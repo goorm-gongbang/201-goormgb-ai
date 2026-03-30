@@ -100,3 +100,32 @@ def test_semantic_mapping_and_interpreter_keep_unused_events_separate() -> None:
     assert semantics.terminal_outcome == "NOT_BLOCKED"
     assert classify_event_type("S3_CHALLENGE_HALTED") == "UNUSED"
     assert interpreted.usage == "UNUSED"
+
+
+def test_semantic_mapping_finds_nested_values_inside_lists() -> None:
+    row = DefenseAuditEventRow(
+        ts_ms=200,
+        trace_id="trace-2",
+        session_id="sess-2",
+        event_type="DEF_ORCH_EXECUTED",
+        payload={
+            "events": [
+                {
+                    "flowState": "F4M",
+                    "result": {
+                        "terminalReason": "CHALLENGE_TIMEOUT",
+                        "reasonCode": "CHALLENGE_TIMEOUT",
+                    },
+                }
+            ],
+            "serverDecision": {"riskTier": "T2", "action": "THROTTLE"},
+        },
+    )
+
+    semantics = map_event_semantics(row)
+
+    assert semantics.flow_state == "F4M"
+    assert semantics.terminal_reason == "CHALLENGE_TIMEOUT"
+    assert semantics.reason_code == "CHALLENGE_TIMEOUT"
+    assert semantics.latest_action == "THROTTLE"
+    assert semantics.latest_tier == "T2"
