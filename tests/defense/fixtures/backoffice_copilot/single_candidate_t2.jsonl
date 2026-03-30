@@ -1,0 +1,1 @@
+{"ts_ms": 100, "trace_id": "trace-1", "session_id": "sess-1", "event_type": "DEF_ORCH_EXECUTED", "flow_state": "F4M", "serverDecision": {"riskTier": "T2", "action": "THROTTLE"}}
