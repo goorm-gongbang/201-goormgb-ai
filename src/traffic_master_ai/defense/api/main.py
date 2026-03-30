@@ -149,7 +149,7 @@ _S3_UPLOADER = S3Uploader(bucket=_S3_BUCKET, prefix=_S3_PREFIX, region=_S3_REGIO
 
 
 def _cors_allow_origins_from_env() -> list[str]:
-    raw = os.getenv("TM_CORS_ALLOW_ORIGINS", "")
+    raw = os.getenv("TM_CORS_ALLOW_ORIGINS", "https://dev.goormgb.space")
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
