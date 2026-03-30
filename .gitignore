@@ -81,6 +81,7 @@ Thumbs.db
 # Local development
 *.local
 .env.local
+.env.ai
 
 # ─── Java / Gradle ───
 .gradle/
