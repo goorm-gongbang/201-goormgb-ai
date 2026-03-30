@@ -50,6 +50,10 @@ python -m uvicorn traffic_master_ai.defense.api.main:app --host 0.0.0.0 --port 8
 - `TM_SESSION_STATE_TTL_SECONDS`: session state TTL (default `1800`)
 - Redis not configured/fails -> in-memory fallback.
 
+## Browser CORS config
+- `TM_CORS_ALLOW_ORIGINS`: comma-separated browser origins allowed to call `/ai/*`
+  directly. Leave empty to disable browser direct-call CORS.
+
 ## Target route config
 - `TM_TURNSTILE_SECRET_KEY`: Cloudflare Turnstile secret key
 - `TM_TURNSTILE_SITEVERIFY_URL`: Turnstile verify URL (default Cloudflare `siteverify`)

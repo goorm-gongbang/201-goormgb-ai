@@ -20,6 +20,7 @@ from typing import Any, Optional
 import httpx
 import jwt
 from fastapi import BackgroundTasks, Body, FastAPI, Header, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter
 from prometheus_fastapi_instrumentator import Instrumentator
 
@@ -147,6 +148,11 @@ _PRECHECK_TTL_MS = int(os.getenv("TM_PRECHECK_TTL_MS", "300000"))
 _S3_UPLOADER = S3Uploader(bucket=_S3_BUCKET, prefix=_S3_PREFIX, region=_S3_REGION) if _S3_BUCKET else None
 
 
+def _cors_allow_origins_from_env() -> list[str]:
+    raw = os.getenv("TM_CORS_ALLOW_ORIGINS", "https://dev.goormgb.space")
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
 async def _s3_archive_loop():
     """Background loop to periodically upload logs to S3."""
     if not _S3_UPLOADER:
@@ -185,6 +191,17 @@ app = FastAPI(
     ),
     lifespan=lifespan,
 )
+
+_cors_allow_origins = _cors_allow_origins_from_env()
+if _cors_allow_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_allow_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    logger.info("CORS enabled for origins: %s", ", ".join(_cors_allow_origins))
 
 # [Gap Closing] Instrument app at the start (to allow middleware addition)
 instrumentator.instrument(app)
