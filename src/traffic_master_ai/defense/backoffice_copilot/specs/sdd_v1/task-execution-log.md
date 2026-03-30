@@ -645,3 +645,40 @@
 - shadow-parallel 층은 `test_backoffice_copilot_contracts.py`, `test_backoffice_copilot_storage.py`, 기존 task별 단위 테스트들이 담당하고, final integration 층은 fixture 기반 `test_backoffice_copilot_workflow.py`가 담당한다. 후속 리팩터링은 이 배치를 유지하는 편이 추적성이 좋다.
 - `sessionId`/`tsMs` 같은 camelCase raw alias는 shared contract 필드가 아니라 loader 호환성 테스트 입력이다. 후속 task에서 이 alias coverage를 지우더라도 raw log 호환 범위를 좁히는 결정인지 먼저 문서와 맞춰야 한다.
 - 현재 회귀 스위트는 stub repository/adapter 기반이다. flaky external integration을 기본 경로에 넣지 않은 대신, 실제 PostgreSQL/backend live check는 여전히 별도 운영 검증 범위로 남는다.
+
+---
+
+## Task 12
+
+### 1. task 번호와 제목
+
+- Task 12. OpenAI API 연동 어댑터 구현
+
+### 2. 작업 일시
+
+- 2026-03-30 14:32:00 KST (+0900)
+
+### 3. 실제로 수정한 파일 목록
+
+- `src/traffic_master_ai/defense/backoffice_copilot/__init__.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/adapters/__init__.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/adapters/openai.py`
+- `tests/defense/test_backoffice_copilot_openai.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/sdd_v1/task-execution-log.md`
+
+### 4. 파일별 수정 요약
+
+- `backoffice_copilot/adapters/openai.py`: 내장 `urllib`를 이용해 외부 의존성 없이 OpenAI 서버와 통신하는 `_call_openai_chat_completions` 작성 및 `build_openai_review_adapter`, `build_openai_summary_adapter` 팩토리 함수 추가.
+- `backoffice_copilot/adapters/__init__.py`: 어댑터 패키지 모듈 접근성 확보.
+- `backoffice_copilot/__init__.py`: Workflow 등과 마찬가지로 `build_openai_review_adapter`, `build_openai_summary_adapter`를 외부 애플리케이션(Ex: FastAPI, Worker)에서 직접 조립할 수 있도록 Public Export 추가.
+- `tests/defense/test_backoffice_copilot_openai.py`: 실제 Network 콜을 발생시키지 않고 `urllib.request.urlopen`을 모킹(mock)하여, 프롬프트의 JSON 구조화 검증 및 Timeout 처리, 잘못된 응답 파싱 실패 등에 대한 방어 로직 단위 테스트 수행.
+
+### 5. 검증에 사용한 명령과 결과 요약
+
+- `PYTHONPATH=src python3 -m unittest discover -s tests/defense -p 'test_backoffice_copilot_openai.py'`
+  - 결과: `Ran 5 tests ... OK`. 팩토리로 생성된 어댑터가 HTTP 모킹 하에서 정확하게 동작하고 예외를 잘 파싱함.
+
+### 6. 남은 리스크 또는 다음 task에 넘길 주의사항
+
+- `urllib` 클라이언트를 사용하였으므로 OpenAI 파이썬 공식 SDK의 버전에 영향받지 않지만, OpenAI REST API 응답 포맷이 크게 달라진다면 파서 수정이 필요할 수 있다.
+- 실제 인프라 런타임(Celery나 FastAPI)의 의존성 주입 계층에서 환경변수(`TM_OFFLINE_LLM_API_KEY` 등) 값을 꺼내 이 어댑터를 초기화한 뒤 WorkflowDependencies에 넣어주어야 온전한 Live Test가 가능하다.

@@ -32,6 +32,10 @@ from .workflow import (
     WorkflowExecutionResult,
     build_backoffice_copilot_workflow,
 )
+from .adapters import (
+    build_openai_review_adapter,
+    build_openai_summary_adapter,
+)
 
 __all__ = [
     "AnalysisInput",
@@ -62,4 +66,6 @@ __all__ = [
     "SessionSummary",
     "WorkflowExecutionResult",
     "build_backoffice_copilot_workflow",
+    "build_openai_review_adapter",
+    "build_openai_summary_adapter",
 ]

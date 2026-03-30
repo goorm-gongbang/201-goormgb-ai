@@ -129,3 +129,25 @@ def test_semantic_mapping_finds_nested_values_inside_lists() -> None:
     assert semantics.reason_code == "CHALLENGE_TIMEOUT"
     assert semantics.latest_action == "THROTTLE"
     assert semantics.latest_tier == "T2"
+
+
+def test_semantic_mapping_prefers_known_contract_paths_over_unrelated_nested_keys() -> None:
+    row = DefenseAuditEventRow(
+        ts_ms=300,
+        trace_id="trace-3",
+        session_id="sess-3",
+        event_type="DEF_GUARD_SCORED",
+        payload={
+            "metadata": {"action": "IGNORE_ME", "riskTier": "T9"},
+            "latestAction": "NONE",
+            "serverDecision": {"action": "THROTTLE", "riskTier": "T2"},
+            "result": {"reasonCode": "SAFE_CODE", "terminalReason": "SAFE_REASON"},
+        },
+    )
+
+    semantics = map_event_semantics(row)
+
+    assert semantics.latest_action == "NONE"
+    assert semantics.latest_tier == "T2"
+    assert semantics.reason_code == "SAFE_CODE"
+    assert semantics.terminal_reason == "SAFE_REASON"

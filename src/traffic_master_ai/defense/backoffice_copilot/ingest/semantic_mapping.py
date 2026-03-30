@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping, Sequence
 
 from ..core.models import DefenseAuditEventRow
 
@@ -24,32 +24,72 @@ class EventSemantics:
 def map_event_semantics(row: DefenseAuditEventRow) -> EventSemantics:
     """Interpret semantic fields from raw payload without mutating the raw DTO."""
 
-    flow_state = _find_string(row.payload, "flow_state", "flowState")
-    terminal_reason = _find_string(row.payload, "terminal_reason", "terminalReason")
-    reason_code = _find_string(row.payload, "reason_code", "reasonCode")
+    flow_state = _find_string(
+        row.payload,
+        "flow_state",
+        "flowState",
+        preferred_paths=(("flow_state",), ("flowState",)),
+    )
+    terminal_reason = _find_string(
+        row.payload,
+        "terminal_reason",
+        "terminalReason",
+        preferred_paths=(
+            ("terminal_reason",),
+            ("terminalReason",),
+            ("result", "terminal_reason"),
+            ("result", "terminalReason"),
+        ),
+    )
+    reason_code = _find_string(
+        row.payload,
+        "reason_code",
+        "reasonCode",
+        preferred_paths=(
+            ("reason_code",),
+            ("reasonCode",),
+            ("result", "reason_code"),
+            ("result", "reasonCode"),
+        ),
+    )
     latest_flow_state = _find_string(
         row.payload,
         "latest_flow_state",
         "latestFlowState",
+        preferred_paths=(("latest_flow_state",), ("latestFlowState",)),
     ) or flow_state
     latest_action = _find_string(
         row.payload,
         "latest_action",
         "latestAction",
         "action",
+        preferred_paths=(
+            ("latest_action",),
+            ("latestAction",),
+            ("serverDecision", "action"),
+            ("action",),
+        ),
     )
-    if latest_action is None:
-        latest_action = _find_string(_nested_mapping(row.payload, "serverDecision"), "action")
     latest_tier = _find_string(
         row.payload,
         "latest_tier",
         "latestTier",
         "risk_tier",
         "riskTier",
+        preferred_paths=(
+            ("latest_tier",),
+            ("latestTier",),
+            ("serverDecision", "riskTier"),
+            ("risk_tier",),
+            ("riskTier",),
+        ),
     )
-    if latest_tier is None:
-        latest_tier = _find_string(_nested_mapping(row.payload, "serverDecision"), "riskTier")
-    terminal_outcome = _find_string(row.payload, "terminal_outcome", "terminalOutcome")
+    terminal_outcome = _find_string(
+        row.payload,
+        "terminal_outcome",
+        "terminalOutcome",
+        preferred_paths=(("terminal_outcome",), ("terminalOutcome",)),
+    )
     if terminal_outcome is None:
         terminal_outcome = _derive_terminal_outcome(latest_action=latest_action)
 
@@ -72,16 +112,28 @@ def _derive_terminal_outcome(*, latest_action: str | None) -> str | None:
     return None
 
 
-def _nested_mapping(payload: Mapping[str, Any], key: str) -> Mapping[str, Any]:
-    value = payload.get(key)
-    if isinstance(value, Mapping):
-        return value
-    return {}
+def _get_nested(payload: Mapping[str, Any], path: Sequence[str]) -> Any | None:
+    value: Any = payload
+    for key in path:
+        if not isinstance(value, Mapping):
+            return None
+        value = value.get(key)
+        if value is None:
+            return None
+    return value
 
 
-def _find_string(payload: Mapping[str, Any], *keys: str) -> str | None:
+def _find_string(
+    payload: Mapping[str, Any],
+    *keys: str,
+    preferred_paths: Sequence[Sequence[str]] = (),
+) -> str | None:
     if not payload:
         return None
+    for path in preferred_paths:
+        value = _get_nested(payload, path)
+        if isinstance(value, str) and value:
+            return value
     for candidate_key, value in _iter_values(payload):
         if candidate_key not in keys:
             continue
@@ -90,7 +142,7 @@ def _find_string(payload: Mapping[str, Any], *keys: str) -> str | None:
     return None
 
 
-def _iter_values(value: Any):
+def _iter_values(value: Any) -> Iterator[tuple[str, Any]]:
     if isinstance(value, Mapping):
         for key, nested in value.items():
             yield str(key), nested
