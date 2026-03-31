@@ -1,0 +1,322 @@
+# Specs/Defense/L1/runtime/actuators.yaml
+# Defense Runtime Actuators SSOT (L1)
+# v1.0.0 — 실행(집행) 계약의 권위 문서
+#
+# 목적:
+# - 런타임이 선택한 action을 “어떻게 집행(enforce)하는지”를 계약으로 고정한다.
+# - MVP 범위에서 사용하는 actuator는 3개만 존재한다: Challenge(S3 고정), Throttle(Adapter delay), Block(403 deny).
+# - Honey/GATE/Sandbox/Runtime LLM actuator는 존재하지 않는다.
+#
+# 우선순위: L0 > L1 > L2 > annex
+# - 상세 알고리즘/UX/파라미터 튜닝 근거는 Annex의 각 *_spec.yaml이 제공한다.
+#
+# 연결 문서:
+# - contracts.yaml: 403/428/429 + x-defense-* + error body schema
+# - state.yaml: Redis 필드 및 writer 책임
+# - events.yaml: audit eventType 표준
+# - annex/challenge_spec.yaml, annex/throttle_spec.yaml, annex/block_spec.yaml
+
+meta:
+  doc_id: "l1_runtime_actuators"
+  title: "Defense Runtime Actuators (L1)"
+  version: "1.0.0"
+  updated_at: "2026-03-08"
+  timezone: "Asia/Seoul"
+  owner_team: "defense-runtime"
+  status: "draft"
+  language: "ko"
+
+governance:
+  precedence: "L0 > L1 > L2 > annex"
+  mvp_scope:
+    enabled_actuators: ["CHALLENGE_S3", "THROTTLE_DELAY", "BLOCK_DENY"]
+    disabled_actuators: ["HONEY", "GATE", "SANDBOX", "RUNTIME_LLM"]
+  invariants:
+    - "S3 챌린지는 고정 단계이며, 다른 단계에서 갑툭튀로 요구하지 않는다."
+    - "Throttle은 Adapter에서 지연 삽입으로 집행한다."
+    - "Block은 Envoy ext_authz deny(403)로 집행되며, 상태 persistence를 권장한다."
+
+action_to_actuator_mapping:
+  # Planner action(enum)은 contracts.yaml과 일치해야 한다.
+  action_enum_ref: "Specs/Defense/L1/runtime/contracts.yaml#headers.defense_response_headers.x-defense-action"
+  mapping:
+    NONE:
+      actuators: []
+      allow: true
+      notes: "무개입"
+    THROTTLE:
+      actuators: ["THROTTLE_DELAY"]
+      allow: true
+      notes: "allow는 유지하되 Adapter에서 sleep(ms) 후 통과"
+    REQUIRE_S3:
+      actuators: ["CHALLENGE_S3"]
+      allow: false
+      deny_http_status: 428
+      deny_reason_code: "CHALLENGE_REQUIRED"
+      notes: "S3 고정 관문 미통과 시 회귀. (갑툭튀가 아님)"
+    BLOCK:
+      actuators: ["BLOCK_DENY"]
+      allow: false
+      deny_http_status: 403
+      deny_reason_code: "BLOCKED"
+      notes: "terminal 차단"
+
+# ==========================================================
+# 1) CHALLENGE_S3 — S3 고정 보안퀴즈(미니게임)
+# ==========================================================
+actuators:
+  CHALLENGE_S3:
+    id: "CHALLENGE_S3"
+    type: "deny_or_flow_gate"
+    description: "S3 고정 단계 보안퀴즈. S4/S5에서 미통과 시 428로 회귀."
+    allowed_flow_states:
+      # S3 자체에서는 issue/verify로 진행. S4/S5에서 미통과 회귀를 적용.
+      - "S3"
+      - "S4"
+      - "S5"
+    forbidden_flow_states:
+      - "S6" # 신규 마찰 금지 (L0)
+      - "SX" # terminal
+    enforcement_modes:
+      # (A) S3 단계: issue/verify API로 진행
+      stage_execution:
+        issue_endpoint:
+          method: "POST"
+          path: "/defense/challenge/issue"
+          request:
+            required_headers_ref: "Specs/Defense/L1/runtime/contracts.yaml#headers.required_in_all_defense_paths"
+          response:
+            http_status: 200
+            required_fields:
+              [
+                "challenge_id",
+                "game_id",
+                "issued_at_ms",
+                "expires_at_ms",
+                "public_params",
+              ]
+        verify_endpoint:
+          method: "POST"
+          path: "/defense/challenge/verify"
+          request:
+            required_headers_ref: "Specs/Defense/L1/runtime/contracts.yaml#headers.required_in_all_defense_paths"
+          response:
+            http_status: "200 | 429 | 503(default fail-close)"
+            required_fields: ["result", "reason_code", "server_verdict"]
+      # (B) S4/S5 단계: S3 미통과면 428 deny (회귀)
+      gate_execution:
+        deny_on_missing_s3_pass:
+          http_status: 428
+          error_body_schema_ref: "Specs/Defense/L1/runtime/contracts.yaml#schemas.ErrorResponse"
+          reason_code: "CHALLENGE_REQUIRED"
+          response_headers_required:
+            - "x-defense-tier"
+            - "x-defense-action"
+            - "x-defense-policy-version"
+
+    state_contract:
+      redis_key: "tm:sess:{sessionId}"
+      fields_used_from_state_yaml:
+        - "flowState"
+        - "s3Passed(optional)"
+        - "challengeFailCount"
+        - "probationUntilMs"
+        - "challengeHaltUntilMs(optional)"
+      writer_responsibility_ref: "Specs/Defense/L1/runtime/state.yaml#writer_responsibility"
+      required_behaviors:
+        on_verify_pass:
+          - "state.s3Passed := true"
+          - "state.challengeFailCount := 0 (권장)"
+          - "state.probationUntilMs := now + TM_S3_PROBATION_SECONDS*1000"
+        on_verify_fail:
+          - "state.challengeFailCount += 1"
+        on_halt_lock:
+          - "state.challengeHaltUntilMs := now + halt_seconds*1000 (옵션)"
+        on_verify_unavailable:
+          - "state.s3Passed 변경 금지(false 유지)"
+          - "state.challengeFailCount 증가 금지(시스템 장애를 사용자 실패로 누적 금지)"
+          - "기본 응답 503 + CHALLENGE_VERIFY_UNAVAILABLE"
+      notes:
+        - "S3 PASS 표현은 MVP에서 서버 플래그(s3Passed) 방식으로 한다(state.yaml)."
+        - "deny TTL refresh를 사용하지 않으므로, S3 단계에서는 tm:grace:s3:{sessionId}를 짧은 TTL로 유지(state.yaml/policy 참조)."
+        - "운영 비상시 TM_S3_VERIFY_UNAVAILABLE_MODE=fail_open 오버라이드만 허용한다."
+
+    observability:
+      audit_events:
+        issued:
+          eventType: "S3_CHALLENGE_ISSUED"
+          required: true
+        result:
+          eventType: "S3_CHALLENGE_RESULT"
+          required: true
+        halted:
+          eventType: "S3_CHALLENGE_HALTED"
+          required: true
+      reason_codes:
+        # verify API 바디 reason_code
+        verify_reason_codes:
+          - "CHALLENGE_PASSED"
+          - "CHALLENGE_FAILED"
+          - "CHALLENGE_EXPIRED"
+          - "CHALLENGE_INVALID"
+          - "CHALLENGE_VERIFY_UNAVAILABLE"
+        gate_reason_code:
+          - "CHALLENGE_REQUIRED"
+
+    parameters:
+      # L1에서는 '존재'만 선언하고, 기본값은 annex를 따르되 MVP default를 같이 둔다.
+      max_attempts_env: "TM_CHALLENGE_MAX_ATTEMPTS"
+      max_attempts_default: 2
+      cooldown_ms_1_env: "TM_CHALLENGE_COOLDOWN_MS_1"
+      cooldown_ms_1_default: 0
+      cooldown_ms_2_env: "TM_CHALLENGE_COOLDOWN_MS_2"
+      cooldown_ms_2_default: 2500
+      halt_seconds_env: "TM_CHALLENGE_HALT_SECONDS"
+      halt_seconds_default: 30
+
+    references:
+      annex: "Specs/Defense/annex/challenge_spec.yaml"
+      contracts: "Specs/Defense/L1/runtime/contracts.yaml#s3_challenge_api_minimum"
+      events: "Specs/Defense/L1/runtime/events.yaml#namespaces.audit_event_types"
+      state: "Specs/Defense/L1/runtime/state.yaml"
+
+  # ==========================================================
+  # 2) THROTTLE_DELAY — Adapter 지연 삽입(Delay Injection)
+  # ==========================================================
+  THROTTLE_DELAY:
+    id: "THROTTLE_DELAY"
+    type: "allow_with_delay"
+    description: "Adapter가 allow를 반환하기 전에 sleep(ms)을 수행하여 탐색 효율을 붕괴."
+    enforcement_owner:
+      primary: "Adapter"
+      note: "AI는 x-defense-throttle-ms를 결정/전달. 실제 sleep은 Adapter가 수행."
+    allowed_flow_states:
+      - "S1"
+      - "S2"
+      - "S3"
+      - "S4"
+      - "S5"
+    forbidden_flow_states:
+      - "S6" # 신규 마찰 금지 원칙(단, 이미 throttle 상태가 있었다면 집행 여부는 implementation에서 결정)
+      - "SX"
+    delay_policy:
+      # delay는 Planner action=THROTTLE일 때만 적용
+      trigger:
+        required_action: "THROTTLE"
+      delay_value_resolution:
+        priority:
+          - "x-defense-throttle-ms header from AI decision"
+          - "tier default delay mapping (below)"
+      tier_default_delay_ms:
+        # MVP 기본값(annex/throttle_spec.yaml과 동일)
+        T0: 0
+        T1: 80
+        T2: 250
+        T3: 0
+      max_delay_ms:
+        env: "TM_THROTTLE_MAX_DELAY_MS"
+        default: 2000
+      notes:
+        - "Hard rate limit은 MVP에서 사용하지 않는다."
+        - "FE notification은 MVP에서 제외한다."
+
+    endpoint_scoping:
+      status: "DECIDED"
+      principle: "MVP에서는 read(탐색/조회) 계열에만 적용"
+      source_of_truth: "policy/policy_v1.yaml.parameters.throttle.scope.include_path_prefixes"
+      required_metadata:
+        - "original_path"
+        - "original_method"
+      notes:
+        - "Throttle 적용 경로 목록은 개발 착수 전 확정(TBD 수집 후 결정)."
+
+    observability:
+      audit_events:
+        applied:
+          eventType: "DEF_THROTTLE_APPLIED"
+          required: true
+      audit_fields_minimum:
+        - "tier"
+        - "delay_ms"
+        - "applied=true"
+        - "endpoint_path(optional)"
+        - "endpoint_method(optional)"
+
+    references:
+      annex: "Specs/Defense/annex/throttle_spec.yaml"
+      contracts: "Specs/Defense/L1/runtime/contracts.yaml#headers.defense_response_headers.x-defense-throttle-ms"
+      events: "Specs/Defense/L1/runtime/events.yaml#namespaces.audit_event_types"
+      state: "Specs/Defense/L1/runtime/state.yaml"
+
+  # ==========================================================
+  # 3) BLOCK_DENY — 403 deny + 차단 상태 persistence(권장)
+  # ==========================================================
+  BLOCK_DENY:
+    id: "BLOCK_DENY"
+    type: "deny_terminal"
+    description: "Envoy ext_authz deny(403)로 즉시 차단. 상태 persistence를 권장."
+    enforcement_owner:
+      primary: "Envoy ext_authz"
+      secondary: "AI Defense Service (persistence writer)"
+    allowed_flow_states:
+      - "S1"
+      - "S2"
+      - "S3"
+      - "S4"
+      - "S5"
+      - "S6" # S6에서는 신규 개입 금지이므로 block만 허용(L0)
+    forbidden_flow_states:
+      - "SX" # terminal 이후 재평가 금지
+    deny_response:
+      http_status: 403
+      reason_code: "BLOCKED"
+      error_body_schema_ref: "Specs/Defense/L1/runtime/contracts.yaml#schemas.ErrorResponse"
+      required_headers:
+        - "x-defense-tier"
+        - "x-defense-action"
+        - "x-defense-policy-version"
+      optional_headers:
+        - "x-defense-block-ttl-seconds"
+    persistence:
+      enabled_default: true
+      redis_key: "tm:block:{sessionId}"
+      value_schema:
+        blockedAtMs: "epoch_ms"
+        blockedUntilMs: "epoch_ms"
+      ttl_seconds:
+        env: "TM_BLOCK_TTL_SECONDS"
+        default: 1800
+      notes:
+        - "tm:block:{sessionId} 키가 존재하면 이후 요청은 즉시 BLOCK(terminal-first)."
+    observability:
+      audit_events:
+        decided:
+          eventType: "DEF_BLOCK_DECIDED"
+          required: true
+        enforced:
+          eventType: "DEF_BLOCK_ENFORCED"
+          required: true
+      audit_fields_minimum:
+        - "tier"
+        - "reasonCode=BLOCKED"
+        - "ttl_seconds"
+    references:
+      annex: "Specs/Defense/annex/block_spec.yaml"
+      contracts: "Specs/Defense/L1/runtime/contracts.yaml#reason_codes.http_mapping.BLOCKED"
+      events: "Specs/Defense/L1/runtime/events.yaml#namespaces.audit_event_types"
+      state: "Specs/Defense/L1/runtime/state.yaml"
+
+# ==========================================================
+# 공통 실패 처리(Actuator 관점)
+# ==========================================================
+failure_modes:
+  common:
+    internal_error:
+      http_status: 500
+      reason_code: "INTERNAL_ERROR"
+      body_schema_ref: "Specs/Defense/L1/runtime/contracts.yaml#schemas.ErrorResponse"
+  notes:
+    - "Actuator 집행 과정에서의 실패는 가능한 한 audit에 남기고, 사용자 탈락 체감을 만들지 않도록 설계한다."
+    - "단, BLOCK 집행 실패는 보안 상 위험이므로(deny 실패) 반드시 감지/로그/알람 대상."
+
+open_questions_tbd: []

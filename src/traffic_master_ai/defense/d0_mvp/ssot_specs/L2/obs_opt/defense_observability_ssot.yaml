@@ -1,0 +1,289 @@
+# Specs/Defense/L2/observability/defense_observability_ssot.yaml
+# Traffic-Master Defense — Observability SSOT (L2)
+# v1.0.0 — SDD용 “증거/로그/집계 규칙” 권위 문서
+#
+# 선택(B안) 반영:
+# - SSOT 증거는 decision_audit(JSONL)이며, near-real-time 집계를 위해 ingestion → warehouse로 적재한다.
+# - LangSmith는 (선택) 디버깅용 보조 데이터로 연동 가능하되, 운영 콘솔의 1차 SSOT는 decision_audit이다.
+
+meta:
+  doc_id: "defense_observability_ssot"
+  title: "Defense Observability SSOT — decision_audit + near-real-time aggregation"
+  version: "1.0.0"
+  updated_at: "2026-03-08"
+  timezone: "Asia/Seoul"
+  owner_team: "defense-runtime"
+  status: "final"
+  language: "ko"
+
+governance:
+  precedence: "L0 > L1 > L2 > annex"
+  authoritative_inputs:
+    - "Specs/Defense/L0/l0_core.yaml (decision_audit 최소 스키마 + reasonCode/HTTP 표준)"
+    - "Specs/Defense/L1/runtime/events.yaml (audit eventType authoritative list)"
+    - "Specs/Defense/L1/runtime/contracts.yaml (403/428/429/409 + ErrorResponse schema)"
+  principles:
+    - "증거 SSOT는 decision_audit이며, 모든 KPI는 decision_audit에서 재현 가능해야 한다."
+    - "중복(trace 재전송)으로 KPI가 왜곡되지 않도록 dedup-aware 집계를 기본으로 한다."
+    - "PII/원문/DOM/원시 궤적은 audit에 기록하지 않는다."
+    - "운영 콘솔은 초~수십초 수준 near-real-time 집계를 목표로 한다."
+
+# =============================================================================
+# 1) decision_audit (JSONL) — canonical evidence log
+# =============================================================================
+decision_audit:
+  format: "JSONL"
+  append_only: true
+  storage:
+    mvp_primary: "local file (append-only)"
+    production_primary: "stream -> warehouse (Postgres/ClickHouse)"
+  encoding: "utf-8"
+  required_min_schema:
+    # L0 최소 스키마를 여기서 재선언(실장 체크용)
+    fields:
+      tsMs: { type: "int", description: "epoch_ms" }
+      eventType:
+        {
+          type: "string",
+          ref: "Specs/Defense/L1/runtime/events.yaml#audit_event_catalog.eventTypes",
+        }
+      traceId: { type: "string" }
+      sessionId: { type: "string" }
+      flowState:
+        {
+          type: "string",
+          enum: ["S0", "S1", "S2", "S3", "S4", "S5", "S6", "SX"],
+        }
+      serverDecision:
+        type: "object"
+        required: ["riskTier", "action", "policyVersion"]
+        properties:
+          riskTier: { type: "string", enum: ["T0", "T1", "T2", "T3"] }
+          action:
+            {
+              type: "string",
+              enum: ["NONE", "THROTTLE", "REQUIRE_S3", "BLOCK"],
+            }
+          policyVersion: { type: "string" }
+      result:
+        type: "object"
+        required: ["status"]
+        properties:
+          status: { type: "string", enum: ["OK", "FAIL"] }
+          httpStatus: { type: "int", nullable: true }
+          reasonCode:
+            type: "string"
+            nullable: true
+            ref: "Specs/Defense/L1/runtime/contracts.yaml#reason_codes.enum"
+
+  extension_schema:
+    # runtime 모듈별 확장 필드(있으면 디버깅/집계가 쉬워짐)
+    dedup:
+      isDuplicate: { type: "bool", default: false }
+      dedupKey: { type: "string", nullable: true }
+    throttle:
+      applied: { type: "bool", nullable: true }
+      delayMs: { type: "int", nullable: true }
+      endpointPath: { type: "string", nullable: true }
+      endpointMethod: { type: "string", nullable: true }
+    block:
+      ttlSeconds: { type: "int", nullable: true }
+      reasonInternal: { type: "string", nullable: true }
+    challenge:
+      challengeId: { type: "string", nullable: true }
+      gameId: { type: "string", nullable: true }
+      result:
+        { type: "string", nullable: true, enum: ["PASS", "FAIL", "UNKNOWN"] }
+      reasonCode: { type: "string", nullable: true }
+      attemptsInWindow: { type: "int", nullable: true }
+      cooldownMs: { type: "int", nullable: true }
+    turnstile:
+      triggerId: { type: "string", nullable: true }
+      externalScore: { type: "float", nullable: true }
+      verifyStatus:
+        {
+          type: "string",
+          nullable: true,
+          enum: ["OK", "TIMEOUT", "ERROR", "INVALID_TOKEN", "MISSING_TOKEN"],
+        }
+      verifyLatencyMs: { type: "int", nullable: true }
+      cached: { type: "bool", nullable: true }
+    guard:
+      sInt: { type: "float", nullable: true }
+      sExt: { type: "float", nullable: true }
+      sT: { type: "float", nullable: true }
+      rPrev: { type: "float", nullable: true }
+      rNew: { type: "float", nullable: true }
+      ruleHits: { type: "array", nullable: true, items: { type: "string" } }
+      missingFlags: { type: "array", nullable: true, items: { type: "string" } }
+    analyzer:
+      ruleHits: { type: "array", nullable: true, items: { type: "string" } }
+      countersSnapshot: { type: "object", nullable: true }
+    planner:
+      planReason: { type: "string", nullable: true }
+    orchestrator:
+      transition:
+        type: "object"
+        nullable: true
+        properties:
+          from: { type: "string" }
+          to: { type: "string", nullable: true }
+          applied: { type: "bool" }
+    # LangSmith 연동(선택): 우리 콘솔에서 drill-down 링크를 만들기 위해 최소한만 저장
+    langsmith:
+      enabled: { type: "bool", default: false }
+      runId: { type: "string", nullable: true }
+      traceUrl: { type: "string", nullable: true }
+
+  privacy_policy:
+    must_not_log:
+      - "PII(이메일/전화/주소/실명)"
+      - "사용자 입력 원문(user_text_inputs)"
+      - "DOM/selector/full HTML"
+      - "raw mouse trajectory / raw key events"
+      - "full IP address"
+    allowed:
+      - "sessionId/traceId (내부 운영 식별자)"
+      - "feature summary의 통계/요약값(Annex/Guard spec 범위)"
+      - "정책 버전/티어/액션/지연ms/상태 전이"
+
+# =============================================================================
+# 2) Mandatory Logged Events Subset (MVP 필수)
+# =============================================================================
+mandatory_events:
+  # MVP에서 반드시 남겨야 하는 최소 이벤트 집합(운영/디버깅 필수)
+  required_audit_event_types:
+    - DEF_ORCH_EXECUTED
+    - DEF_PLAN_COMPUTED
+    - DEF_ANALYZER_EVIDENCE_UPDATED
+    - DEF_GUARD_SCORED
+    - DEF_THROTTLE_APPLIED
+    - DEF_BLOCK_ENFORCED
+    - S3_CHALLENGE_RESULT
+    - TURNSTILE_VERIFIED
+  notes:
+    - "최소 집합을 만족하지 못하면 admin console의 핵심 위젯이 깨진다."
+
+# =============================================================================
+# 3) Dedup-aware Aggregation Rules (KPI 왜곡 방지)
+# =============================================================================
+aggregation_rules:
+  dedup_policy:
+    # KPI 집계에서의 중복 처리 규칙
+    canonical_unique_key: "traceId"
+    per_event_type_bucket:
+      enabled: true
+      bucket_seconds: 1
+      rule: >
+        동일 traceId가 동일 eventType에 대해 bucket 내 여러 번 나타나면
+        최초 1건만 카운트한다.
+    duplicate_rate_metric:
+      definition: "count(dedup.isDuplicate=true) / count(all)"
+  counting_conventions:
+    - "rate는 'unique traces' 기준을 기본으로 한다."
+    - "session 기반 KPI는 sessionId 단위로 집계한다."
+    - "p50/p90은 해당 이벤트(예: DEF_THROTTLE_APPLIED)의 값 분포에서 계산한다."
+
+# =============================================================================
+# 4) Near Real-time Pipeline (B안 구현 계약)
+# =============================================================================
+near_real_time_pipeline:
+  goal_latency_seconds:
+    p50: 5
+    p90: 15
+  components:
+    collector:
+      name: "audit_collector"
+      responsibility:
+        - "decision_audit(JSONL) tail/stream 수집"
+        - "schema validation + PII guard"
+        - "warehouse 적재"
+    warehouse:
+      # MVP는 Postgres로 시작해도 되고, 성능 필요 시 ClickHouse로 스위치 가능
+      primary_options:
+        - "Postgres (mvp-friendly)"
+        - "ClickHouse (high-throughput)"
+      schema:
+        # 최소 테이블(또는 파티션) 설계: 이벤트 단위 fact
+        table: "defense_audit_events"
+        partitioning:
+          recommended: "by day(tsMs)"
+        indices:
+          - "traceId"
+          - "sessionId"
+          - "eventType"
+          - "tsMs"
+  validation:
+    reject_on:
+      - "required_min_schema missing"
+      - "eventType not in authoritative list"
+    coerce_on:
+      - "float/int safe coercion (within range)"
+  backfill:
+    supported: true
+    method: "replay JSONL into warehouse"
+
+# =============================================================================
+# 5) KPI Definitions (Admin Console & Ops)
+# =============================================================================
+kpis:
+  overview:
+    req_rate_rpm:
+      definition: "count_unique(traceId where eventType=DEF_ORCH_EXECUTED) per minute"
+    tier_distribution:
+      definition: "count_unique(traceId) grouped by serverDecision.riskTier"
+    action_distribution:
+      definition: "count_unique(traceId) grouped by serverDecision.action"
+    throttle_applied_rate:
+      definition: "count_unique(traceId where eventType=DEF_THROTTLE_APPLIED)/count_unique(traceId where eventType=DEF_ORCH_EXECUTED)"
+    throttle_delay_percentiles:
+      definition: "p50/p90(throttle.delayMs) where eventType=DEF_THROTTLE_APPLIED and dedup.isDuplicate=false"
+    block_rate:
+      definition: "count_unique(traceId where eventType=DEF_BLOCK_ENFORCED)/count_unique(traceId where eventType=DEF_ORCH_EXECUTED)"
+    require_s3_rate:
+      definition: "count_unique(traceId where serverDecision.action=REQUIRE_S3)/count_unique(traceId where eventType=DEF_ORCH_EXECUTED)"
+    s3_pass_fail_rate:
+      definition: "count_unique(traceId by challenge.result) where eventType=S3_CHALLENGE_RESULT"
+    error_breakdown:
+      definition: "count_unique(traceId) grouped by result.reasonCode where result.status=FAIL"
+  integrity:
+    dedup_duplicate_rate:
+      definition: "count(where dedup.isDuplicate=true)/count(all)"
+    missing_feature_rate:
+      definition: "count(where guard.missingFlags not empty)/count(where eventType=DEF_GUARD_SCORED)"
+
+# =============================================================================
+# 6) LangSmith Integration (Optional)
+# =============================================================================
+langsmith_integration:
+  enabled_default: false
+  purpose:
+    - "trace drill-down 디버깅 링크 제공"
+    - "LLM 사용(offline) 런/패치 제안의 실행 기록 추적(선택)"
+  integration_modes:
+    - mode: "link_only"
+      description: "audit에 runId/traceUrl만 기록하고, 실제 탐색은 LangSmith UI에서"
+    - mode: "export_to_warehouse"
+      description: "LangSmith export/API로 trace 메타를 warehouse에 적재(콘솔에서 조인)"
+  required_fields_if_enabled:
+    - "langsmith.runId"
+    - "langsmith.traceUrl"
+
+# =============================================================================
+# 7) Alert Rules (MVP는 정의만, 실행은 선택)
+# =============================================================================
+alerts:
+  enabled_default: false
+  rules:
+    - id: "BLOCK_SPIKE"
+      when: "block_rate > baseline + 0.5%p"
+      action: "notify"
+    - id: "S3_LOCK_SPIKE"
+      when: "s3_temp_lock_rate spikes"
+      action: "notify"
+    - id: "INTERNAL_ERROR_SPIKE"
+      when: "error_breakdown.INTERNAL_ERROR spikes"
+      action: "notify"
+    - id: "THROTTLE_DELAY_SPIKE"
+      when: "throttle_delay_p90 increases > +150ms"
+      action: "notify"

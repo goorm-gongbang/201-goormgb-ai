@@ -1,0 +1,355 @@
+# Specs/Defense/L2/optimization/defense_policy_optimization_ssot.yaml
+# Traffic-Master Defense — Policy Optimization SSOT (L2)
+# v1.0.0 — SDD용 “사후 정책 튜닝/롤아웃/롤백” 권위 문서
+#
+# 전제(최신 결정 반영):
+# - Runtime LLM 없음(Heavy Judge 금지)
+# - Dynamic Challenge 생성 금지(S3 VQA 고정)
+# - 정책 최적화는 decision_audit 기반 “사후/오프라인”에서 수행
+# - 실행 트리거는 시간 기반이 아니라 “로그 개수(샘플 수)” 기반
+# - 변경은 allowlist 내에서만 가능 + canary→확대→rollback 표준 절차 필수
+#
+# 연결:
+# - L2/observability/defense_observability_ssot.yaml : 증거/지표/집계 규칙(SSOT)
+# - L1/llm/defense_llm_ssot.yaml : 오프라인 LLM(Effect Evaluator) 제안 스키마/allowlist/제약
+# - L1/runtime/* : policyVersion 기록 및 런타임 동작(Guard/Planner/Challenge 파라미터)
+
+meta:
+  doc_id: "defense_policy_optimization_ssot"
+  title: "Defense Policy Optimization SSOT — Offline Tuning & Rollout"
+  version: "1.0.0"
+  updated_at: "2026-03-08"
+  timezone: "Asia/Seoul"
+  owner_team: "defense-runtime"
+  status: "final"
+  language: "ko"
+
+governance:
+  precedence: "L0 > L1 > L2 > annex"
+  authoritative_inputs:
+    - "Specs/Defense/L2/observability/defense_observability_ssot.yaml (KPI 정의/집계 규칙)"
+    - "Specs/Defense/L1/llm/defense_llm_ssot.yaml (Effect Evaluator 제안 스키마/allowlist/제약)"
+    - "Specs/Defense/L1/runtime/contracts.yaml (policyVersion 헤더/로깅)"
+  invariants:
+    - "L0 불변(전이/멱등/reasonCode/TTL 의미론)은 변경 금지."
+    - "Runtime LLM 사용 금지(본 문서에서 enable할 수 없음)."
+    - "S3 Challenge는 고정형이며, LLM 기반 생성/판정 금지."
+    - "정책 변경은 allowlist 내에서만 가능."
+    - "모든 변경은 canary→확대 절차와 rollback 조건을 가져야 한다."
+
+scope:
+  in_scope:
+    - "decision_audit 기반 KPI 계산 및 정책 변경 효과 평가"
+    - "정책 패치(proposal) 생성/검증/롤아웃/롤백"
+    - "A/B(선택) 또는 canary 방식의 통제된 롤아웃"
+    - "정책 버전 관리 및 적용 규칙"
+  out_of_scope:
+    - "런타임 모델/알고리즘 자체의 재설계(이는 L1/Annex 변경)"
+    - "PII 기반 분석"
+    - "WAF/CDN/IP 차단 정책"
+    - "대규모 ETL/데이터 레이크 운영(운영 인프라 문서로 분리)"
+
+# =============================================================================
+# 1) Terminology
+# =============================================================================
+glossary:
+  terms:
+    policy_version: "policyVersion(정책 버전: 런타임이 헤더/로그로 기록)"
+    patch: "patch(정책 파라미터 변경 단위: allowlist 경로 + op + value)"
+    proposal: "proposal(패치 후보 묶음: LLM 또는 규칙 기반 생성)"
+    canary: "canary(소량 트래픽에 먼저 적용하여 검증)"
+    rollback: "rollback(가드레일 위반 시 즉시 이전 버전 복귀)"
+    kpi: "KPI(지표: observability SSOT에서 정의)"
+    dedup_aware: "dedup-aware(중복 trace를 제거한 집계 방식)"
+
+# =============================================================================
+# 2) Policy Model (what can be tuned)
+# =============================================================================
+policy_model:
+  # 런타임이 참조하는 정책 파라미터의 논리적 구조(파일/저장소 형태는 구현 선택)
+  # 이 문서에서는 “경로(path)”를 SSOT로 고정한다(allowlist 기반).
+  schema_version: "policy.v1"
+  paths:
+    # Guard / Risk
+    risk.alpha:
+      type: "float"
+      range: [0.05, 0.60]
+      default: 0.30
+      meaning: "EWMA 신규 이벤트 가중치"
+    risk.probation_seconds:
+      type: "int"
+      range: [10, 120]
+      default: 45
+      meaning: "S3 PASS 후 관찰 유예(하향 제한) 기간"
+
+    # Tier thresholds/hysteresis
+    tier.thresholds.T0_max:
+      type: "float"
+      range: [0.05, 0.40]
+      default: 0.20
+      meaning: "T0 상한"
+    tier.thresholds.T1_max:
+      type: "float"
+      range: [0.20, 0.70]
+      default: 0.50
+      meaning: "T1 상한"
+    tier.thresholds.T2_max:
+      type: "float"
+      range: [0.50, 0.95]
+      default: 0.80
+      meaning: "T2 상한 (T3는 그 이상)"
+    tier.hysteresis.margin:
+      type: "float"
+      range: [0.0, 0.10]
+      default: 0.02
+      meaning: "티어 출렁임 방지 완충"
+
+    # Planner / Throttle
+    planner.throttle_delay_ms.T1:
+      type: "int"
+      range: [0, 200]
+      default: 80
+      meaning: "T1 스로틀 지연(ms)"
+    planner.throttle_delay_ms.T2:
+      type: "int"
+      range: [100, 600]
+      default: 250
+      meaning: "T2 스로틀 지연(ms)"
+
+    # Challenge failure policy
+    challenge.max_attempts:
+      type: "int"
+      range: [1, 3]
+      default: 2
+      meaning: "S3 최대 시도 횟수"
+    challenge.cooldown_ms.first:
+      type: "int"
+      range: [0, 3000]
+      default: 0
+      meaning: "첫 실패 후 쿨다운"
+    challenge.cooldown_ms.second:
+      type: "int"
+      range: [0, 5000]
+      default: 2500
+      meaning: "두 번째 실패 후 쿨다운"
+    challenge.halt_seconds:
+      type: "int"
+      range: [0, 120]
+      default: 30
+      meaning: "시도 초과 시 임시 정지(429) 기간"
+
+  constraints:
+    monotonic_thresholds:
+      rule: "T0_max < T1_max < T2_max < 1.0"
+    guardrails:
+      - "planner.throttle_delay_ms.T2 >= planner.throttle_delay_ms.T1"
+      - "challenge.cooldown_ms.second >= challenge.cooldown_ms.first"
+
+# =============================================================================
+# 3) Evidence & KPI Source of Truth
+# =============================================================================
+evidence_source:
+  primary: "decision_audit (SSOT)"
+  ref: "Specs/Defense/L2/observability/defense_observability_ssot.yaml"
+  dedup_policy_ref: "defense_observability_ssot.aggregation_rules.dedup_policy"
+  required_events_subset_ref: "defense_observability_ssot.mandatory_events.required_audit_event_types"
+
+kpi_set:
+  # 최적화 의사결정에 쓰는 KPI(정의는 observability SSOT 참조)
+  primary_metrics:
+    - "block_rate"
+    - "throttle_applied_rate"
+    - "avg_throttle_delay_ms"
+    - "s3_pass_rate"
+    - "s3_fail_rate"
+    - "s3_temp_lock_rate"
+  guardrails:
+    # FP/UX 악화를 막기 위한 가드레일(운영 프록시)
+    - "block_rate should not spike"
+    - "s3_temp_lock_rate should not spike"
+    - "avg_throttle_delay_ms should not spike"
+    - "s3_fail_rate should not spike"
+    - "internal_error spikes"
+  integrity_metrics:
+    - "dedup_duplicate_rate"
+    - "missing_feature_rate"
+
+# =============================================================================
+# 4) Triggering (log-count based)
+# =============================================================================
+triggering:
+  mode: "log_count_based"
+  thresholds_ref: "Specs/Defense/L1/llm/defense_llm_ssot.yaml#offline_triggers.effect_evaluator.thresholds"
+  cooldown_ref: "Specs/Defense/L1/llm/defense_llm_ssot.yaml#offline_triggers.effect_evaluator.cooldown"
+  default_thresholds:
+    min_events_total: 2000
+    min_unique_sessions: 200
+    min_throttle_events: 100
+    min_s3_events: 100
+    cooldown_seconds: 600
+
+# =============================================================================
+# 5) Optimization Pipeline (proposal -> validate -> canary -> rollout/rollback)
+# =============================================================================
+optimization_pipeline:
+  steps:
+    - id: "S1_COLLECT"
+      name: "Collect & Aggregate"
+      description: "decision_audit를 dedup-aware로 집계하여 KPI 스냅샷 생성"
+      outputs:
+        - "metrics_snapshot"
+    - id: "S2_PROPOSE"
+      name: "Propose Patch"
+      description: >
+        규칙 기반 또는 오프라인 LLM(effect_evaluator)을 통해 patch proposal 생성.
+        (LLM은 제안만, 적용은 optimizer가 수행)
+      inputs:
+        - "metrics_snapshot"
+      outputs:
+        - "patch_proposal"
+    - id: "S3_VALIDATE"
+      name: "Validate Proposal"
+      description: "allowlist/타입/범위/단조성/제약 검증. 실패 시 NO_CHANGE"
+      validations:
+        - "allowlist only"
+        - "type check"
+        - "range check"
+        - "monotonic thresholds"
+        - "constraint guards"
+      outputs:
+        - "validated_patch (or rejected)"
+    - id: "S4_CANARY"
+      name: "Canary Rollout"
+      description: "소량 트래픽에 새 policyVersion 적용 후 KPI 비교"
+      defaults:
+        canary_ratio: 0.05
+        duration_seconds: 120
+      outputs:
+        - "canary_result"
+    - id: "S5_EXPAND"
+      name: "Expand Rollout"
+      description: "canary 통과 시 단계적으로 확대"
+      rollout_steps:
+        - { ratio: 0.20, duration_seconds: 180 }
+        - { ratio: 0.50, duration_seconds: 240 }
+        - { ratio: 1.00, duration_seconds: 300 }
+      outputs:
+        - "rollout_result"
+    - id: "S6_ROLLBACK"
+      name: "Rollback"
+      description: "가드레일 위반/이상 징후 시 즉시 이전 버전 복귀"
+      outputs:
+        - "rollback_event"
+
+# =============================================================================
+# 6) Proposal Source (Rule-based + Offline LLM)
+# =============================================================================
+proposal_generation:
+  sources:
+    rule_based:
+      enabled: true
+      purpose: "간단한 휴리스틱으로 안전한 소규모 조정"
+      examples:
+        - if: "s3_temp_lock_rate rises"
+          then: "decrease challenge.halt_seconds or increase challenge.max_attempts within constraints"
+        - if: "avg_throttle_delay_ms too high"
+          then: "decrease planner.throttle_delay_ms.T1/T2 within constraints"
+    offline_llm:
+      enabled: true
+      ref: "Specs/Defense/L1/llm/defense_llm_ssot.yaml#modules.effect_evaluator"
+      note: "LLM은 patch proposal JSON만 생성. 적용은 optimizer가 담당."
+
+# =============================================================================
+# 7) Validation Rules (hard gate before rollout)
+# =============================================================================
+validation:
+  allowlist_ref: "Specs/Defense/L1/llm/defense_llm_ssot.yaml#modules.effect_evaluator.allowlist_policy_patch"
+  constraint_ref: "Specs/Defense/L1/llm/defense_llm_ssot.yaml#modules.effect_evaluator.safety_guards"
+  reject_if:
+    - "contains forbidden path"
+    - "any patch violates range constraints"
+    - "monotonic thresholds violated"
+    - "patch count > 12"
+  on_reject:
+    action: "NO_CHANGE"
+    audit_event: "OFFLINE_POLICY_PROPOSAL_REJECTED"
+
+# =============================================================================
+# 8) Rollout / A-B Strategy
+# =============================================================================
+rollout_strategy:
+  primary: "canary_then_expand"
+  canary:
+    ratio_default: 0.05
+    duration_seconds_default: 120
+    assignment_unit: "sessionId"
+    assignment_method: "hash_mod(sessionId, salt)"
+    salt_env: "TM_ROLLOUT_SALT"
+    compare_to: "previous_policy_version"
+  ab_testing:
+    enabled_default: false
+    note: "MVP는 canary가 더 간단. AB는 운영 성숙 후 도입."
+  rollback:
+    action: "revert_to_previous_policy_version"
+    conditions_default:
+      # observability SSOT의 템플릿과 동일하게 유지
+      - "s3_temp_lock_rate increases > +0.5%p"
+      - "block_rate increases > +0.3%p"
+      - "avg_throttle_delay_ms increases > +100ms"
+      - "s3_fail_rate increases > +1.0%p"
+      - "internal_error spikes"
+    evaluation_window_seconds_default: 60
+
+# =============================================================================
+# 9) Policy Versioning & Storage
+# =============================================================================
+policy_versioning:
+  version_field: "policyVersion"
+  must_log:
+    - "decision_audit.serverDecision.policyVersion"
+    - "x-defense-policy-version header (where applicable)"
+  storage:
+    # 구현 선택: Redis/파일/DB. MVP는 파일+환경변수도 가능.
+    options:
+      - "redis: tm:policy:current, tm:policy:version:{ver}"
+      - "db: policy_versions table"
+      - "config repo: versioned yaml"
+  activation:
+    method: "read current policyVersion at runtime (cached)"
+    cache_seconds_env: "TM_POLICY_CACHE_SECONDS"
+    cache_seconds_default: 5
+
+# =============================================================================
+# 10) Audit / Traceability for Optimization
+# =============================================================================
+audit_and_traceability:
+  # decision_audit 외 별도 로그(offline optimizer)
+  offline_events:
+    - OFFLINE_OPT_RUN_STARTED
+    - OFFLINE_OPT_METRICS_SNAPSHOT
+    - OFFLINE_OPT_PROPOSAL_CREATED
+    - OFFLINE_OPT_PROPOSAL_VALIDATED
+    - OFFLINE_OPT_CANARY_STARTED
+    - OFFLINE_OPT_CANARY_FINISHED
+    - OFFLINE_OPT_ROLLOUT_EXPANDED
+    - OFFLINE_OPT_ROLLBACK_TRIGGERED
+    - OFFLINE_OPT_RUN_FINISHED
+  minimum_fields:
+    - "tsMs"
+    - "base_policy_version"
+    - "new_policy_version(optional)"
+    - "patches(optional)"
+    - "metrics_snapshot_id(optional)"
+    - "result (APPLIED/REJECTED/ROLLED_BACK/NO_CHANGE)"
+    - "rollback_reason(optional)"
+
+mvp_defaults:
+  # MVP에서 바로 돌아가게 하는 고정값
+  canary_ratio: 0.05
+  canary_duration_seconds: 120
+  rollout_steps:
+    - { ratio: 0.20, duration_seconds: 180 }
+    - { ratio: 0.50, duration_seconds: 240 }
+    - { ratio: 1.00, duration_seconds: 300 }
+  evaluation_window_seconds: 60
+  policy_cache_seconds: 5

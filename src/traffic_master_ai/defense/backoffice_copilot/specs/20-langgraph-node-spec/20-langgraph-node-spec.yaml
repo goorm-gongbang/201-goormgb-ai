@@ -1,0 +1,273 @@
+document:
+  id: "20-langgraph-node-spec"
+  type: "langgraph_node_spec"
+  version: "v2"
+  status: "draft"
+
+purpose:
+  summary: >
+    Define fixed LangGraph node structure with match_id-based run input,
+    PostgreSQL two-table persistence, and suspicious-only backend delivery.
+  audience:
+    - developers
+    - coding_agents
+    - reviewers
+
+graph_overview:
+  execution_model: "sequential_graph_with_internal_parallelism"
+  node_order:
+    - "input_collection"
+    - "candidate_extraction"
+    - "session_analysis"
+    - "post_review"
+    - "window_summary"
+    - "result_persist_and_delivery"
+
+graph_input_contract:
+  required_fields:
+    - "match_id"
+    - "window_start_ms"
+    - "window_end_ms"
+    - "limit"
+    - "use_raw_audit_fallback"
+  separate_review_run_id: false
+
+graph_state_contract:
+  required_fields:
+    - "match_id"
+    - "window_start_ms"
+    - "window_end_ms"
+    - "limit"
+    - "use_raw_audit_fallback"
+    - "analysis_input"
+    - "candidate_sessions"
+    - "session_analysis_list"
+    - "review_results"
+    - "summary_text"
+    - "post_review_runs_row"
+    - "post_review_session_result_rows"
+    - "backend_request"
+    - "backend_response"
+    - "warnings"
+    - "errors"
+
+nodes:
+  - id: "input_collection"
+    order: 1
+    type: "rule_based"
+    purpose: "load time-window-filtered input rows"
+    inputs:
+      - "match_id"
+      - "window_start_ms"
+      - "window_end_ms"
+      - "limit"
+      - "use_raw_audit_fallback"
+    outputs:
+      - "analysis_input"
+    responsibilities:
+      - "load defense_audit_events"
+      - "apply time window filter"
+      - "load raw DefenseAuditEventRow items"
+      - "record raw fallback availability"
+    forbidden:
+      - "interpret flowState/terminalReason/reasonCode/latest_* semantics"
+      - "candidate selection"
+      - "review generation"
+      - "db persistence"
+    parallelism:
+      allowed: false
+
+  - id: "candidate_extraction"
+    order: 2
+    type: "rule_based"
+    purpose: "build SessionSummary candidates"
+    inputs:
+      - "analysis_input"
+    outputs:
+      - "candidate_sessions"
+    responsibilities:
+      - "group by session_id"
+      - "derive latest_* and terminal_outcome via semantic mapping"
+      - "apply candidate inclusion/exclusion rules"
+    rules:
+      - "candidate hard filters are seen_t1||seen_t2, block_event_count==0, latest_action!=BLOCK, latest_tier!=T3, terminal_outcome==NOT_BLOCKED"
+      - "payment_success/payment stage expressions are forbidden candidate filters"
+    forbidden:
+      - "session detailed analysis"
+      - "llm invocation"
+      - "db persistence"
+    failure_handling:
+      allow_empty_candidates: true
+    parallelism:
+      allowed: false
+
+  - id: "session_analysis"
+    order: 3
+    type: "rule_based"
+    purpose: "build SessionAnalysis for each candidate"
+    inputs:
+      - "candidate_sessions"
+      - "analysis_input"
+      - "raw fallback rows when needed"
+    outputs:
+      - "session_analysis_list"
+    responsibilities:
+      - "reconstruct timeline"
+      - "derive suspicious_signals"
+      - "set needs_raw_fallback"
+      - "consume semantic mapping outputs for flow interpretation"
+    responsibility_boundaries:
+      - "row loader owns raw row loading only"
+      - "semantic mapping owns flowState/terminalReason/reasonCode/latest_* interpretation"
+      - "session analysis consumes interpreted fields to assemble timeline and signals"
+    raw_fallback_constraints:
+      - "must filter by session_id"
+      - "must filter by time window"
+      - "must not scan full raw audit"
+    parallelism:
+      allowed: true
+      mode: "per_session_parallel"
+
+  - id: "post_review"
+    order: 4
+    type: "llm_with_rule_fallback"
+    purpose: "generate review_result and evidence_summary"
+    inputs:
+      - "session_analysis_list"
+    outputs:
+      - "review_results"
+    rules:
+      allowed_review_result:
+        - "NORMAL"
+        - "SUSPICIOUS"
+    fallback:
+      enabled: true
+    parallelism:
+      allowed: true
+      mode: "per_session_parallel_bounded"
+
+  - id: "window_summary"
+    order: 5
+    type: "llm_with_rule_fallback"
+    purpose: "generate 3-line summary_text"
+    inputs:
+      - "review_results"
+      - "session_analysis_list"
+      - "match_id"
+      - "window_start_ms"
+      - "window_end_ms"
+    outputs:
+      - "summary_text"
+    rules:
+      - "summary_text length must be 3"
+    parallelism:
+      allowed: false
+
+  - id: "result_persist_and_delivery"
+    order: 6
+    type: "rule_based"
+    purpose: "persist DB rows and deliver suspicious sessions"
+    inputs:
+      - "match_id"
+      - "window_start_ms"
+      - "window_end_ms"
+      - "candidate_sessions"
+      - "session_analysis_list"
+      - "review_results"
+      - "summary_text"
+    outputs:
+      - "post_review_runs_row"
+      - "post_review_session_result_rows"
+      - "backend_request"
+      - "backend_response"
+    responsibilities:
+      - "persist one row into post_review_runs"
+      - "persist session rows into post_review_session_results"
+      - "generate Backend request DTO only for suspicious sessions"
+      - "cross backend adapter boundary"
+      - "update backend_delivery_status in session result rows"
+      - "generate optional export files after DB persistence"
+    field_mappings:
+      - from: "match_id"
+        to:
+          - "post_review_runs.match_id"
+          - "post_review_session_results.match_id"
+      - from: "window_start_ms/window_end_ms"
+        to:
+          - "post_review_runs.window_start_ms"
+          - "post_review_runs.window_end_ms"
+      - from: "candidate_sessions count"
+        to:
+          - "post_review_runs.candidate_count"
+      - from: "suspicious review_results count"
+        to:
+          - "post_review_runs.suspicious_count"
+      - from: "summary_text"
+        to:
+          - "post_review_runs.summary_text_json"
+      - from: "run execution status"
+        to:
+          - "post_review_runs.status"
+      - from: "review_results.review_result"
+        to:
+          - "post_review_session_results.review_result"
+      - from: "review_results.evidence_summary"
+        to:
+          - "post_review_session_results.evidence_summary"
+      - from: "session_analysis_list item"
+        to:
+          - "post_review_session_results.session_analysis_json"
+      - from: "backend delivery outcome"
+        to:
+          - "post_review_session_results.backend_delivery_status"
+    persistence_rules:
+      required_tables:
+        - "post_review_runs"
+        - "post_review_session_results"
+      fatal_if:
+        - "post_review_runs persistence fails"
+        - "post_review_session_results persistence fails"
+      consistency:
+        - "run.suspicious_count equals suspicious session rows"
+    delivery_rules:
+      - "only review_result == SUSPICIOUS can be sent"
+    scope_limits:
+      - "external backend server/API implementation is out of scope"
+      - "discord/grafana live integrations are out of scope"
+    parallelism:
+      allowed: false
+
+node_connections:
+  - from: "input_collection"
+    to: "candidate_extraction"
+  - from: "candidate_extraction"
+    to: "session_analysis"
+  - from: "session_analysis"
+    to: "post_review"
+  - from: "post_review"
+    to: "window_summary"
+  - from: "post_review"
+    to: "result_persist_and_delivery"
+  - from: "window_summary"
+    to: "result_persist_and_delivery"
+
+parallelism_rules:
+  graph_level: "sequential"
+  allowed_internal_parallelism:
+    - "session_analysis per-session"
+    - "post_review per-session bounded calls"
+
+implementation_guards:
+  forbidden_actions:
+    - "change node count without spec update"
+    - "reintroduce review_run_id as required input"
+    - "create intermediate persistence tables"
+    - "send NORMAL sessions to backend"
+    - "ignore DB persistence failure"
+
+agent_instructions:
+  must_follow:
+    - "Use match_id run identity"
+    - "Persist DB first"
+    - "Deliver suspicious sessions only"
+    - "Track backend_delivery_status in session result rows"

@@ -1,0 +1,300 @@
+document:
+  id: "21-data-contract"
+  type: "data_contract"
+  version: "v3"
+  status: "draft"
+
+purpose:
+  summary: >
+    Define PostgreSQL column-level contracts for minimal Backoffice Copilot persistence,
+    and fix DTO-to-column mappings for direct implementation.
+  audience:
+    - developers
+    - coding_agents
+    - reviewers
+
+core_principles:
+  primary_store: "PostgreSQL"
+  only_allowed_tables:
+    - "post_review_runs"
+    - "post_review_session_results"
+  run_identifier_field: "match_id"
+  separate_review_run_id: false
+  intermediate_persistence_forbidden: true
+  clickhouse_for_minimal_result_storage: false
+  s3_as_default_result_storage: false
+  undocumented_field_forbidden: true
+  semantic_mapping_ownership:
+    - "row loader reads minimal raw row DTO only"
+    - "semantic mapping interprets flowState/terminalReason/reasonCode/latest_*/terminal_outcome"
+
+tables:
+  post_review_runs:
+    role: "run-level summary for one match"
+    primary_key:
+      - "match_id"
+    columns:
+      - column_name: "match_id"
+        pg_type: "TEXT"
+        nullable: false
+        default: "none"
+        key_index: "PK (includes unique index)"
+        meaning_ko: "경기/실행 식별자"
+        why_needed_ko: "1차 구현에서 실행 단위를 단일 키로 식별하기 위해 필요"
+      - column_name: "window_start_ms"
+        pg_type: "BIGINT"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "분석 시작 시각(ms)"
+        why_needed_ko: "실행 시간 범위를 명확히 고정하기 위해 필요"
+      - column_name: "window_end_ms"
+        pg_type: "BIGINT"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "분석 종료 시각(ms)"
+        why_needed_ko: "실행 시간 범위를 명확히 고정하기 위해 필요"
+      - column_name: "candidate_count"
+        pg_type: "INTEGER"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "후보 세션 수"
+        why_needed_ko: "분석 대상 규모를 운영/검증에서 해석하기 위해 필요"
+      - column_name: "suspicious_count"
+        pg_type: "INTEGER"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "의심 세션 수"
+        why_needed_ko: "핵심 결과 수치를 저장하고 후속 전달 기준으로 사용하기 위해 필요"
+      - column_name: "summary_text_json"
+        pg_type: "JSONB"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "3줄 요약 배열 JSON"
+        why_needed_ko: "시간 구간 요약을 구조화 저장하고 export 생성 원천으로 사용하기 위해 필요"
+      - column_name: "status"
+        pg_type: "TEXT"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "실행 상태"
+        why_needed_ko: "실행 성공/부분성공/실패 상태를 명확히 관리하기 위해 필요"
+      - column_name: "created_at"
+        pg_type: "TIMESTAMPTZ"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "생성 시각"
+        why_needed_ko: "실행 이력 감사 추적을 위해 필요"
+      - column_name: "updated_at"
+        pg_type: "TIMESTAMPTZ"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "수정 시각"
+        why_needed_ko: "실행 상태/요약 갱신 이력을 추적하기 위해 필요"
+    allowed_values:
+      status:
+        - "SUCCESS"
+        - "PARTIAL_SUCCESS"
+        - "FAILED"
+    consistency_rules:
+      - "candidate_count >= suspicious_count"
+      - "summary_text_json must be an array with length 3"
+
+  post_review_session_results:
+    role: "session-level result rows for one match"
+    primary_key:
+      - "match_id"
+      - "session_id"
+    columns:
+      - column_name: "match_id"
+        pg_type: "TEXT"
+        nullable: false
+        default: "none"
+        key_index: "PK component"
+        meaning_ko: "경기/실행 식별자"
+        why_needed_ko: "세션 결과를 실행 단위에 연결하기 위해 필요"
+      - column_name: "session_id"
+        pg_type: "TEXT"
+        nullable: false
+        default: "none"
+        key_index: "PK component"
+        meaning_ko: "세션 식별자"
+        why_needed_ko: "실행 내부에서 세션 결과를 유일하게 식별하기 위해 필요"
+      - column_name: "review_result"
+        pg_type: "TEXT"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "최종 레이블"
+        why_needed_ko: "세션 분류 결과를 저장하고 전송 대상을 결정하기 위해 필요"
+      - column_name: "evidence_summary"
+        pg_type: "TEXT"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "근거 요약 1문장"
+        why_needed_ko: "사람이 결과를 확인할 최소 설명을 제공하기 위해 필요"
+      - column_name: "session_analysis_json"
+        pg_type: "JSONB"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "세션 분석 결과 JSON"
+        why_needed_ko: "판단 근거를 구조화 저장해 재검증 가능성을 보장하기 위해 필요"
+      - column_name: "backend_delivery_status"
+        pg_type: "TEXT"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "백엔드 전달 상태"
+        why_needed_ko: "suspicious 전달 처리 상태를 세션 단위로 추적하기 위해 필요"
+      - column_name: "created_at"
+        pg_type: "TIMESTAMPTZ"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "생성 시각"
+        why_needed_ko: "세션 결과 생성 이력 추적을 위해 필요"
+      - column_name: "updated_at"
+        pg_type: "TIMESTAMPTZ"
+        nullable: false
+        default: "none"
+        key_index: "none"
+        meaning_ko: "수정 시각"
+        why_needed_ko: "전달 상태 갱신 이력 추적을 위해 필요"
+    allowed_values:
+      review_result:
+        - "NORMAL"
+        - "SUSPICIOUS"
+      backend_delivery_status:
+        - "PENDING"
+        - "SENT"
+        - "FAILED"
+    operation_rules:
+      - "NORMAL rows may be stored in DB"
+      - "only SUSPICIOUS rows are backend delivery targets"
+
+dtos:
+  defense_audit_event_row:
+    required_fields:
+      - "ts_ms"
+      - "trace_id"
+      - "session_id"
+      - "event_type"
+      - "payload"
+    role: "raw row contract only"
+    forbidden_responsibilities:
+      - "interpret flowState/terminalReason/reasonCode"
+      - "derive latest_* or terminal_outcome"
+
+  session_summary:
+    required_fields:
+      - "session_id"
+      - "seen_t1"
+      - "seen_t2"
+      - "block_event_count"
+      - "vqa_fail_count"
+      - "throttle_event_count"
+      - "latest_flow_state"
+      - "latest_action"
+      - "latest_tier"
+      - "terminal_outcome"
+
+  session_analysis:
+    required_fields:
+      - "session_id"
+      - "latest_flow_state"
+      - "latest_action"
+      - "latest_tier"
+      - "terminal_outcome"
+      - "seen_t1"
+      - "seen_t2"
+      - "vqa_fail_count"
+      - "throttle_event_count"
+      - "suspicious_signals"
+      - "timeline_summary"
+      - "needs_raw_fallback"
+
+  llm_input:
+    required_fields:
+      - "match_id"
+      - "window_start_ms"
+      - "window_end_ms"
+      - "session_analysis"
+      - "task.labels"
+      - "task.required_fields"
+
+  llm_output:
+    required_fields:
+      - "review_result"
+      - "evidence_summary"
+
+  backend_request:
+    required_fields:
+      - "match_id"
+      - "window_start_ms"
+      - "window_end_ms"
+      - "suspicious_count"
+      - "candidates[].session_id"
+      - "candidates[].review_result"
+      - "candidates[].reason_summary"
+    role: "adapter boundary DTO"
+
+  backend_response:
+    required_fields:
+      - "match_id"
+      - "accepted_count"
+      - "rejected_count"
+      - "status"
+      - "received_at"
+    role: "adapter response DTO"
+
+dto_to_db_mapping:
+  - from: "LLM output.review_result"
+    to: "post_review_session_results.review_result"
+    note: "세션 레이블 결과 저장"
+  - from: "LLM output.evidence_summary"
+    to: "post_review_session_results.evidence_summary"
+    note: "세션 근거 요약 저장"
+  - from: "SessionAnalysis"
+    to: "post_review_session_results.session_analysis_json"
+    note: "분석 결과 JSONB 저장"
+  - from: "candidate_count aggregate"
+    to: "post_review_runs.candidate_count"
+    note: "후보 집계값 저장"
+  - from: "suspicious_count aggregate"
+    to: "post_review_runs.suspicious_count"
+    note: "의심 집계값 저장"
+  - from: "summary_text(3 lines)"
+    to: "post_review_runs.summary_text_json"
+    note: "시간 구간 요약 저장"
+  - from: "execution status"
+    to: "post_review_runs.status"
+    note: "실행 상태 저장"
+  - from: "delivery state"
+    to: "post_review_session_results.backend_delivery_status"
+    note: "백엔드 전달 상태 저장"
+
+backend_generation_rules:
+  - "Backend request is generated only from rows where review_result='SUSPICIOUS'"
+  - "Backend response is used to update backend_delivery_status"
+  - "Backend contract stops at adapter boundary; external backend server/API is out of scope"
+
+forbidden_actions:
+  - "introduce separate review_run_id as mandatory key"
+  - "add intermediate persistence tables"
+  - "add undocumented fields"
+  - "use ClickHouse or S3 as minimal default result storage"
+  - "send NORMAL sessions to backend"
+
+agent_instructions:
+  must_follow:
+    - "Implement with two PostgreSQL tables only"
+    - "Follow column contract including type/null/default/key"
+    - "Use mapping rules from DTO to DB columns"

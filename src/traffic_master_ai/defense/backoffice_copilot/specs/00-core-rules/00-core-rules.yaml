@@ -1,0 +1,192 @@
+document:
+  id: "00-core-rules"
+  type: "core_rules"
+  version: "v2"
+  status: "draft"
+
+purpose:
+  summary: >
+    Define the top-level immutable rules for the Backoffice Copilot post-review system.
+  audience:
+    - developers
+    - coding_agents
+    - reviewers
+
+system_identity:
+  name: "Backoffice Copilot"
+  description: >
+    A log-based post-review system that re-analyzes sessions after a specified time window ends.
+    It only reviews sessions that passed Runtime but left T1/T2 suspicious traces.
+  not_a_runtime_engine: true
+  not_a_sanction_executor: true
+  not_a_frontend_ui: true
+  not_admin_api_based: true
+
+scope:
+  in_scope:
+    - candidate_session_extraction
+    - session_flow_analysis
+    - normal_or_suspicious_labeling
+    - evidence_summary_generation
+    - time_window_summary_generation
+    - formal_postgresql_persistence
+    - optional_export_generation
+  out_of_scope:
+    - realtime_runtime_decision
+    - external_backend_server_api_implementation
+    - account_or_token_sanction
+    - discord_delivery
+    - grafana_delivery
+    - policy_auto_apply
+    - frontend_ui
+    - admin_api_usage
+
+post_review_target:
+  include_conditions:
+    - "session_id exists"
+    - "activity exists in target time window"
+    - "final decision is not blocked"
+    - "runtime left T1 or T2 trace"
+  detailed_rule_authority: "10-post-review-rules.md"
+  exclude_conditions:
+    - "runtime already blocked the session with T3 or BLOCK"
+    - "session_id missing"
+    - "session flow cannot be reconstructed"
+    - "no suspicious trace"
+
+input_priority:
+  ordered_sources:
+    - "defense_audit_events.jsonl"
+    - "decision_audit.jsonl"
+
+input_rules:
+  row_loader_reads_raw_rows_only: true
+  flowState_is_official: true
+  terminalReason_is_official: true
+  terminalReason_requires_context:
+    - "flowState"
+    - "reasonCode"
+  semantic_mapping_owns_interpretation:
+    - "flowState"
+    - "terminalReason"
+    - "reasonCode"
+    - "latest_*"
+  defense_audit_events_definition: "one audit event = one row"
+  decision_audit_definition: "raw audit log"
+  pipeline_is_log_based: true
+
+output_rules:
+  formal_tables:
+    - "post_review_runs"
+    - "post_review_session_results"
+  downstream_exports:
+    - "summary.json"
+    - "suspicious_sessions.jsonl"
+    - "suspicious_sessions.csv"
+  session_fields:
+    - "session_id"
+    - "review_result"
+    - "evidence_summary"
+  window_fields:
+    - "summary_text"
+    - "suspicious_sessions"
+
+allowed_labels:
+  - "NORMAL"
+  - "SUSPICIOUS"
+
+forbidden_labels:
+  - "REVIEW_NEEDED"
+  - "UNSURE"
+  - "MALICIOUS"
+  - "HIGH_RISK"
+
+responsibility_split:
+  runtime:
+    - "realtime state tracking"
+    - "realtime tier calculation"
+    - "allow/throttle/require_s3/block decision"
+    - "audit log emission"
+  backoffice_copilot:
+    - "log-based candidate extraction"
+    - "log-based session analysis"
+    - "normal/suspicious labeling"
+    - "evidence summary generation"
+    - "time window summary generation"
+    - "formal PostgreSQL persistence"
+    - "Backend request DTO generation"
+    - "backend adapter boundary handling"
+    - "backend_delivery_status updates from backend response"
+    - "optional export generation"
+  infra_team:
+    - "external backend server/API implementation"
+    - "discord integration"
+    - "grafana integration"
+    - "payload consumption and display"
+
+llm_rules:
+  allowed_roles:
+    - "generate review_result"
+    - "generate evidence_summary"
+    - "generate 3-line time window summary"
+  forbidden_roles:
+    - "override runtime decision"
+    - "invent unsupported facts"
+    - "execute sanctions"
+    - "auto-apply policy"
+  must_have_fallback: true
+
+fallback_rules:
+  must_work_without_llm:
+    - "candidate extraction"
+    - "session flow reconstruction"
+    - "basic statistics"
+    - "formal PostgreSQL persistence"
+  fallback_outputs:
+    review_result: "rule_based"
+    evidence_summary: "template_based"
+    summary_text: "template_based_3_lines"
+
+parallelism_rules:
+  graph_level_execution: "sequential"
+  allowed_internal_parallelism:
+    - "parallel log loading inside input collection node"
+    - "parallel session analysis inside session analysis node"
+    - "parallel bounded LLM calls inside review node"
+  forbidden_parallelism:
+    - "arbitrary inter-node branching"
+    - "parallel summary generation before review completion"
+
+implementation_guards:
+  forbidden_actions:
+    - "change node count without spec update"
+    - "add new review_result values"
+    - "implement discord/grafana delivery in AI scope"
+    - "implement sanction logic"
+    - "write unsupported facts into evidence_summary"
+    - "store NORMAL sessions in suspicious output files"
+    - "reintroduce admin API dependency"
+
+change_control:
+  can_change_only_if:
+    - "service identity changes"
+    - "post-review target definition changes"
+    - "input log structure changes"
+    - "output file structure changes"
+    - "allowed label set changes"
+    - "responsibility split changes"
+    - "llm role changes"
+
+agent_instructions:
+  must_follow:
+    - "Treat this file as top-level immutable rules"
+    - "Do not infer new labels"
+    - "Do not expand scope to external backend or infra execution"
+    - "Assume Discord/Grafana delivery is external"
+    - "Use only the defined log inputs, formal DB tables, and downstream exports"
+    - "Do not depend on /admin/defense/* APIs"
+  implementation_order_hint:
+    - "read 00-core-rules.md first"
+    - "then read 01-service-overview.md"
+    - "then read 10-post-review-rules.md"
+    - "then read 20-langgraph-node-spec.md"

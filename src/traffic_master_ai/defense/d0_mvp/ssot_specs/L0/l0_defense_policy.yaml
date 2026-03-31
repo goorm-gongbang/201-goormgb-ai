@@ -1,0 +1,261 @@
+apiVersion: "v1"
+kind: "L0-Defense-Policy"
+metadata:
+  title: "Traffic-Master Defense Global Policy Law"
+  version: "1.1.0"
+  updatedAt: "2026-03-09"
+  authority: "Second only to L0-Core"
+  dependsOn:
+    - "L0-Core (Ticketing MVP Invariant Law)"
+  description: >
+    Defines global defense invariants, cross-team contracts,
+    risk model semantics, failure policies, and storage guarantees.
+    Any Defense SSOT (L1.x) MUST comply with this document.
+
+# ============================================================
+# 1. SCOPE & BOUNDARY
+# ============================================================
+
+scope:
+  appliesTo:
+    - "AI Defense Service"
+    - "Backend Ticketing APIs"
+    - "Frontend SDK (signal summarization)"
+    - "Infra (Envoy/ext_authz routing, WAF/rate limit integration)"
+  nonGoals:
+    - "Attack agent design"
+    - "LLM prompt implementation details (offline only; see L1/llm)"
+    - "Cloud vendor-specific deployment details"
+    - "Platform token mismatch/session binding (handled by Backend; out of Defense Agent scope)"
+
+# ============================================================
+# 2. DEFENSE INTERVENTION BOUNDARY
+# ============================================================
+
+interventionRules:
+  paymentStageRestriction:
+    rule: >
+      In S6 (Payment stage),
+      Defense may only issue BLOCK.
+      No new throttle or challenge may be introduced.
+    source: "Aligned with L0-Core GI-2"
+
+  terminalRestriction:
+    rule: >
+      Once flowState == SX,
+      Defense cannot modify state or re-evaluate risk.
+    source: "Aligned with L0-Core GI-1"
+
+# ============================================================
+# 3. RISK SCORE MODEL (CANONICAL DEFINITION)
+# ============================================================
+
+riskModel:
+  scoreRange:
+    min: 0.0
+    max: 1.0
+
+  canonicalComputation:
+    model: "EWMA"
+    formula: "R_t = (1 - alpha) * R_{t-1} + alpha * s_t"
+    alpha:
+      env: "TM_RISK_ALPHA"
+      default: 0.30
+
+  decayModel:
+    type: "Passive decay + Probation (MVP)"
+    note: >
+      Detailed decay implementation may vary by runtime policy.
+      L0 only defines that decay must not violate tiering/hysteresis/probation invariants.
+
+  canonicalOwner:
+    rule: >
+      Only ONE service may be canonical writer of riskScore and defenseTier.
+      Recommended: AI Defense Service.
+    storage: "Redis"
+
+# ============================================================
+# 4. TIER THRESHOLDS & HYSTERESIS
+# ============================================================
+
+tiering:
+  thresholds:
+    # Canonical boundaries; runtime uses policy thresholds (policy_v1.yaml) but must respect monotonic order.
+    T0: [0.0, 0.2]
+    T1: [0.2, 0.5]
+    T2: [0.5, 0.8]
+    T3: [0.8, 1.0]
+
+  envOverride:
+    enabled: true
+    keys:
+      - "TM_T0_MAX"
+      - "TM_T1_MAX"
+      - "TM_T2_MAX"
+
+  hysteresis:
+    purpose: "Prevent tier flapping near threshold"
+    margin:
+      env: "TM_TIER_HYSTERESIS_MARGIN"
+      default: 0.02
+    rule:
+      upgrade:
+        condition: "R_t >= threshold_upper"
+      downgrade:
+        condition: >
+          R_t <= (threshold_lower - margin)
+          AND probation window satisfied
+
+# ============================================================
+# 5. S3 (FIXED STAGE) & PROBATION LAW
+# ============================================================
+
+s3Policy:
+  definition:
+    rule: >
+      S3 is a fixed security verification stage in the userflow (not an overlay).
+      S4/S5 progression requires a successful S3 verification (s3Passed=true).
+      Surprise/interrupt challenge injection outside S3 is prohibited in MVP.
+
+  probation:
+    duration:
+      env: "TM_S3_PROBATION_SECONDS"
+      default: 45
+    effect:
+      - "Tier downgrade requires probation window expiration (hysteresis downgrade rule)."
+      - "Repeated strong anomalies during probation may escalate immediately."
+
+  failureHandling:
+    # Note: These are policy-level principles; detailed behaviors live in annex/turnstile_spec.yaml and annex/challenge_spec.yaml
+    defenseServiceDown:
+      policy: "FAIL_OPEN (MVP)"
+      rule: >
+        If Defense decision engine is unavailable,
+        allow request progression and log DEFENSE_UNAVAILABLE.
+    verificationServiceDown:
+      policy: "FAIL_CLOSE for S3 gate (MVP)"
+      rule: >
+        If S3 verification cannot execute when required,
+        keep session at S3 and deny progression with CHALLENGE_VERIFY_UNAVAILABLE (503).
+        Do not increment challengeFailCount for verifier/system failures.
+      emergencyOverride:
+        env: "TM_S3_VERIFY_UNAVAILABLE_MODE"
+        allowed: ["fail_open"]
+        default: "disabled"
+
+# ============================================================
+# 6. DISABLED FEATURES IN MVP (GUARDRAIL)
+# ============================================================
+
+disabledInMvp:
+  runtimeLLM:
+    enabled: false
+    rule: "Runtime LLM decisioning (Heavy Judge) is prohibited. Offline only."
+    reference: "Specs/Defense/L1/llm/defense_llm_ssot.yaml"
+  dynamicChallenge:
+    enabled: false
+    rule: "Dynamic challenge generation is prohibited. S3 challenge is fixed."
+  honeySeat:
+    enabled: false
+    rule: "Honey seat strategy is out of MVP scope."
+  gate:
+    enabled: false
+    rule: "High-value API gating strategy is out of MVP scope."
+  sandbox:
+    enabled: false
+    rule: "Sandbox strategy is out of MVP scope."
+
+# ============================================================
+# 7. REDIS STATE CONTRACT (MINIMUM GUARANTEES)
+# ============================================================
+
+redisContract:
+  keyPatterns:
+    sessionKey: "tm:sess:{sessionId}"
+    blockKey: "tm:block:{sessionId}" # BLOCK persistence is stored separately (MVP decision)
+
+  ttl:
+    session:
+      env: "TM_SESSION_STATE_TTL_SECONDS"
+      default: 1800
+    block:
+      env: "TM_BLOCK_TTL_SECONDS"
+      default: 1800
+
+  invariants:
+    - "riskScore/defenseTier canonical writer is AI Defense Service (single-writer)."
+    - "blocked persistence must be readable before any other decision; block is terminal-first."
+
+  requiredFields:
+    # L0에서 보장하는 최소 필드(나머지는 L1/state.yaml에서 확장)
+    flowState: "string"
+    riskScore: "float"
+    defenseTier: "string"
+    probationUntilMs: "epoch_ms | null"
+    challengeFailCount: "int"
+    seatTakenStreak: "int"
+    holdFailStreak: "int"
+    policyVersion: "string"
+
+# ============================================================
+# 8. API & HEADER CONTRACT (MINIMUM)
+# ============================================================
+
+headersContract:
+  requiredRequestHeaders:
+    - "X-Session-Id"
+    - "X-Trace-Id"
+
+  responseHeaders:
+    x-defense-tier: "T0|T1|T2|T3"
+    x-defense-action: "NONE|THROTTLE|REQUIRE_S3|BLOCK"
+    x-defense-policy-version: "string"
+
+  invariant:
+    - "Header contract must remain backward compatible."
+    - "x-defense-policy-version must be present in decision_audit (if available in the path)."
+
+# ============================================================
+# 9. OBSERVABILITY EXTENSION (DEFENSE-SPECIFIC)
+# ============================================================
+
+observability:
+  decisionAuditExtension:
+    note: "decision_audit minimum schema is defined in L0-Core. This section adds defense-specific optional fields."
+    optionalFields:
+      risk:
+        score: "float"
+        tierFrom: "string | null"
+        tierTo: "string | null"
+        hysteresisMargin: "float | null"
+      redis:
+        sessionKey: "string | null"
+        ttlSeconds: "int | null"
+      throttle:
+        delayMs: "int | null"
+      challenge:
+        result: "PASS|FAIL|UNKNOWN | null"
+        attemptsInWindow: "int | null"
+      turnstile:
+        externalScore: "float | null"
+        verifyStatus: "string | null"
+    prohibitedFields:
+      - "llm.* (runtime LLM disabled; offline LLM logging is separated)"
+
+# ============================================================
+# 10. OPERATING PRINCIPLES
+# ============================================================
+
+operatingPrinciples:
+  objective:
+    rule: >
+      The goal of Defense is NOT zero attack success.
+      The goal is attacker ROI collapse.
+  tuningStrategy:
+    rule: >
+      Thresholds and alpha must be tuned via decision_audit analysis,
+      not intuition.
+  falsePositiveControl:
+    rule: >
+      Any policy change must be evaluated against user friction proxies
+      (throttle delay, S3 fail/lock rate) and false positive signals.

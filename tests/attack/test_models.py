@@ -24,7 +24,9 @@ class TestState:
         assert State.S2.value == "S2"
         assert State.S3.value == "S3"
         assert State.S4.value == "S4"
+        assert State.S4R.value == "S4R"
         assert State.S5.value == "S5"
+        assert State.S5R.value == "S5R"
         assert State.S6.value == "S6"
         assert State.SX.value == "SX"
 
@@ -43,12 +45,14 @@ class TestState:
                 assert not state.is_security()
 
     def test_can_be_last_non_security(self) -> None:
-        """Per spec: last_non_security_state ∈ {S1, S2, S4, S5, S6}."""
+        """Per spec: last_non_security_state ∈ {S1, S2, S4, S4R, S5, S5R, S6}."""
         valid_states = {
             State.S1,
             State.S2,
             State.S4,
+            State.S4R,
             State.S5,
+            State.S5R,
             State.S6,
         }
         for state in State:

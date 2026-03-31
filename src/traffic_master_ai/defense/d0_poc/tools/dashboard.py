@@ -31,7 +31,7 @@ import streamlit as st
 # So we need to go up 5 levels: tools -> d0_poc -> defense -> traffic_master_ai -> src -> project_root
 PROJECT_ROOT = Path(__file__).resolve().parents[5]
 LOGS_DIR = PROJECT_ROOT / "logs"
-AUDIT_LOG_PATH = LOGS_DIR / "decision_audit.jsonl"
+AUDIT_LOG_PATH = LOGS_DIR / "poc_0_decision_audit.jsonl"
 
 
 # =============================================================================

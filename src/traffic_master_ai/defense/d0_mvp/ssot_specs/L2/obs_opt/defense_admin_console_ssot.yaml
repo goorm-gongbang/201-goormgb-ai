@@ -1,0 +1,201 @@
+# Specs/Defense/L2/observability/defense_admin_console_ssot.yaml
+# Traffic-Master Defense — Admin Console SSOT (L2)
+# v1.0.0 — SDD용 “관리자 페이지(near-real-time) 구현 계약”
+#
+# 선택(B안) 반영:
+# - SSOT 데이터는 decision_audit이며, near-real-time 집계를 위해 warehouse(Postgres/ClickHouse)에 적재한다.
+# - LangSmith는 “선택적 drill-down” 보조 수단이며, 콘솔의 주 데이터 소스가 아니다.
+
+meta:
+  doc_id: "defense_admin_console_ssot"
+  title: "Defense Admin Console SSOT — Near Real-time Monitoring UI"
+  version: "1.0.0"
+  updated_at: "2026-03-08"
+  timezone: "Asia/Seoul"
+  owner_team: "defense-runtime"
+  status: "final"
+  language: "ko"
+
+goals:
+  - "운영자가 방어 에이전트 상태를 near-real-time(초~수십초)로 파악"
+  - "티어/액션/스로틀 지연/차단/S3 결과/오류를 즉시 확인"
+  - "sessionId/traceId로 drill-down하여 사건 타임라인을 재현"
+non_goals:
+  - "LangSmith UI 완전 대체"
+  - "PII/원문/DOM/원시 궤적 노출"
+
+dependencies:
+  observability_ssot_ref: "Specs/Defense/L2/observability/defense_observability_ssot.yaml"
+  l1_events_ref: "Specs/Defense/L1/runtime/events.yaml"
+  l1_contracts_ref: "Specs/Defense/L1/runtime/contracts.yaml"
+
+data_model:
+  primary_source:
+    name: "warehouse.defense_audit_events"
+    schema_ref: "defense_observability_ssot.near_real_time_pipeline.components.warehouse.schema"
+  freshness:
+    aggregation_window_seconds: 10
+    ui_refresh_seconds: 5
+    expected_latency:
+      p50_seconds: 5
+      p90_seconds: 15
+  dedup_policy_ref: "defense_observability_ssot.aggregation_rules.dedup_policy"
+
+security:
+  access_control:
+    required: true
+    mode: "admin-only"
+    roles:
+      - "admin_readonly"
+      - "admin_operator"
+  pii_policy_ref: "defense_observability_ssot.decision_audit.privacy_policy"
+  retention:
+    mvp_days: 7
+    production_days: 30
+
+implementation:
+  recommended_stack:
+    mvp:
+      ui: "Next.js Admin (or internal web)"
+      api: "REST read-only (queries to warehouse)"
+      warehouse: "Postgres"
+    scale_up:
+      warehouse: "ClickHouse"
+      dashboard_alt: "Grafana (read-only) for high-cardinality charts"
+  ingestion:
+    ref: "defense_observability_ssot.near_real_time_pipeline"
+    minimum_requirement:
+      - "collector가 decision_audit를 warehouse로 5~15초 내 반영"
+
+views:
+  - id: "OVERVIEW"
+    title: "Overview"
+    refresh_seconds: 5
+    widgets:
+      - id: "REQ_RPM"
+        title: "RPM(요청/분)"
+        query:
+          metric_ref: "defense_observability_ssot.kpis.overview.req_rate_rpm"
+      - id: "TIER_DIST"
+        title: "Tier 분포"
+        query:
+          metric_ref: "defense_observability_ssot.kpis.overview.tier_distribution"
+      - id: "ACTION_DIST"
+        title: "Action 분포"
+        query:
+          metric_ref: "defense_observability_ssot.kpis.overview.action_distribution"
+      - id: "S3_PASS_FAIL"
+        title: "S3 PASS/FAIL/UNKNOWN"
+        query:
+          metric_ref: "defense_observability_ssot.kpis.overview.s3_pass_fail_rate"
+      - id: "THROTTLE_DELAY"
+        title: "Throttle 지연(ms) p50/p90"
+        query:
+          metric_ref: "defense_observability_ssot.kpis.overview.throttle_delay_percentiles"
+      - id: "BLOCK_RATE"
+        title: "Block Rate"
+        query:
+          metric_ref: "defense_observability_ssot.kpis.overview.block_rate"
+      - id: "ERRORS"
+        title: "Errors (reasonCode breakdown)"
+        query:
+          metric_ref: "defense_observability_ssot.kpis.overview.error_breakdown"
+    guardrails:
+      - "dedup_duplicate_rate가 급증하면 KPI 신뢰도 경고 표시"
+
+  - id: "SESSIONS"
+    title: "Session Drilldown"
+    entrypoints:
+      - "sessionId"
+      - "traceId"
+    components:
+      - id: "TIMELINE"
+        title: "Audit Timeline (최근 N events)"
+        query:
+          sql_hint: >
+            SELECT * FROM defense_audit_events
+            WHERE sessionId = :sessionId
+            ORDER BY tsMs DESC
+            LIMIT 200;
+      - id: "STATE_SUMMARY"
+        title: "State Summary"
+        derived_from_events:
+          - "최신 DEF_GUARD_SCORED의 rNew/riskTier"
+          - "최신 DEF_PLAN_COMPUTED의 action"
+          - "S3_CHALLENGE_RESULT의 최근 결과/횟수"
+          - "DEF_THROTTLE_APPLIED의 최근 delayMs"
+          - "DEF_BLOCK_ENFORCED 존재 여부"
+      - id: "LINKS"
+        title: "External Links"
+        optional:
+          - name: "LangSmith trace"
+            condition: "langsmith.traceUrl exists"
+            action: "open link"
+
+  - id: "THROTTLE"
+    title: "Throttle 상세"
+    widgets:
+      - id: "THROTTLE_RATE"
+        title: "Throttle Applied Rate"
+        query:
+          metric_ref: "defense_observability_ssot.kpis.overview.throttle_applied_rate"
+      - id: "TOP_ENDPOINTS"
+        title: "Throttle Top Endpoints"
+        query:
+          sql_hint: >
+            SELECT throttle.endpointPath, count(*) as cnt
+            FROM defense_audit_events
+            WHERE eventType='DEF_THROTTLE_APPLIED' AND dedup_isDuplicate=false
+            GROUP BY throttle.endpointPath
+            ORDER BY cnt DESC
+            LIMIT 20;
+
+  - id: "S3_CHALLENGE"
+    title: "S3 Challenge 상세"
+    widgets:
+      - id: "PASS_FAIL_TREND"
+        title: "PASS/FAIL 추세"
+        query:
+          sql_hint: >
+            SELECT date_trunc('minute', to_timestamp(tsMs/1000)) as t,
+                   challenge.result, count(*) as cnt
+            FROM defense_audit_events
+            WHERE eventType='S3_CHALLENGE_RESULT' AND dedup_isDuplicate=false
+            GROUP BY t, challenge.result
+            ORDER BY t DESC;
+      - id: "LOCK_RATE"
+        title: "Temporary Lock(429) Rate"
+        query:
+          sql_hint: >
+            SELECT count(*) FILTER (WHERE result_httpStatus=429) / nullif(count(*),0)
+            FROM defense_audit_events
+            WHERE eventType IN ('S3_CHALLENGE_HALTED','S3_CHALLENGE_RESULT');
+
+  - id: "BLOCK"
+    title: "Block 상세"
+    widgets:
+      - id: "BLOCK_TREND"
+        title: "Block 추세"
+        query:
+          sql_hint: >
+            SELECT date_trunc('minute', to_timestamp(tsMs/1000)) as t, count(*) as cnt
+            FROM defense_audit_events
+            WHERE eventType='DEF_BLOCK_ENFORCED' AND dedup_isDuplicate=false
+            GROUP BY t
+            ORDER BY t DESC;
+
+integrity_panel:
+  title: "Data Integrity"
+  metrics:
+    - metric_ref: "defense_observability_ssot.kpis.integrity.dedup_duplicate_rate"
+    - metric_ref: "defense_observability_ssot.kpis.integrity.missing_feature_rate"
+  behavior:
+    - "dedup_duplicate_rate 상승 시: '중복 트래픽/재전송/collector 이상' 경고"
+    - "missing_feature_rate 상승 시: 'FE feature summary 누락' 경고"
+
+langsmith_integration:
+  enabled_default: false
+  mode: "link_only"
+  behavior:
+    - "콘솔은 traceUrl이 있으면 링크만 제공"
+    - "trace 본문/세부는 LangSmith UI에서 확인"

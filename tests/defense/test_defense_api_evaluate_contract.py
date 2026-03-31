@@ -1,0 +1,190 @@
+import os
+
+from fastapi.testclient import TestClient
+
+os.environ.setdefault("CI", "true")
+
+import traffic_master_ai.defense.api.main as api_main
+from traffic_master_ai.defense.api.models import EvaluateResponse, RuntimeStateSnapshot
+
+client = TestClient(api_main.app)
+MATCH_ID = 687
+
+
+def _evaluate_payload(*, sid: str, event_type: str, path: str, method: str) -> dict:
+    return {
+        "event": {
+            "eventType": event_type,
+            "requestPath": path,
+            "requestMethod": method,
+        },
+        "context": {"sid": sid},
+    }
+
+
+def test_queue_enter_blocks_without_precheck() -> None:
+    sid = "sess-eval-precheck-block-1"
+    response = client.post(
+        "/ai/evaluate",
+        json=_evaluate_payload(
+            sid=sid,
+            event_type="QUEUE_ENTER",
+            path=f"/queue/matches/{MATCH_ID}/enter",
+            method="POST",
+        ),
+    )
+    assert response.status_code == 200
+    assert response.json() == {"decision": {"action": "BLOCK"}}
+
+
+def test_post_vqa_events_require_s3_when_vqa_not_passed() -> None:
+    sid = "sess-eval-post-vqa-guard-1"
+    response = client.post(
+        "/ai/evaluate",
+        json=_evaluate_payload(
+            sid=sid,
+            event_type="RECOMMENDATION_BLOCKS",
+            path=f"/seat/matches/{MATCH_ID}/recommendations/blocks",
+            method="GET",
+        ),
+    )
+    assert response.status_code == 200
+    assert response.json() == {"decision": {"action": "REQUIRE_S3"}}
+
+
+def test_legacy_challenge_action_does_not_emit_require_s3(monkeypatch) -> None:
+    sid = "sess-eval-legacy-challenge-1"
+    precheck = client.post(
+        "/ai/precheck",
+        json={"matchId": MATCH_ID, "cfToken": "ok-token"},
+        headers={"X-Session-Id": sid},
+    )
+    assert precheck.status_code == 200
+    assert precheck.json()["allowed"] is True
+
+    def _stub_execute_legacy_evaluate(_req):
+        return (
+            EvaluateResponse(
+                allow=False,
+                session_id=f"{sid}:{MATCH_ID}",
+                flow_state="S2",
+                defense_tier="T1",
+                action="CHALLENGE",
+                actions=["CHALLENGE"],
+                reason="CHALLENGE_REQUIRED",
+                rule_hits=[],
+                risk_score=0.7,
+                policy_version="def-pol-2.0.0",
+                headers_to_add={},
+                decision_id="dec-test",
+                latency_ms=1,
+                version="v2",
+            ),
+            RuntimeStateSnapshot(updated_ts_ms=0),
+        )
+
+    monkeypatch.setattr(api_main, "_execute_legacy_evaluate", _stub_execute_legacy_evaluate)
+
+    response = client.post(
+        "/ai/evaluate",
+        json=_evaluate_payload(
+            sid=sid,
+            event_type="QUEUE_ENTER",
+            path=f"/queue/matches/{MATCH_ID}/enter",
+            method="POST",
+        ),
+    )
+    assert response.status_code == 200
+    assert response.json() == {"decision": {"action": "THROTTLE"}}
+
+
+def test_post_vqa_guard_is_bypassed_after_vqa_pass(monkeypatch) -> None:
+    sid = "sess-eval-post-vqa-pass-1"
+    state_key = f"{sid}:{MATCH_ID}"
+    marked = client.post(
+        "/runtime/vqa/mark",
+        json={"session_id": state_key, "vqa_passed": True, "flow_state": "S4"},
+    )
+    assert marked.status_code == 200
+    assert marked.json()["vqa_passed"] is True
+
+    def _stub_execute_legacy_evaluate(_req):
+        return (
+            EvaluateResponse(
+                allow=True,
+                session_id=state_key,
+                flow_state="S4",
+                defense_tier="T0",
+                action="NONE",
+                actions=["NONE"],
+                reason=None,
+                rule_hits=[],
+                risk_score=0.0,
+                policy_version="def-pol-2.0.0",
+                headers_to_add={},
+                decision_id="dec-test-pass",
+                latency_ms=1,
+                version="v2",
+            ),
+            RuntimeStateSnapshot(updated_ts_ms=0, vqa_passed=True),
+        )
+
+    monkeypatch.setattr(api_main, "_execute_legacy_evaluate", _stub_execute_legacy_evaluate)
+
+    response = client.post(
+        "/ai/evaluate",
+        json=_evaluate_payload(
+            sid=sid,
+            event_type="SEAT_HOLDS",
+            path=f"/seat/matches/{MATCH_ID}/seat-holds",
+            method="POST",
+        ),
+    )
+    assert response.status_code == 200
+    assert response.json() == {"decision": {"action": "NONE"}}
+
+
+def test_post_vqa_guard_uses_sid_level_vqa_mark(monkeypatch) -> None:
+    sid = "sess-eval-post-vqa-sid-mark-1"
+    state_key = f"{sid}:{MATCH_ID}"
+    marked = client.post(
+        "/runtime/vqa/mark",
+        json={"session_id": sid, "vqa_passed": True, "flow_state": "S4"},
+    )
+    assert marked.status_code == 200
+    assert marked.json()["vqa_passed"] is True
+
+    def _stub_execute_legacy_evaluate(_req):
+        return (
+            EvaluateResponse(
+                allow=True,
+                session_id=state_key,
+                flow_state="S4",
+                defense_tier="T0",
+                action="NONE",
+                actions=["NONE"],
+                reason=None,
+                rule_hits=[],
+                risk_score=0.0,
+                policy_version="def-pol-2.0.0",
+                headers_to_add={},
+                decision_id="dec-test-sid-pass",
+                latency_ms=1,
+                version="v2",
+            ),
+            RuntimeStateSnapshot(updated_ts_ms=0, vqa_passed=True),
+        )
+
+    monkeypatch.setattr(api_main, "_execute_legacy_evaluate", _stub_execute_legacy_evaluate)
+
+    response = client.post(
+        "/ai/evaluate",
+        json=_evaluate_payload(
+            sid=sid,
+            event_type="SEAT_HOLDS",
+            path=f"/seat/matches/{MATCH_ID}/seat-holds",
+            method="POST",
+        ),
+    )
+    assert response.status_code == 200
+    assert response.json() == {"decision": {"action": "NONE"}}

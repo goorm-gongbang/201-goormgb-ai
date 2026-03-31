@@ -1,0 +1,332 @@
+# annex/turnstile_spec.yaml
+# Traffic-Master Defense — Cloudflare Turnstile Spec (Annex)
+# v0.1 — SDD(Spec Driven Development) 용도: 사람이/AI가 그대로 구현 가능한 수준의 정의 포함
+#
+# 목적:
+# - Turnstile(Cloudflare, 무개입 캡챠)을 "관문"이 아니라 "외부 봇 점수 신호"로 취급한다.
+# - 런타임에서 LLM 미사용, S3 고정 VQA 운영과 충돌하지 않도록 설계한다.
+# - Turnstile 실패/지연이 정상 사용자에게 탈락 체감(=FP 피해)을 만들지 않도록 Fail-Open 성격으로 운영한다.
+#
+# 포함(디테일):
+# - 적용 시점(트리거), UX 처리(검사중 표시), 토큰/점수 스키마, 타임아웃/실패 정책,
+#   점수 변환(S_ext), 결측치 처리, dedup/재시도, Redis/로그 기록, 책임 경계(Writer/Verifier)
+
+meta:
+  doc_id: "annex_turnstile_spec"
+  title: "Turnstile(Cloudflare) Spec — External Bot Signal for Guard"
+  version: "0.1.0"
+  updated_at: "2026-03-08"
+  timezone: "Asia/Seoul"
+  owner_team: "traffic-master-ai"
+  status: "final-draft"
+  language: "ko"
+  precedence_note: "L0(l0_core.yaml, l0_defense_policy.yaml) > L1(runtime/*.yaml) > annex/*.yaml|md"
+
+glossary:
+  terms:
+    turnstile: "Turnstile(턴스타일: Cloudflare 무개입 캡챠)"
+    token: "token(토큰: Turnstile 클라이언트가 생성한 검증용 문자열)"
+    verify: "verify(검증: 서버가 토큰을 Cloudflare로 검증하는 과정)"
+    external_score: "external_score(외부 점수: 0~1, 1=human-likely)"
+    s_ext_botlikeness: "S_ext_botlikeness(외부 봇성: 0~1, 1=bot-likely, =1-external_score)"
+    fail_open: "FAIL_OPEN(실패 시 진행 허용)"
+    fp: "FP(False Positive: 오탐)"
+    dedup: "dedup(중복 제거: 동일 이벤트/요청의 중복 처리)"
+    epm: "EPM(events per minute: 분당 이벤트 수)"
+
+scope:
+  in_scope:
+    - "Turnstile 실행 트리거(언제 수행하는지) 정의"
+    - "FE 토큰 획득 및 BE 검증 절차 정의"
+    - "검증 결과를 Guard 입력 external_score로 전달하는 계약"
+    - "UX: '검사중' 표시 조건/형태(최소)"
+    - "실패/지연 처리(Fail-Open 성격) 및 결측치 처리"
+    - "dedup/재시도/캐시 정책(중복 호출 방지)"
+    - "로그(decision_audit) 기록 규칙"
+  out_of_scope:
+    - "Turnstile을 단독으로 사용해 403/428 등 즉시 차단/챌린지를 트리거하는 설계"
+    - "런타임 LLM과 결합한 판정"
+    - "WAF/CDN 레벨의 별도 차단 룰"
+    - "Cloudflare 계정/도메인/보안키 배포 절차(운영 문서로 분리)"
+
+design_principles:
+  - "Turnstile은 '추가 관문'이 아니라 '외부 봇 신호'다. (Guard의 external_score 입력)"
+  - "S3 고정 VQA와 중복 관문을 만들지 않는다."
+  - "Turnstile 실패/지연으로 정상 사용자를 막지 않는다(FAIL_OPEN)."
+  - "지연이 사용 경험을 해치지 않도록 백그라운드 실행을 기본으로 한다."
+  - "점수/토큰은 최소한의 데이터로 전달하며 PII를 포함하지 않는다."
+  - "중복 호출(dedup)을 통해 비용/지연 및 KPI 왜곡을 방지한다."
+
+actors_and_responsibilities:
+  frontend:
+    responsibilities:
+      - "지정된 트리거에서 Turnstile 토큰을 획득한다."
+      - "토큰을 BE/Adapter로 전달한다(헤더 또는 바디)."
+      - "지연이 300ms를 초과할 때만 '검사중' 최소 UI를 표시한다(선택)."
+    must_not:
+      - "검증 결과를 자체적으로 단정해 차단/우회 결정을 내리지 않는다."
+      - "개인정보/원본 이벤트를 Turnstile payload에 포함하지 않는다."
+  backend_or_adapter:
+    responsibilities:
+      - "Turnstile 토큰을 서버에서 Cloudflare로 검증한다."
+      - "검증 결과를 external_score(0..1)로 정규화하여 Guard 입력으로 제공한다."
+      - "실패/타임아웃 시 external_score=0.5(중립)로 처리하고 진행을 막지 않는다."
+  ai_defense_service:
+    responsibilities:
+      - "Guard의 external_score로 받아 s_t/R_t 계산에 반영한다."
+      - "Turnstile만으로 BLOCK/CHALLENGE를 강제하지 않는다(액션은 Planner)."
+
+triggering_policy:
+  # Turnstile을 언제 실행할지 정의
+  # 기본: S1(Entry Clicked) 1회. 보강용 재검증은 옵션(기본 OFF).
+  primary_trigger:
+    id: "S1_ENTRY_CLICKED"
+    flow_state: "S1"
+    description: "사용자가 티켓팅 진입(Entry Clicked) 시 1회 백그라운드로 실행"
+    enabled_default: true
+  optional_secondary_trigger:
+    id: "S2_TO_S3_PRECHECK"
+    flow_state_transition: "S2 -> S3"
+    description: "큐 통과 직후 S3 진입 전 재검증(기본 OFF, 필요 시만)"
+    enabled_default: false
+  never_triggers:
+    - id: "S6_PAYMENT"
+      rule: "S6(결제 단계)에서 Turnstile로 신규 마찰을 추가하지 않는다."
+    - id: "SX_TERMINAL"
+      rule: "SX 이후에는 어떤 검증도 트리거하지 않는다."
+  rate_limits:
+    max_runs_per_session:
+      env: "TM_TURNSTILE_MAX_RUNS_PER_SESSION"
+      default: 1
+    cooldown_seconds:
+      env: "TM_TURNSTILE_COOLDOWN_SECONDS"
+      default: 30
+
+ux_policy:
+  # 기본은 무개입. 단, 사용자 체감 지연이 생기면 최소 표시.
+  default_mode: "invisible"
+  show_checking_indicator:
+    enabled: true
+    threshold_ms: 300
+    copy_ko: "검사 중..."
+    max_visible_ms: 1500
+    behavior_after_timeout:
+      - "표시를 숨기고 흐름을 계속 진행한다(FAIL_OPEN)."
+  notes:
+    - "Turnstile이 S3 VQA처럼 별도 관문으로 느껴지지 않도록 최소 UI만 허용한다."
+    - "MVP에서 FE notification/팝업은 별도이며, 본 spec은 '검사중' 최소 표시만 다룬다."
+
+data_contract:
+  # FE -> BE/Adapter 전달 항목
+  request_fields:
+    required:
+      - name: "session_id"
+        source: "X-Session-Id"
+      - name: "trace_id"
+        source: "X-Trace-Id"
+      - name: "turnstile_token"
+        source_options:
+          - "X-Turnstile-Token header"
+          - "request body field: turnstile_token"
+        constraints:
+          max_len: 4096
+    optional:
+      - name: "turnstile_action"
+        description: "Cloudflare action(optional). 트리거 구분용."
+      - name: "turnstile_cdata"
+        description: "Cloudflare cdata(optional). 세션/트레이스 연계용."
+  response_fields_from_verify:
+    # 서버 검증 결과(Cloudflare) -> 내부 정규화 결과
+    normalized:
+      external_score:
+        type: "float"
+        range: [0.0, 1.0]
+        semantics: "1.0 human-likely, 0.0 bot-likely"
+      s_ext_botlikeness:
+        type: "float"
+        range: [0.0, 1.0]
+        definition: "1 - external_score"
+      verify_status:
+        enum:
+          - "OK"
+          - "TIMEOUT"
+          - "ERROR"
+          - "INVALID_TOKEN"
+          - "MISSING_TOKEN"
+      verify_latency_ms:
+        type: "int"
+        range: [0, 5000]
+
+verification_policy:
+  # 서버(Backend/Adapter)가 수행하는 검증 정책
+  owner: "Adapter (ext_authz path)"
+  rationale: "방어 관문에서 일관된 검증/로깅/점수 제공"
+  timeout_ms:
+    env: "TM_TURNSTILE_VERIFY_TIMEOUT_MS"
+    default: 500
+  retry:
+    enabled: true
+    max_retries: 1
+    backoff_ms: 30
+    retry_on:
+      - "timeout"
+      - "5xx"
+    never_retry_on:
+      - "invalid_token"
+      - "missing_token"
+  cache:
+    # 같은 세션에서 중복 검증을 줄이기 위한 캐시
+    enabled: true
+    backend: "redis"
+    key_prefix: "tm:turnstile:verdict"
+    ttl_seconds:
+      env: "TM_TURNSTILE_CACHE_TTL_SECONDS"
+      default: 600
+    key_schema: "session_id|turnstile_action"
+    value_schema:
+      external_score: "float"
+      verify_status: "string"
+      verified_at_ms: "epoch_ms"
+  failure_handling:
+    mode: "FAIL_OPEN"
+    on_missing_token:
+      external_score: 0.5
+      verify_status: "MISSING_TOKEN"
+    on_timeout:
+      external_score: 0.5
+      verify_status: "TIMEOUT"
+    on_error:
+      external_score: 0.5
+      verify_status: "ERROR"
+    on_invalid_token:
+      external_score: 0.5
+      verify_status: "INVALID_TOKEN"
+    rationale: "Turnstile 실패가 곧 사용자 탈락이 되지 않도록 중립 점수로 처리한다."
+  score_mapping:
+    # Cloudflare가 반환하는 형태가 바뀌더라도 내부는 0..1로 표준화
+    mapping_rule: >
+      If Cloudflare provides score in [0,1] where 1=human:
+      external_score = clamp(score,0,1).
+      Else if only boolean success:
+      external_score = 1.0 if success else 0.0.
+    clamp: "external_score = max(0.0, min(external_score, 1.0))"
+
+deduplication:
+  purpose: "동일 이벤트/재전송으로 Turnstile이 과도하게 호출되는 것을 방지"
+  scope: "trace_id + trigger_id + ts_bucket"
+  ts_bucket_ms:
+    env: "TM_DEDUP_TS_BUCKET_MS"
+    default: 200
+  store:
+    backend: "redis"
+    key_prefix: "tm:dedup:turnstile"
+    ttl_seconds:
+      env: "TM_DEDUP_TTL_SECONDS"
+      default: 600
+  behavior_on_duplicate:
+    - "이미 같은 dedup key로 verify가 수행되었으면 캐시 결과를 사용한다."
+    - "추가 verify 호출을 수행하지 않는다."
+  audit_fields:
+    dedup:
+      is_duplicate: "bool"
+      dedup_key: "string"
+
+integration_with_guard:
+  # Guard spec과의 연결
+  guard_input_field: "features.turnstile_score"
+  semantics_alignment:
+    - "external_score는 Guard에서 S_ext_botlikeness=1-external_score로 변환한다."
+    - "Turnstile은 Guard 내부 점수(S_int)와 결합되어 step risk(s_t)를 만든다."
+  missing_policy_alignment:
+    - "Turnstile 결측/실패는 external_score=0.5로 처리(MISSING_EXT_SCORE 플래그)."
+
+redis_storage:
+  # L0 redisContract.requiredFields에는 turnstile_score가 없으므로, 별도 key로 저장(옵션)
+  # 또는 decision_cache/verify_cache로만 유지해도 됨.
+  mode: "optional_cache_only"
+  optional_fields:
+    - name: "turnstileScore"
+      key: "tm:sess:{sessionId}"
+      type: "float"
+      note: "세션 상태에 보관할 경우. (Backward compatible 방식으로만 추가)"
+  required_keys:
+    - "tm:turnstile:verdict:* (verify cache)"
+    - "tm:dedup:turnstile:* (dedup store)"
+
+audit_logging:
+  destination: "logs/decision_audit.jsonl"
+  event_types:
+    - "TURNSTILE_TRIGGERED"
+    - "TURNSTILE_VERIFIED"
+  events:
+    TURNSTILE_VERIFIED:
+      producer: "Adapter"
+  required_fields_min:
+    - "ts"
+    - "traceId"
+    - "sessionId"
+    - "flowState"
+    - "eventType"
+    - "requestId"
+  extension_fields:
+    turnstile:
+      trigger_id: "string"
+      verify_status: "string"
+      external_score: "float"
+      verify_latency_ms: "int"
+      cached: "bool"
+    dedup:
+      is_duplicate: "bool"
+      dedup_key: "string"
+  pii_policy:
+    rule: "Turnstile payload/logs must not include raw PII, raw DOM, raw input text."
+
+security:
+  constraints:
+    - "turnstile_token은 서버에서만 검증한다(클라 판정 금지)."
+    - "토큰 재사용/재전송은 dedup+cache로 흡수하되, 검증 결과는 세션 단위로만 신뢰한다."
+    - "검증 실패를 곧바로 차단 근거로 사용하지 않는다(FAIL_OPEN)."
+
+mvp_defaults:
+  enabled: true
+  trigger_primary: true
+  trigger_secondary: false
+  verify_timeout_ms: 500
+  max_runs_per_session: 1
+  checking_ui_threshold_ms: 300
+  external_score_on_failure: 0.5
+
+acceptance_tests:
+  - id: "TS-1"
+    name: "S1에서 1회 실행 및 점수 전달"
+    steps:
+      - "S1 트리거에서 FE가 token 획득"
+      - "BE/Adapter가 verify 수행"
+      - "external_score가 Guard 입력(features.turnstile_score)로 전달됨"
+    pass_criteria:
+      - "verify_status=OK"
+      - "external_score in [0,1]"
+  - id: "TS-2"
+    name: "검증 실패 시 Fail-Open"
+    steps:
+      - "verify timeout/error 유도"
+    pass_criteria:
+      - "external_score=0.5"
+      - "흐름 진행이 막히지 않음"
+      - "audit에 verify_status 기록"
+  - id: "TS-3"
+    name: "dedup 동작"
+    steps:
+      - "동일 trace/trigger/ts_bucket으로 2회 요청"
+    pass_criteria:
+      - "2번째는 verify 호출 없이 캐시/중복 처리"
+      - "audit dedup.is_duplicate=true"
+  - id: "TS-4"
+    name: "UI 표시 임계치"
+    steps:
+      - "verify 지연을 400ms로 유도"
+    pass_criteria:
+      - "FE가 '검사 중...' 표시(옵션)"
+      - "1.5s 넘기면 표시 해제 후 진행"
+
+open_questions_tbd: []
