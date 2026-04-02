@@ -29,6 +29,15 @@ def _env(key: str, default: Any) -> Any:
     return raw
 
 
+def _env_first(keys: tuple[str, ...], default: str) -> str:
+    """Read the first defined env var from an ordered key list."""
+    for key in keys:
+        raw = os.environ.get(key)
+        if raw is not None:
+            return raw
+    return default
+
+
 # ===================================================================
 # Risk Model — L0/l0_defense_policy.yaml §3, policy_v1 §risk
 # ===================================================================
@@ -220,7 +229,16 @@ SUM_COOLDOWN_SECONDS: int = _env("TM_SUM_COOLDOWN_SECONDS", 300)
 # ===================================================================
 # Offline observability / optimization logs
 # ===================================================================
-OFFLINE_OPT_AUDIT_FILENAME: str = "logs/offline_optimization_audit.jsonl"
-OFFLINE_AUDIT_SUMMARY_FILENAME: str = "logs/offline_audit_summary.jsonl"
-POLICY_STORE_FILENAME: str = "logs/policy_store.json"
+OFFLINE_OPT_AUDIT_FILENAME: str = _env_first(
+    ("TM_OFFLINE_OPT_AUDIT_FILENAME", "TM_OFFLINE_LLM_AUDIT_PATH"),
+    "/tmp/logs/offline_optimization_audit.jsonl",
+)
+OFFLINE_AUDIT_SUMMARY_FILENAME: str = _env(
+    "TM_OFFLINE_AUDIT_SUMMARY_FILENAME",
+    "/tmp/logs/offline_audit_summary.jsonl",
+)
+POLICY_STORE_FILENAME: str = _env(
+    "TM_POLICY_STORE_FILENAME",
+    "/tmp/logs/policy_store.json",
+)
 POLICY_CACHE_SECONDS: int = _env("TM_POLICY_CACHE_SECONDS", 5)
