@@ -14,15 +14,15 @@ from pathlib import Path
 from typing import Any, Optional, Protocol
 
 from ..core.constants import POLICY_CACHE_SECONDS, POLICY_STORE_FILENAME
+from ..state.keyspace import (
+    POLICY_ROLLOUT_STATE_KEY,
+    POLICY_VERSION_INDEX_KEY,
+    POLICY_VERSION_KEY_PREFIX,
+)
 from ..state.redis_client import InMemoryRedis, RedisLike
 from .snapshot import PolicySnapshot
 
 logger = logging.getLogger(__name__)
-
-_POLICY_VERSION_KEY_PREFIX = "tm:policy:version:"
-_POLICY_ROLLOUT_STATE_KEY = "tm:policy:rollout_state"
-_POLICY_VERSION_INDEX_KEY = "tm:policy:version_index"
-
 
 class PolicyStore(Protocol):
     """Storage backend for policy documents and rollout state."""
@@ -93,7 +93,7 @@ class RedisPolicyStore:
         return self._fallback.fetch_policy_by_version(version)
 
     def get_rollout_state(self) -> Optional[dict[str, Any]]:
-        raw = self._redis.get(_POLICY_ROLLOUT_STATE_KEY)
+        raw = self._redis.get(POLICY_ROLLOUT_STATE_KEY)
         parsed = _json_object(raw)
         if parsed is not None:
             return parsed
@@ -112,10 +112,10 @@ class RedisPolicyStore:
 
     def set_rollout_state(self, state: Optional[dict[str, Any]]) -> None:
         if state is None:
-            self._redis.delete(_POLICY_ROLLOUT_STATE_KEY)
+            self._redis.delete(POLICY_ROLLOUT_STATE_KEY)
         else:
             self._redis.set(
-                _POLICY_ROLLOUT_STATE_KEY,
+                POLICY_ROLLOUT_STATE_KEY,
                 json.dumps(state, ensure_ascii=False, sort_keys=True),
             )
         if self._fallback is not None:
@@ -128,10 +128,10 @@ class RedisPolicyStore:
         return sorted(versions)
 
     def _policy_key(self, version: str) -> str:
-        return f"{_POLICY_VERSION_KEY_PREFIX}{version}"
+        return f"{POLICY_VERSION_KEY_PREFIX}{version}"
 
     def _read_version_index(self) -> list[str]:
-        raw = self._redis.get(_POLICY_VERSION_INDEX_KEY)
+        raw = self._redis.get(POLICY_VERSION_INDEX_KEY)
         parsed = _json_array(raw)
         if parsed is None:
             return []
@@ -142,7 +142,7 @@ class RedisPolicyStore:
         if version not in versions:
             versions.append(version)
         self._redis.set(
-            _POLICY_VERSION_INDEX_KEY,
+            POLICY_VERSION_INDEX_KEY,
             json.dumps(sorted(versions), ensure_ascii=False),
         )
 

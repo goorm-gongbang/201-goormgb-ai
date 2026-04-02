@@ -22,6 +22,7 @@ from ..events.catalog import API_CALL_OBS, HIGH_VALUE_CLICK, S3_FAIL, S3_PASS, S
 from ..events.common import RuntimeEvent
 from ..policy.snapshot import PolicySnapshot
 from ..state.dedup import DedupChecker
+from ..state.keyspace import ANALYZER_WINDOW_KEY_PREFIX
 from ..state.redis_client import RedisLike
 from ..state.session_state import SessionStateManager
 
@@ -345,7 +346,7 @@ class Analyzer:
 
     def _window_key(self, metric: str, session_id: str, ts_ms: int, window_ms: int) -> str:
         bucket = int(ts_ms // max(1, window_ms))
-        return f"tm:analyzer:win:{metric}:{session_id}:{bucket}"
+        return f"{ANALYZER_WINDOW_KEY_PREFIX}{metric}:{session_id}:{bucket}"
 
 
 
