@@ -166,9 +166,9 @@ DEFAULT_POLICY_VERSION: str = "v2.0.0-mvp"
 # ===================================================================
 # Audit — L0/l0_core.yaml §7
 # ===================================================================
-AUDIT_FILENAME: str = "logs/decision_audit.jsonl"
-WAREHOUSE_FILENAME: str = "logs/defense_audit_events.jsonl"
-AUDIT_COLLECTOR_CHECKPOINT_FILENAME: str = "logs/decision_audit.checkpoint"
+AUDIT_FILENAME: str = _env("TM_AUDIT_FILENAME", "/tmp/logs/decision_audit.jsonl")
+WAREHOUSE_FILENAME: str = _env("TM_WAREHOUSE_FILENAME", "/tmp/logs/defense_audit_events.jsonl")
+AUDIT_COLLECTOR_CHECKPOINT_FILENAME: str = _env("TM_AUDIT_CHECKPOINT_FILENAME", "/tmp/logs/decision_audit.checkpoint")
 AUDIT_RETENTION_DAYS: int = _env("TM_AUDIT_RETENTION_DAYS", 7)
 
 # ===================================================================

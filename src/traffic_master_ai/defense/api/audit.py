@@ -26,7 +26,7 @@ class DefenseDecisionAuditLogger:
 
     @classmethod
     def from_env(cls) -> DefenseDecisionAuditLogger:
-        path = os.getenv("TM_DEFENSE_AUDIT_LOG_PATH", "logs/defense_decision_audit.jsonl")
+        path = os.getenv("TM_DEFENSE_AUDIT_LOG_PATH", "/tmp/logs/defense_decision_audit.jsonl")
         return cls(path=path)
 
     def log(
