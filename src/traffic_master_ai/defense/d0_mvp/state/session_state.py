@@ -1,4 +1,4 @@
-"""Session state manager — tm:sess:{sessionId} CRUD + TTL refresh.
+"""Session state manager — tm:decision-state:session:{sessionId} CRUD + TTL refresh.
 
 Ref: L1/runtime/state.yaml#redis.keyspace.session_key
      L1/runtime/state.yaml#ttl.refresh_policy (Strict + S3 Grace)
@@ -22,14 +22,10 @@ from ..core.constants import (
     SESSION_STATE_TTL_SECONDS,
 )
 from ..core.models import SessionState
+from .keyspace import SESSION_KEY_PREFIX, SESSION_LOCK_KEY_PREFIX, S3_GRACE_KEY_PREFIX
 from .redis_client import RedisLike
 
 logger = logging.getLogger(__name__)
-
-_SESSION_KEY_PREFIX = "tm:sess:"
-_S3_GRACE_KEY_PREFIX = "tm:grace:s3:"
-_SESSION_LOCK_KEY_PREFIX = "tm:lock:sess:"
-
 
 _WRITER_ALLOWED_FIELDS: dict[str, frozenset[str]] = {
     # Ref: L1/runtime/state.yaml#writer_responsibility.writers.guard
@@ -52,7 +48,7 @@ _WRITER_ALLOWED_FIELDS: dict[str, frozenset[str]] = {
 
 
 class SessionStateManager:
-    """Manages tm:sess:{sessionId} Redis hash.
+    """Manages tm:decision-state:session:{sessionId} Redis hash.
 
     TTL refresh policy (state.yaml#ttl.refresh_policy):
     - STRICT: DENY responses do NOT refresh TTL.
@@ -81,11 +77,11 @@ class SessionStateManager:
     # --- Key helpers ---
     @staticmethod
     def session_key(session_id: str) -> str:
-        return f"{_SESSION_KEY_PREFIX}{session_id}"
+        return f"{SESSION_KEY_PREFIX}{session_id}"
 
     @staticmethod
     def s3_grace_key(session_id: str) -> str:
-        return f"{_S3_GRACE_KEY_PREFIX}{session_id}"
+        return f"{S3_GRACE_KEY_PREFIX}{session_id}"
 
     # --- Read ---
     def get(self, session_id: str) -> Optional[SessionState]:
@@ -269,7 +265,7 @@ class SessionStateManager:
             return lock
 
     def _session_dist_lock_key(self, session_id: str) -> str:
-        return f"{_SESSION_LOCK_KEY_PREFIX}{session_id}"
+        return f"{SESSION_LOCK_KEY_PREFIX}{session_id}"
 
     def _acquire_dist_lock(self, session_id: str) -> Optional[str]:
         if not self._dist_lock_enabled:

@@ -35,6 +35,7 @@ def create_check_router(runtime: Optional[DefenseRuntime] = None) -> APIRouter:
         body: Mapping[str, Any] = Body(default={}),
         x_session_id: Optional[str] = Header(default=None, alias="X-Session-Id"),
         x_trace_id: Optional[str] = Header(default=None, alias="X-Trace-Id"),
+        x_user_id: Optional[str] = Header(default=None, alias="X-User-Id"),
         x_turnstile_token: Optional[str] = Header(default=None, alias="X-Turnstile-Token"),
         x_correlation_id: Optional[str] = Header(default=None, alias="X-Correlation-Id"),
         x_tm_test_mode: Optional[str] = Header(default=None, alias="X-TM-TestMode"),
@@ -65,6 +66,8 @@ def create_check_router(runtime: Optional[DefenseRuntime] = None) -> APIRouter:
                 trace_id=x_trace_id,
                 body=body,
             )
+            if x_user_id:
+                check_req.user_id = x_user_id.strip() or None
             if x_turnstile_token:
                 check_req.turnstile_token = x_turnstile_token
         except Exception as exc:

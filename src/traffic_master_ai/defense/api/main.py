@@ -20,6 +20,7 @@ from typing import Any, Optional
 import httpx
 import jwt
 from fastapi import BackgroundTasks, Body, FastAPI, Header, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -36,10 +37,12 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.semconv.resource import ResourceAttributes
 
-from ..d0_mvp.api.runtime import DefenseRuntime as D0DefenseRuntime
+from ..d0_mvp.api.runtime import DefenseRuntime as DecisionEngineRuntime
 from ..d0_mvp.core.enums import DefenseAction as D0DefenseAction
 from ..d0_mvp.core.enums import FlowState as D0FlowState
 from ..d0_mvp.core.models import CheckRequest as D0CheckRequest
+from ..d0_mvp.state.redis_client import build_runtime_redis_from_env
+from ..auth_guard import AuthGuardBlockService
 from .audit import (
     DefenseDecisionAuditLogger,
     S3Uploader,
@@ -173,6 +176,8 @@ _S3_UPLOADER = S3Uploader(bucket=_S3_BUCKET, prefix=_S3_PREFIX, region=_S3_REGIO
 _DEFAULT_CORS_ALLOW_ORIGINS = (
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "https://staging.playball.one",
+    "https://playball.one",
 )
 
 
@@ -201,7 +206,7 @@ async def _s3_archive_loop():
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_app: FastAPI):
     """FastAPI lifespan: Startup/Shutdown hooks."""
     archive_task = asyncio.create_task(_s3_archive_loop())
     yield
@@ -210,6 +215,12 @@ async def lifespan(app: FastAPI):
         await archive_task
     except asyncio.CancelledError:
         pass
+    auth_guard_close = getattr(_auth_guard_blocker, "close", None)
+    if callable(auth_guard_close):
+        auth_guard_close()
+    decision_engine_close = getattr(_decision_engine, "close", None)
+    if callable(decision_engine_close):
+        decision_engine_close()
 
 
 app = FastAPI(
@@ -241,27 +252,14 @@ if _OTEL_ENABLED:
     FastAPIInstrumentor.instrument_app(app)
 
 _state_store, _state_backend = build_runtime_store_from_env()
+_decision_state_redis, _decision_state_backend = build_runtime_redis_from_env()
 _audit = DefenseDecisionAuditLogger.from_env()
 _challenge_runtime = ChallengeRuntime(ChallengeConfig.from_env())
-_d0_runtime = D0DefenseRuntime()
-
-# Backend runtime sanction endpoint
-BE_RUNTIME_SANCTIONS_URL = os.getenv("TM_BACKEND_RUNTIME_SANCTIONS_URL") or os.getenv(
-    "TM_BACKEND_SANCTION_URL"
+_decision_engine = DecisionEngineRuntime(
+    redis=_decision_state_redis,
+    close_redis_on_close=_decision_state_backend == "redis",
 )
-
-
-async def _send_be_runtime_sanction(sid: str):
-    """Asynchronously notify backend to apply runtime sanction by sid."""
-    if not BE_RUNTIME_SANCTIONS_URL or not sid:
-        return
-
-    async with httpx.AsyncClient(timeout=2.0) as client:
-        try:
-            await client.post(BE_RUNTIME_SANCTIONS_URL, json={"sid": sid})
-        except Exception:
-            # Shield AI performance from BE failures
-            pass
+_auth_guard_blocker = AuthGuardBlockService.from_env()
 
 
 @app.get("/healthz", response_model=HealthResponse, tags=["health"])
@@ -280,13 +278,13 @@ async def runtime_state(session_id: str) -> RuntimeStateSnapshot:
     if snap is not None:
         return snap
 
-    d0_state = _d0_runtime.session_state.get(session_id)
-    if d0_state is None:
+    decision_state = _decision_engine.session_state.get(session_id)
+    if decision_state is None:
         raise HTTPException(status_code=404, detail="session not found")
-    policy = _d0_runtime.policy_loader.load(session_id=session_id)
+    policy = _decision_engine.policy_loader.load(session_id=session_id)
     bridged = _legacy_snapshot_from_d0_state(
         session_id=session_id,
-        d0_state=d0_state,
+        d0_state=decision_state,
         policy_version=policy.policy_version,
         challenge_max_attempts=policy.challenge_max_attempts,
         now_ms=int(time.time() * 1000),
@@ -341,6 +339,7 @@ async def ai_precheck(
     request: Request,
     req: AiPrecheckRequest,
     authorization: str | None = Header(default=None, alias="Authorization"),
+    x_user_id: str | None = Header(default=None, alias="X-User-Id"),
 ) -> AiPrecheckResponse:
     sid = _resolve_session_id(
         request.headers.get("X-Auth-Sid") or request.headers.get("X-Session-Id"),
@@ -348,6 +347,12 @@ async def ai_precheck(
     )
     state_key = _build_state_key(sid, req.match_id)
     now_ms = int(time.time() * 1000)
+    user_id = _resolve_user_id(
+        explicit_user_id=None,
+        x_user_id=x_user_id,
+        authorization=authorization,
+    )
+    _remember_runtime_user_id(session_id=sid, user_id=user_id, now_ms=now_ms)
     passed = await _verify_turnstile_token(req.cf_token)
     snap = _get_or_create_snapshot(state_key, now_ms)
     next_snap = snap.model_copy(
@@ -355,6 +360,7 @@ async def ai_precheck(
             "turnstile_verified": passed,
             "turnstile_verified_at_ms": now_ms if passed else 0,
             "updated_ts_ms": now_ms,
+            "user_id": user_id or snap.user_id,
         }
     )
     _state_store.upsert(state_key, next_snap)
@@ -429,6 +435,7 @@ async def ai_telemetry_ingest(
         },
     ),
     authorization: str | None = Header(default=None, alias="Authorization"),
+    x_user_id: str | None = Header(default=None, alias="X-User-Id"),
 ) -> AiTelemetryIngestResponse:
     sid = _resolve_session_id(
         request.headers.get("X-Auth-Sid") or request.headers.get("X-Session-Id"),
@@ -436,8 +443,17 @@ async def ai_telemetry_ingest(
     )
     state_key = _build_state_key(sid, req.match_id)
     now_ms = int(time.time() * 1000)
+    user_id = _resolve_user_id(
+        explicit_user_id=None,
+        x_user_id=x_user_id,
+        authorization=authorization,
+    )
+    _remember_runtime_user_id(session_id=sid, user_id=user_id, now_ms=now_ms)
     snap = _get_or_create_snapshot(state_key, now_ms)
-    update: dict[str, Any] = {"updated_ts_ms": now_ms}
+    update: dict[str, Any] = {
+        "updated_ts_ms": now_ms,
+        "user_id": user_id or snap.user_id,
+    }
     summary = _compute_summary_from_raw_events(req.events)
     summary["stage"] = req.stage
     summary["matchId"] = float(req.match_id)
@@ -459,14 +475,27 @@ async def ai_telemetry_ingest(
 
 @app.post("/ai/evaluate", response_model=AiEvaluateResponse, tags=["decision"])
 async def ai_evaluate(
+    request: Request,
     req: AiEvaluateRequest,
     background_tasks: BackgroundTasks,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    x_user_id: str | None = Header(default=None, alias="X-User-Id"),
 ) -> AiEvaluateResponse:
     sid = req.context.sid
     match_id = _extract_match_id_from_request_path(req.event.request_path)
     state_key = _build_state_key(sid, match_id)
     now_ms = int(time.time() * 1000)
+    trace_id = _resolve_trace_id(request)
+    user_id = _resolve_user_id(
+        explicit_user_id=req.context.user_id,
+        x_user_id=x_user_id,
+        authorization=authorization,
+    ) or _lookup_runtime_user_id(sid=sid, state_key=state_key)
+    _remember_runtime_user_id(session_id=sid, user_id=user_id, now_ms=now_ms)
     snap = _get_or_create_snapshot(state_key, now_ms)
+    if user_id and snap.user_id != user_id:
+        snap = snap.model_copy(update={"user_id": user_id, "updated_ts_ms": now_ms})
+        _state_store.upsert(state_key, snap)
     snap = _hydrate_match_state_from_sid_vqa_mark(
         sid=sid,
         state_key=state_key,
@@ -476,7 +505,15 @@ async def ai_evaluate(
 
     if req.event.event_type == "QUEUE_ENTER" and not _precheck_is_valid(snap, now_ms):
         EVALUATE_REQUESTS.labels(decision="BLOCK").inc()
+        background_tasks.add_task(
+            _block_user_in_auth_guard,
+            user_id=user_id,
+            session_id=state_key,
+            trace_id=trace_id,
+            trigger="ai_evaluate_precheck_block",
+        )
         return AiEvaluateResponse(decision={"action": "BLOCK"})
+
 
     if req.event.event_type == "SEAT_ENTRY" and not snap.vqa_passed:
         EVALUATE_REQUESTS.labels(decision="REQUIRE_S3").inc()
@@ -489,17 +526,20 @@ async def ai_evaluate(
 
     legacy_req = _build_legacy_request_from_target(
         state_key=state_key,
+        trace_id=trace_id,
+        user_id=user_id,
         event_type=req.event.event_type,
         request_path=req.event.request_path,
         request_method=req.event.request_method,
         now_ms=now_ms,
         snap=snap,
     )
-    legacy_resp, _ = _execute_legacy_evaluate(legacy_req)
+ 
+    legacy_resp, _ = await run_in_threadpool(_execute_legacy_evaluate, legacy_req)
     action = _target_action_from_legacy(legacy_resp.action)
+    if req.event.event_type == "QUEUE_ENTER" and action == "REQUIRE_S3":
+        action = "THROTTLE"
     EVALUATE_REQUESTS.labels(decision=action).inc()
-    if action == "BLOCK":
-        background_tasks.add_task(_send_be_runtime_sanction, sid=sid)
     return AiEvaluateResponse(decision={"action": action})
 
 
@@ -508,19 +548,27 @@ async def ai_challenge_start(
     request: Request,
     req: AiChallengeStartRequest,
     authorization: str | None = Header(default=None, alias="Authorization"),
+    x_user_id: str | None = Header(default=None, alias="X-User-Id"),
 ) -> AiChallengeStartResponse:
     sid = _resolve_session_id(
         request.headers.get("X-Auth-Sid") or request.headers.get("X-Session-Id"),
         authorization,
     )
     state_key = _build_state_key(sid, req.match_id)
+    now_ms = int(time.time() * 1000)
+    user_id = _resolve_user_id(
+        explicit_user_id=None,
+        x_user_id=x_user_id,
+        authorization=authorization,
+    )
+    _remember_runtime_user_id(session_id=sid, user_id=user_id, now_ms=now_ms)
     start_req = ChallengeStartRequest(
         session_id=state_key,
         flow_state="S3",
         challenge_type="catch_ball",
     )
     resp = await _start_challenge_internal(start_req)
-    snap = _get_or_create_snapshot(state_key, int(time.time() * 1000))
+    snap = _get_or_create_snapshot(state_key, now_ms)
     _state_store.upsert(
         state_key,
         snap.model_copy(
@@ -529,6 +577,7 @@ async def ai_challenge_start(
                 "active_challenge_token": resp.challenge_token,
                 "active_challenge_expires_at_ms": resp.expires_at_ms,
                 "updated_ts_ms": resp.issued_at_ms,
+                "user_id": user_id or snap.user_id,
             }
         ),
     )
@@ -544,7 +593,9 @@ async def ai_challenge_start(
 async def ai_challenge_verify(
     request: Request,
     req: AiChallengeVerifyRequest,
+    background_tasks: BackgroundTasks,
     authorization: str | None = Header(default=None, alias="Authorization"),
+    x_user_id: str | None = Header(default=None, alias="X-User-Id"),
 ) -> AiChallengeVerifyResponse:
     sid = _resolve_session_id(
         request.headers.get("X-Auth-Sid") or request.headers.get("X-Session-Id"),
@@ -552,7 +603,17 @@ async def ai_challenge_verify(
     )
     state_key = _build_state_key(sid, req.match_id)
     now_ms = int(time.time() * 1000)
+    trace_id = _resolve_trace_id(request)
+    user_id = _resolve_user_id(
+        explicit_user_id=None,
+        x_user_id=x_user_id,
+        authorization=authorization,
+    ) or _lookup_runtime_user_id(sid=sid, state_key=state_key)
+    _remember_runtime_user_id(session_id=sid, user_id=user_id, now_ms=now_ms)
     snap = _get_or_create_snapshot(state_key, now_ms)
+    if user_id and snap.user_id != user_id:
+        snap = snap.model_copy(update={"user_id": user_id, "updated_ts_ms": now_ms})
+        _state_store.upsert(state_key, snap)
 
     if not snap.active_challenge_id or snap.active_challenge_id != req.challenge_id:
         CHALLENGE_VERIFY_REQUESTS.labels(result="invalid").inc()
@@ -585,10 +646,11 @@ async def ai_challenge_verify(
                 "active_challenge_token": "",
                 "active_challenge_expires_at_ms": None,
                 "updated_ts_ms": now_ms,
+                "user_id": user_id or snap.user_id,
             }
         )
         _state_store.upsert(state_key, next_snap)
-        _sync_mark_to_d0_runtime(
+        _sync_mark_to_decision_engine(
             req=RuntimeVqaMarkRequest(
                 session_id=state_key,
                 vqa_passed=True,
@@ -626,10 +688,11 @@ async def ai_challenge_verify(
             "active_challenge_expires_at_ms": (
                 snap.active_challenge_expires_at_ms if remaining > 0 else None
             ),
+            "user_id": user_id or snap.user_id,
         }
     )
     _state_store.upsert(state_key, next_snap)
-    _sync_mark_to_d0_runtime(
+    _sync_mark_to_decision_engine(
         req=RuntimeVqaMarkRequest(
             session_id=state_key,
             vqa_passed=False,
@@ -652,12 +715,23 @@ async def ai_challenge_verify(
         },
     )
     CHALLENGE_VERIFY_REQUESTS.labels(result="fail").inc()
+    if remaining == 0:
+        background_tasks.add_task(
+            _block_user_in_auth_guard,
+            user_id=user_id,
+            session_id=state_key,
+            trace_id=trace_id,
+            trigger="ai_challenge_verify_exhausted_block",
+        )
     return AiChallengeVerifyResponse(success=False, remainingAttempts=remaining)
 
 
 @app.get("/meta/storage", tags=["state"], include_in_schema=False)
 async def storage_meta() -> dict[str, str]:
-    return {"runtime_state_backend": _state_backend}
+    return {
+        "runtime_state_backend": _state_backend,
+        "decision_state_backend": _decision_state_backend,
+    }
 
 
 @app.post("/runtime/vqa/mark", response_model=RuntimeVqaMarkResponse, tags=["state"], include_in_schema=False)
@@ -690,7 +764,7 @@ async def runtime_mark_vqa(req: RuntimeVqaMarkRequest) -> RuntimeVqaMarkResponse
         )
 
     _state_store.upsert(req.session_id, next_snap)
-    _sync_mark_to_d0_runtime(req=req, now_ms=now_ms)
+    _sync_mark_to_decision_engine(req=req, now_ms=now_ms)
     return RuntimeVqaMarkResponse(
         session_id=req.session_id,
         vqa_passed=next_snap.vqa_passed,
@@ -740,7 +814,7 @@ def _hydrate_match_state_from_sid_vqa_mark(
         }
     )
     _state_store.upsert(state_key, promoted)
-    _sync_mark_to_d0_runtime(
+    _sync_mark_to_decision_engine(
         req=RuntimeVqaMarkRequest(
             session_id=state_key,
             vqa_passed=True,
@@ -769,16 +843,99 @@ def _resolve_session_id(
     sid = (x_auth_sid or "").strip()
     if sid:
         return sid
-    token = (authorization or "").removeprefix("Bearer").strip()
-    if token:
-        try:
-            payload = jwt.decode(token, options={"verify_signature": False})
-            token_sid = str(payload.get("sid", "")).strip()
-            if token_sid:
-                return token_sid
-        except Exception:
-            pass
+    payload = _decode_bearer_payload(authorization)
+    if payload:
+        token_sid = _opt_str(payload.get("sid"))
+        if token_sid:
+            return token_sid
     raise HTTPException(status_code=401, detail="missing auth context")
+
+
+def _decode_bearer_payload(authorization: Optional[str]) -> Optional[dict[str, Any]]:
+    token = (authorization or "").removeprefix("Bearer").strip()
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, options={"verify_signature": False})
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _resolve_user_id(
+    *,
+    explicit_user_id: Optional[str],
+    x_user_id: Optional[str],
+    authorization: Optional[str],
+) -> Optional[str]:
+    resolved = _opt_str(explicit_user_id)
+    if resolved:
+        return resolved
+    resolved = _opt_str(x_user_id)
+    if resolved:
+        return resolved
+    payload = _decode_bearer_payload(authorization)
+    if payload is None:
+        return None
+    for key in ("sub", "userId", "user_id"):
+        resolved = _opt_str(payload.get(key))
+        if resolved:
+            return resolved
+    return None
+
+
+def _remember_runtime_user_id(
+    *,
+    session_id: str,
+    user_id: Optional[str],
+    now_ms: int,
+) -> None:
+    resolved_user_id = _opt_str(user_id)
+    if not resolved_user_id:
+        return
+    snap = _state_store.get(session_id) or RuntimeStateSnapshot(updated_ts_ms=now_ms)
+    if snap.user_id == resolved_user_id:
+        return
+    _state_store.upsert(
+        session_id,
+        snap.model_copy(update={"user_id": resolved_user_id, "updated_ts_ms": now_ms}),
+    )
+
+
+def _lookup_runtime_user_id(*, sid: str, state_key: str) -> Optional[str]:
+    for key in (state_key, sid):
+        snap = _state_store.get(key)
+        if snap is None:
+            continue
+        resolved = _opt_str(snap.user_id)
+        if resolved:
+            return resolved
+    return None
+
+
+def _resolve_trace_id(request: Request) -> str:
+    header_trace_id = _opt_str(request.headers.get("X-Trace-Id"))
+    if header_trace_id:
+        return header_trace_id
+    correlation_id = _opt_str(request.headers.get("X-Correlation-Id"))
+    if correlation_id:
+        return correlation_id
+    return f"trace-{uuid.uuid4().hex[:12]}"
+
+
+def _block_user_in_auth_guard(
+    *,
+    user_id: Optional[str],
+    session_id: str,
+    trace_id: str,
+    trigger: str,
+) -> None:
+    _auth_guard_blocker.block_user(
+        user_id=user_id or "",
+        session_id=session_id,
+        trace_id=trace_id,
+        trigger=trigger,
+    )
 
 
 async def _verify_turnstile_token(turnstile_token: str) -> bool:
@@ -1027,6 +1184,8 @@ def _target_action_from_legacy(action: str) -> str:
 def _build_legacy_request_from_target(
     *,
     state_key: str,
+    trace_id: str,
+    user_id: Optional[str],
     event_type: str,
     request_path: str,
     request_method: str,
@@ -1041,8 +1200,10 @@ def _build_legacy_request_from_target(
 
     return EvaluateRequest(
         session_id=state_key,
+        trace_id=trace_id,
         path=request_path,
         method=request_method.upper(),
+        user_id=user_id,
         timestamp=now_ms,
         headers={},
         flow_state=_target_event_to_flow_state(event_type),
@@ -1053,24 +1214,26 @@ def _build_legacy_request_from_target(
 def _execute_legacy_evaluate(req: EvaluateRequest) -> tuple[EvaluateResponse, RuntimeStateSnapshot]:
     started_at = time.perf_counter()
     now_ms = int(time.time() * 1000)
+    existing_snapshot = _state_store.get(req.session_id)
 
-    d0_check_req = _legacy_request_to_d0_check(req)
-    d0_eval_req = _d0_runtime.check_request_to_evaluate(d0_check_req)
+    decision_check_request = _legacy_request_to_d0_check(req)
+    decision_eval_request = _decision_engine.check_request_to_evaluate(decision_check_request)
     telemetry_features = _legacy_features_to_d0(req)
     if telemetry_features:
-        d0_eval_req.context.features = telemetry_features
+        decision_eval_request.context.features = telemetry_features
     try:
-        out = _d0_runtime.evaluate(d0_eval_req)
+        out = _decision_engine.evaluate(decision_eval_request)
     except Exception as exc:  # noqa: BLE001 - fail-open policy
-        out = _d0_runtime.fail_open_on_unavailable(request=d0_eval_req, error=exc)
+        out = _decision_engine.fail_open_on_unavailable(request=decision_eval_request, error=exc)
 
     resp = _legacy_response_from_d0(req=req, started_at=started_at, out=out)
     snap = _legacy_snapshot_from_d0_state(
         session_id=req.session_id,
-        d0_state=_d0_runtime.session_state.get(req.session_id),
+        d0_state=_decision_engine.session_state.get(req.session_id),
         policy_version=out.policy.policy_version,
         challenge_max_attempts=out.policy.challenge_max_attempts,
         now_ms=now_ms,
+        user_id=req.user_id or (existing_snapshot.user_id if existing_snapshot is not None else None),
     )
     _state_store.upsert(req.session_id, snap)
     _audit.log(req, resp, snap)
@@ -1082,6 +1245,7 @@ def _legacy_request_to_d0_check(req: EvaluateRequest) -> D0CheckRequest:
     return D0CheckRequest(
         session_id=req.session_id,
         trace_id=trace_id,
+        user_id=req.user_id,
         upstream_path=req.path,
         upstream_method=req.method.upper(),
         flow_state=_to_d0_flow_state(req.flow_state),
@@ -1139,11 +1303,16 @@ def _legacy_snapshot_from_d0_state(
     policy_version: str,
     challenge_max_attempts: int,
     now_ms: int,
+    user_id: Optional[str],
 ) -> RuntimeStateSnapshot:
     if d0_state is None:
-        return RuntimeStateSnapshot(updated_ts_ms=now_ms, policy_version=policy_version)
+        return RuntimeStateSnapshot(
+            updated_ts_ms=now_ms,
+            policy_version=policy_version,
+            user_id=user_id,
+        )
 
-    grace = _d0_runtime.session_state.get_s3_grace(session_id) or {}
+    grace = _decision_engine.session_state.get_s3_grace(session_id) or {}
     last_result: Optional[str] = None
     if bool(getattr(d0_state, "s3_passed", False)):
         last_result = "PASSED"
@@ -1162,6 +1331,7 @@ def _legacy_snapshot_from_d0_state(
         probation_until_ms=d0_state.probation_until_ms,
         policy_version=policy_version,
         updated_ts_ms=now_ms,
+        user_id=user_id,
         vqa_required=not bool(d0_state.s3_passed),
         vqa_passed=bool(d0_state.s3_passed),
         vqa_attempt_count=int(d0_state.challenge_fail_count),
@@ -1317,12 +1487,12 @@ def _to_float(value: Any) -> Optional[float]:
         return None
 
 
-def _sync_mark_to_d0_runtime(*, req: RuntimeVqaMarkRequest, now_ms: int) -> None:
+def _sync_mark_to_decision_engine(*, req: RuntimeVqaMarkRequest, now_ms: int) -> None:
     session_id = req.session_id
-    existing = _d0_runtime.session_state.get_or_create(session_id)
+    existing = _decision_engine.session_state.get_or_create(session_id)
     flow_state = _to_d0_flow_state(req.flow_state) if req.flow_state else existing.flow_state
     if req.vqa_passed:
-        _d0_runtime.session_state.update_by_role(
+        _decision_engine.session_state.update_by_role(
             "orchestrator",
             session_id,
             {
@@ -1333,7 +1503,7 @@ def _sync_mark_to_d0_runtime(*, req: RuntimeVqaMarkRequest, now_ms: int) -> None
             },
             is_allow=True,
         )
-        _d0_runtime.session_state.update_by_role(
+        _decision_engine.session_state.update_by_role(
             "analyzer",
             session_id,
             {
@@ -1343,7 +1513,7 @@ def _sync_mark_to_d0_runtime(*, req: RuntimeVqaMarkRequest, now_ms: int) -> None
         )
         return
 
-    _d0_runtime.session_state.update_by_role(
+    _decision_engine.session_state.update_by_role(
         "orchestrator",
         session_id,
         {

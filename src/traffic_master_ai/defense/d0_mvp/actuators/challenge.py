@@ -19,6 +19,7 @@ from ..core.constants import CHALLENGE_VERIFY_UNAVAILABLE_HTTP_STATUS
 from ..core.models import SessionState
 from ..events.catalog import S3_FAIL, S3_PASS, S3_UNKNOWN
 from ..policy.snapshot import PolicySnapshot
+from ..state.keyspace import CHALLENGE_ATTEMPT_KEY_PREFIX, CHALLENGE_KEY_PREFIX
 from ..state.redis_client import RedisLike
 from ..state.session_state import SessionStateManager
 
@@ -53,8 +54,8 @@ class ChallengeVerifyResult:
 class ChallengeActuator:
     """Fixed S3 challenge issue/verify handler."""
 
-    _CHAL_PREFIX = "tm:chal:"
-    _ATTEMPT_PREFIX = "tm:chal:attempt:"
+    _CHAL_PREFIX = CHALLENGE_KEY_PREFIX
+    _ATTEMPT_PREFIX = CHALLENGE_ATTEMPT_KEY_PREFIX
 
     def __init__(
         self,

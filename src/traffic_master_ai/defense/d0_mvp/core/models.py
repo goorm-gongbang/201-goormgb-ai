@@ -88,6 +88,7 @@ class EvaluateRequest:
     trace_id: str
     event: EvaluateRequestEvent
     context: EvaluateRequestContext
+    user_id: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +111,7 @@ class CheckRequest:
     turnstile_token: Optional[str] = None
     category: Optional[str] = None
     status_code: Optional[int] = None
+    user_id: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +163,7 @@ class OkResponse:
 # ---------------------------------------------------------------------------
 @dataclass(slots=True)
 class SessionState:
-    """In-memory representation of tm:sess:{sessionId} Redis state.
+    """In-memory representation of tm:decision-state:session:{sessionId} Redis state.
 
     Ref: L1/runtime/state.yaml#schema.session_fields
     """

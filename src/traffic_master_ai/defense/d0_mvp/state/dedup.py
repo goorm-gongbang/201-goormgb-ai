@@ -10,9 +10,8 @@ import math
 from typing import Optional
 
 from ..core.constants import DEDUP_TS_BUCKET_MS, DEDUP_TTL_SECONDS
+from .keyspace import DEDUP_KEY_PREFIX
 from .redis_client import RedisLike
-
-_DEDUP_KEY_PREFIX = "tm:dedup:"
 
 
 class DedupChecker:
@@ -29,7 +28,7 @@ class DedupChecker:
         redis: RedisLike,
         ts_bucket_ms: int = DEDUP_TS_BUCKET_MS,
         ttl_s: int = DEDUP_TTL_SECONDS,
-        key_prefix: str = _DEDUP_KEY_PREFIX,
+        key_prefix: str = DEDUP_KEY_PREFIX,
     ) -> None:
         self._redis = redis
         self._ts_bucket_ms = ts_bucket_ms
