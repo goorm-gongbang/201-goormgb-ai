@@ -88,6 +88,7 @@ class EvaluateRequest:
     trace_id: str
     event: EvaluateRequestEvent
     context: EvaluateRequestContext
+    user_id: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +111,7 @@ class CheckRequest:
     turnstile_token: Optional[str] = None
     category: Optional[str] = None
     status_code: Optional[int] = None
+    user_id: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
+from ...auth_guard import AuthGuardBlockService, UserBlocker
 from ..actuators.block import BlockActuator
 from ..actuators.challenge import ChallengeActuator
 from ..actuators.throttle import ThrottleActuator
@@ -132,6 +133,7 @@ class DefenseRuntime:
         policy_loader: Optional[PolicyLoader] = None,
         audit_logger: Optional[AuditLogger] = None,
         audit_warehouse: Optional[AuditWarehouse] = None,
+        user_blocker: Optional[UserBlocker] = None,
     ) -> None:
         self.redis = redis or InMemoryRedis()
         self.policy_store = (
@@ -153,6 +155,7 @@ class DefenseRuntime:
         self._dashboard: Optional[AdminDashboardService] = None
         self._audit_summarizer: Optional[AuditSummarizer] = None
         self._offline_optimizer: Optional[OfflineOptimizer] = None
+        self._user_blocker = user_blocker or AuthGuardBlockService.from_env()
 
         self.session_state = SessionStateManager(self.redis)
         self.block_state = BlockStateManager(self.redis)
@@ -541,6 +544,10 @@ class DefenseRuntime:
                     "reasonInternal": orchestrator_result.decision.reason,
                 },
             )
+            self._sync_block_to_auth_guard(
+                request=request,
+                trigger="d0_runtime_enforced_block",
+            )
 
         return EvaluatePipelineResult(
             orchestrator_result=orchestrator_result,
@@ -643,6 +650,10 @@ class DefenseRuntime:
                 "ttlSeconds": orchestrator_result.decision.block_ttl_seconds,
                 "reasonInternal": orchestrator_result.decision.reason,
             },
+        )
+        self._sync_block_to_auth_guard(
+            request=request,
+            trigger="d0_runtime_persisted_block",
         )
         return EvaluatePipelineResult(
             orchestrator_result=orchestrator_result,
@@ -866,6 +877,7 @@ class DefenseRuntime:
         challenge_id: str,
         client_answer: Mapping[str, Any],
         request_meta: Optional[Mapping[str, Any]] = None,
+        request_user_id: Optional[str] = None,
     ):
         """Verify one S3 challenge and emit result/halt audit events."""
         _validate_challenge_client_answer(client_answer)
@@ -900,6 +912,7 @@ class DefenseRuntime:
         request = EvaluateRequest(
             session_id=session_id,
             trace_id=trace_id,
+            user_id=request_user_id,
             event=EvaluateRequestEvent(
                 event_type="S3_RESULT",
                 ts_ms=ts_ms,
@@ -1193,8 +1206,22 @@ class DefenseRuntime:
         return EvaluateRequest(
             session_id=request.session_id,
             trace_id=request.trace_id,
+            user_id=request.user_id,
             event=event,
             context=context,
+        )
+
+    def _sync_block_to_auth_guard(
+        self,
+        *,
+        request: EvaluateRequest,
+        trigger: str,
+    ) -> None:
+        self._user_blocker.block_user(
+            user_id=request.user_id or "",
+            session_id=request.session_id,
+            trace_id=request.trace_id,
+            trigger=trigger,
         )
 
 
@@ -1251,9 +1278,15 @@ def build_evaluate_request(
             field_name="context.meta",
         ),
     )
+    user_id = _resolve_optional_user_id(
+        context_raw.get("userId"),
+        context_raw.get("user_id"),
+        context.meta,
+    )
     return EvaluateRequest(
         session_id=session_id,
         trace_id=trace_id,
+        user_id=user_id,
         event=event,
         context=context,
     )
@@ -1300,6 +1333,11 @@ def build_check_request(
     return CheckRequest(
         session_id=session_id,
         trace_id=trace_id,
+        user_id=_resolve_optional_user_id(
+            body.get("userId"),
+            body.get("user_id"),
+            None,
+        ),
         upstream_path=upstream_path,
         upstream_method=upstream_method,
         flow_state=flow_state,
@@ -1356,6 +1394,25 @@ def _extract_turnstile_token(request: EvaluateRequest) -> Optional[str]:
         if token and isinstance(token, str):
             return token
     return None
+
+
+def _resolve_optional_user_id(
+    primary: Any,
+    secondary: Any,
+    meta: Optional[Mapping[str, Any]],
+) -> Optional[str]:
+    resolved = _optional_str(primary, field_name="userId")
+    if resolved is not None:
+        return resolved
+    resolved = _optional_str(secondary, field_name="user_id")
+    if resolved is not None:
+        return resolved
+    if meta is None:
+        return None
+    resolved = _optional_str(meta.get("userId"), field_name="context.meta.userId")
+    if resolved is not None:
+        return resolved
+    return _optional_str(meta.get("user_id"), field_name="context.meta.user_id")
 
 
 def _resolve_turnstile_trigger(
