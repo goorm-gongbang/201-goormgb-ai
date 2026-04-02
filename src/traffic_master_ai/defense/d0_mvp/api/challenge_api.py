@@ -94,6 +94,7 @@ def create_challenge_router(runtime: Optional[DefenseRuntime] = None) -> APIRout
         body: Mapping[str, Any] = Body(default={}),
         x_session_id: Optional[str] = Header(default=None, alias="X-Session-Id"),
         x_trace_id: Optional[str] = Header(default=None, alias="X-Trace-Id"),
+        x_user_id: Optional[str] = Header(default=None, alias="X-User-Id"),
         x_correlation_id: Optional[str] = Header(default=None, alias="X-Correlation-Id"),
         x_tm_test_mode: Optional[str] = Header(default=None, alias="X-TM-TestMode"),
         response: Response = None,
@@ -135,6 +136,7 @@ def create_challenge_router(runtime: Optional[DefenseRuntime] = None) -> APIRout
                 challenge_id=challenge_id,
                 client_answer=client_answer,
                 request_meta=request_meta or None,
+                request_user_id=x_user_id.strip() if x_user_id else None,
             )
         except RuntimeAPIError as exc:
             raise_contract_http_error(

@@ -121,6 +121,7 @@ class RuntimeStateSnapshot(BaseModel):
     probation_until_ms: int | None = None
     policy_version: str = "def-pol-2.0.0"
     updated_ts_ms: int = 0
+    user_id: str | None = Field(default=None, alias="userId")
     vqa_required: bool = True
     vqa_passed: bool = False
     vqa_attempt_count: int = 0
@@ -139,7 +140,7 @@ class RuntimeStateSnapshot(BaseModel):
     latest_vqa_challenge_at_ms: int = 0
     vqa_behavior_score: float = 0.0
 
-    model_config = {"extra": "forbid"}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 class ChallengeStartRequest(BaseModel):
@@ -317,8 +318,9 @@ class AiEvaluateContext(BaseModel):
     """Authz Adapter -> AI context envelope."""
 
     sid: str = Field(min_length=1)
+    user_id: str | None = Field(default=None, alias="userId", min_length=1)
 
-    model_config = {"extra": "forbid"}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 class AiEvaluateRequest(BaseModel):
