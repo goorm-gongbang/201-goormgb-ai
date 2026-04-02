@@ -152,6 +152,8 @@ _S3_UPLOADER = S3Uploader(bucket=_S3_BUCKET, prefix=_S3_PREFIX, region=_S3_REGIO
 _DEFAULT_CORS_ALLOW_ORIGINS = (
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "https://staging.playball.one",
+    "https://playball.one",
 )
 
 
