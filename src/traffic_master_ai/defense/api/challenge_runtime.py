@@ -225,13 +225,12 @@ class ChallengeRuntime:
         checks = self._validate_physical_consistency(artifact.events)
         checks.extend(self._validate_catch_ball(artifact, req))
 
-        artifact.attempts_used += 1
-        attempts_left = max(artifact.attempt_limit - artifact.attempts_used, 0)
         passed = len(checks) == 0
 
         if passed:
             artifact.final_result = "PASSED"
             artifact.final_reason = None
+            attempts_left = max(artifact.attempt_limit - artifact.attempts_used, 0)
             next_state = runtime_state.model_copy(
                 update={
                     "flow_state": (
@@ -262,6 +261,8 @@ class ChallengeRuntime:
                 next_state,
             )
 
+        artifact.attempts_used += 1
+        attempts_left = max(artifact.attempt_limit - artifact.attempts_used, 0)
         blocked = artifact.attempts_used >= artifact.attempt_limit
         reason = checks[0]
 

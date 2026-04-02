@@ -502,6 +502,21 @@ async def ai_evaluate(
         snap=snap,
         now_ms=now_ms,
     )
+    if snap.vqa_passed and req.event.event_type in {
+        "SEAT_ENTRY",
+        "RECOMMENDATION_BLOCKS",
+        "SECTION_BLOCKS",
+        "ASSIGN_HOLD",
+        "SEAT_HOLDS",
+    }:
+        _sync_mark_to_decision_engine(
+            req=RuntimeVqaMarkRequest(
+                session_id=state_key,
+                vqa_passed=True,
+                flow_state=snap.flow_state,
+            ),
+            now_ms=now_ms,
+        )
 
     if req.event.event_type == "QUEUE_ENTER" and not _precheck_is_valid(snap, now_ms):
         EVALUATE_REQUESTS.labels(decision="BLOCK").inc()
@@ -550,10 +565,13 @@ async def ai_challenge_start(
     authorization: str | None = Header(default=None, alias="Authorization"),
     x_user_id: str | None = Header(default=None, alias="X-User-Id"),
 ) -> AiChallengeStartResponse:
-    sid = _resolve_session_id(
+    session_id_candidates = _resolve_session_id_candidates(
         request.headers.get("X-Auth-Sid") or request.headers.get("X-Session-Id"),
         authorization,
     )
+    if not session_id_candidates:
+        raise HTTPException(status_code=401, detail="missing auth context")
+    sid = session_id_candidates[0]
     state_key = _build_state_key(sid, req.match_id)
     now_ms = int(time.time() * 1000)
     user_id = _resolve_user_id(
@@ -568,19 +586,20 @@ async def ai_challenge_start(
         challenge_type="catch_ball",
     )
     resp = await _start_challenge_internal(start_req)
-    snap = _get_or_create_snapshot(state_key, now_ms)
-    _state_store.upsert(
-        state_key,
-        snap.model_copy(
-            update={
-                "active_challenge_id": resp.challenge_id,
-                "active_challenge_token": resp.challenge_token,
-                "active_challenge_expires_at_ms": resp.expires_at_ms,
-                "updated_ts_ms": resp.issued_at_ms,
-                "user_id": user_id or snap.user_id,
-            }
-        ),
+    challenge_update = {
+        "active_challenge_id": resp.challenge_id,
+        "active_challenge_token": resp.challenge_token,
+        "active_challenge_expires_at_ms": resp.expires_at_ms,
+        "updated_ts_ms": resp.issued_at_ms,
+    }
+    _upsert_match_state_aliases(
+        session_ids=session_id_candidates,
+        match_id=req.match_id,
+        now_ms=now_ms,
+        update=challenge_update,
+        user_id=user_id,
     )
+    snap = _get_or_create_snapshot(state_key, now_ms)
     CHALLENGE_START_REQUESTS.inc()
     return AiChallengeStartResponse(
         challengeId=resp.challenge_id,
@@ -597,10 +616,13 @@ async def ai_challenge_verify(
     authorization: str | None = Header(default=None, alias="Authorization"),
     x_user_id: str | None = Header(default=None, alias="X-User-Id"),
 ) -> AiChallengeVerifyResponse:
-    sid = _resolve_session_id(
+    session_id_candidates = _resolve_session_id_candidates(
         request.headers.get("X-Auth-Sid") or request.headers.get("X-Session-Id"),
         authorization,
     )
+    if not session_id_candidates:
+        raise HTTPException(status_code=401, detail="missing auth context")
+    sid = session_id_candidates[0]
     state_key = _build_state_key(sid, req.match_id)
     now_ms = int(time.time() * 1000)
     trace_id = _resolve_trace_id(request)
@@ -630,26 +652,34 @@ async def ai_challenge_verify(
         plausible = bool(feature_summary.get("mousePointCount", 0.0) >= 2.0)
     passed = req.caught and in_bounds and timely and plausible
 
-    next_attempts = snap.vqa_attempt_count + 1
-    remaining = max(snap.vqa_retry_limit - next_attempts, 0)
     if passed:
+        remaining = max(snap.vqa_retry_limit - snap.vqa_attempt_count, 0)
         next_flow = "S4" if snap.flow_state == "S3" else snap.flow_state
-        next_snap = snap.model_copy(
-            update={
-                "flow_state": next_flow,
-                "vqa_required": False,
-                "vqa_passed": True,
-                "vqa_last_result": "PASSED",
-                "vqa_attempt_count": next_attempts,
-                "vqa_behavior_score": float(feature_summary.get("linearityRatio", 0.0)),
-                "active_challenge_id": None,
-                "active_challenge_token": "",
-                "active_challenge_expires_at_ms": None,
-                "updated_ts_ms": now_ms,
-                "user_id": user_id or snap.user_id,
-            }
+        pass_update = {
+            "flow_state": next_flow,
+            "vqa_required": False,
+            "vqa_passed": True,
+            "vqa_last_result": "PASSED",
+            "vqa_attempt_count": snap.vqa_attempt_count,
+            "vqa_behavior_score": float(feature_summary.get("linearityRatio", 0.0)),
+            "active_challenge_id": None,
+            "active_challenge_token": "",
+            "active_challenge_expires_at_ms": None,
+            "updated_ts_ms": now_ms,
+        }
+        _upsert_match_state_aliases(
+            session_ids=session_id_candidates,
+            match_id=req.match_id,
+            now_ms=now_ms,
+            update=pass_update,
+            user_id=user_id or snap.user_id,
         )
-        _state_store.upsert(state_key, next_snap)
+        _upsert_sid_level_vqa_pass_aliases(
+            session_ids=session_id_candidates,
+            now_ms=now_ms,
+            flow_state=next_flow,
+            user_id=user_id or snap.user_id,
+        )
         _sync_mark_to_decision_engine(
             req=RuntimeVqaMarkRequest(
                 session_id=state_key,
@@ -675,6 +705,8 @@ async def ai_challenge_verify(
         CHALLENGE_VERIFY_REQUESTS.labels(result="pass").inc()
         return AiChallengeVerifyResponse(success=True, remainingAttempts=remaining)
 
+    next_attempts = snap.vqa_attempt_count + 1
+    remaining = max(snap.vqa_retry_limit - next_attempts, 0)
     next_snap = snap.model_copy(
         update={
             "vqa_required": True,
@@ -829,6 +861,66 @@ def _build_state_key(sid: str, match_id: int) -> str:
     return f"{sid}:{match_id}"
 
 
+def _resolve_session_id_candidates(
+    x_auth_sid: Optional[str],
+    authorization: Optional[str],
+) -> list[str]:
+    candidates: list[str] = []
+    header_sid = _opt_str(x_auth_sid)
+    if header_sid:
+        candidates.append(header_sid)
+
+    payload = _decode_bearer_payload(authorization)
+    if payload:
+        token_sid = _opt_str(payload.get("sid"))
+        if token_sid and token_sid not in candidates:
+            candidates.append(token_sid)
+
+    return candidates
+
+
+def _upsert_match_state_aliases(
+    *,
+    session_ids: list[str],
+    match_id: int,
+    now_ms: int,
+    update: dict[str, Any],
+    user_id: Optional[str],
+) -> None:
+    for session_id in session_ids:
+        state_key = _build_state_key(session_id, match_id)
+        snap = _get_or_create_snapshot(state_key, now_ms)
+        next_update = dict(update)
+        next_update["user_id"] = user_id or snap.user_id
+        _state_store.upsert(state_key, snap.model_copy(update=next_update))
+
+
+def _upsert_sid_level_vqa_pass_aliases(
+    *,
+    session_ids: list[str],
+    now_ms: int,
+    flow_state: str,
+    user_id: Optional[str],
+) -> None:
+    for session_id in session_ids:
+        snap = _state_store.get(session_id) or RuntimeStateSnapshot(updated_ts_ms=now_ms)
+        _state_store.upsert(
+            session_id,
+            snap.model_copy(
+                update={
+                    "flow_state": flow_state,
+                    "vqa_required": False,
+                    "vqa_passed": True,
+                    "vqa_last_result": "PASSED",
+                    "active_challenge_id": None,
+                    "active_challenge_expires_at_ms": None,
+                    "updated_ts_ms": now_ms,
+                    "user_id": user_id or snap.user_id,
+                }
+            ),
+        )
+
+
 def _extract_match_id_from_request_path(request_path: str) -> int:
     match = _MATCH_ID_PATH_RE.search(request_path)
     if match is None:
@@ -840,14 +932,9 @@ def _resolve_session_id(
     x_auth_sid: Optional[str],
     authorization: Optional[str],
 ) -> str:
-    sid = (x_auth_sid or "").strip()
-    if sid:
-        return sid
-    payload = _decode_bearer_payload(authorization)
-    if payload:
-        token_sid = _opt_str(payload.get("sid"))
-        if token_sid:
-            return token_sid
+    candidates = _resolve_session_id_candidates(x_auth_sid, authorization)
+    if candidates:
+        return candidates[0]
     raise HTTPException(status_code=401, detail="missing auth context")
 
 
