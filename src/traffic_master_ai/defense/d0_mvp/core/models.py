@@ -163,7 +163,7 @@ class OkResponse:
 # ---------------------------------------------------------------------------
 @dataclass(slots=True)
 class SessionState:
-    """In-memory representation of tm:sess:{sessionId} Redis state.
+    """In-memory representation of tm:decision-state:session:{sessionId} Redis state.
 
     Ref: L1/runtime/state.yaml#schema.session_fields
     """

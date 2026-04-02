@@ -28,6 +28,7 @@ from ..events.catalog import (
     VERIFY_TIMEOUT,
 )
 from ..state.dedup import DedupChecker
+from ..state.keyspace import TURNSTILE_CACHE_KEY_PREFIX, TURNSTILE_RUN_KEY_PREFIX
 from ..state.redis_client import RedisLike
 
 
@@ -71,8 +72,8 @@ class TurnstileVerdict:
 class TurnstileHandler:
     """Turnstile verifier with FAIL_OPEN + cache + dedup behavior."""
 
-    _CACHE_PREFIX = "tm:turnstile:verdict:"
-    _RUN_PREFIX = "tm:turnstile:run:"
+    _CACHE_PREFIX = TURNSTILE_CACHE_KEY_PREFIX
+    _RUN_PREFIX = TURNSTILE_RUN_KEY_PREFIX
 
     def __init__(
         self,

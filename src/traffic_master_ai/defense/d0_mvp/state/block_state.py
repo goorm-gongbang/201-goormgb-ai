@@ -1,4 +1,4 @@
-"""Block state manager — tm:block:{sessionId} CRUD.
+"""Block state manager — tm:block-state:session:{sessionId} CRUD.
 
 Ref: L1/runtime/state.yaml#redis.keyspace.block_key
      L1/runtime/state.yaml#schema.block_fields
@@ -10,13 +10,12 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from ..core.constants import BLOCK_TTL_SECONDS
+from .keyspace import BLOCK_KEY_PREFIX
 from .redis_client import RedisLike
-
-_BLOCK_KEY_PREFIX = "tm:block:"
 
 
 class BlockStateManager:
-    """Manages tm:block:{sessionId} Redis hash.
+    """Manages tm:block-state:session:{sessionId} Redis hash.
 
     terminal-first rule (state.yaml#atomicity_and_concurrency):
         If tm:block:{sessionId} exists, ALL subsequent decisions are BLOCK.
@@ -32,7 +31,7 @@ class BlockStateManager:
 
     @staticmethod
     def block_key(session_id: str) -> str:
-        return f"{_BLOCK_KEY_PREFIX}{session_id}"
+        return f"{BLOCK_KEY_PREFIX}{session_id}"
 
     def is_blocked(self, session_id: str) -> bool:
         """Check if session is currently blocked.

@@ -71,6 +71,7 @@ from ..policy.loader import (
     snapshot_to_document,
 )
 from ..policy.snapshot import PolicySnapshot
+from ..state.keyspace import DEDUP_KEY_PREFIX
 from ..state.block_state import BlockStateManager
 from ..state.dedup import DedupChecker
 from ..state.redis_client import InMemoryRedis, RedisLike
@@ -134,8 +135,10 @@ class DefenseRuntime:
         audit_logger: Optional[AuditLogger] = None,
         audit_warehouse: Optional[AuditWarehouse] = None,
         user_blocker: Optional[UserBlocker] = None,
+        close_redis_on_close: bool = False,
     ) -> None:
         self.redis = redis or InMemoryRedis()
+        self._close_redis_on_close = close_redis_on_close
         self.policy_store = (
             policy_loader.store
             if policy_loader is not None
@@ -160,9 +163,9 @@ class DefenseRuntime:
         self.session_state = SessionStateManager(self.redis)
         self.block_state = BlockStateManager(self.redis)
 
-        self.guard_dedup = DedupChecker(self.redis, key_prefix="tm:dedup:guard:")
-        self.analyzer_dedup = DedupChecker(self.redis, key_prefix="tm:dedup:analyzer:")
-        self.turnstile_dedup = DedupChecker(self.redis, key_prefix="tm:dedup:turnstile:")
+        self.guard_dedup = DedupChecker(self.redis, key_prefix=f"{DEDUP_KEY_PREFIX}guard:")
+        self.analyzer_dedup = DedupChecker(self.redis, key_prefix=f"{DEDUP_KEY_PREFIX}analyzer:")
+        self.turnstile_dedup = DedupChecker(self.redis, key_prefix=f"{DEDUP_KEY_PREFIX}turnstile:")
 
         self.guard = Guard(dedup=self.guard_dedup)
         self.turnstile = TurnstileHandler(
@@ -188,6 +191,10 @@ class DefenseRuntime:
         self.block = BlockActuator(self.block_state)
 
     def close(self) -> None:
+        if self._close_redis_on_close:
+            redis_close = getattr(self.redis, "close", None)
+            if callable(redis_close):
+                redis_close()
         close = getattr(self._user_blocker, "close", None)
         if callable(close):
             close()
@@ -205,9 +212,17 @@ class DefenseRuntime:
                 version,
                 doc if isinstance(doc, dict) else snapshot_to_document(default_snapshot),
             )
-            if self.policy_store.get_rollout_state() is None:
+            primary_rollout_state = (
+                self.policy_store.get_primary_rollout_state()
+                if isinstance(self.policy_store, RedisPolicyStore)
+                else self.policy_store.get_rollout_state()
+            )
+            if primary_rollout_state is None:
+                rollout_state = self.policy_store.get_rollout_state()
                 self.policy_store.set_rollout_state(
-                    {
+                    rollout_state
+                    if isinstance(rollout_state, dict)
+                    else {
                         "stage": "FULL",
                         "base_policy_version": version,
                         "candidate_policy_version": None,
