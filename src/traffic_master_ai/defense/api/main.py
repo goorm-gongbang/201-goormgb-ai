@@ -74,11 +74,34 @@ from .models import (
 )
 from .state import build_runtime_store_from_env
 
-# Custom Metrics
+# Custom Prometheus Metrics
 EVALUATE_REQUESTS = Counter(
     "ai_defense_evaluate_total",
-    "Total evaluate requests by path, method, and decision",
-    ["path", "method", "decision"],
+    "Total evaluate requests by decision",
+    ["decision"],
+)
+
+PRECHECK_REQUESTS = Counter(
+    "ai_defense_precheck_total",
+    "Total precheck requests by result",
+    ["result"],  # pass, fail
+)
+
+CHALLENGE_START_REQUESTS = Counter(
+    "ai_defense_challenge_start_total",
+    "Total challenge start requests",
+)
+
+CHALLENGE_VERIFY_REQUESTS = Counter(
+    "ai_defense_challenge_verify_total",
+    "Total challenge verify requests by result",
+    ["result"],  # pass, fail
+)
+
+TELEMETRY_INGEST_REQUESTS = Counter(
+    "ai_defense_telemetry_ingest_total",
+    "Total telemetry ingest requests by stage",
+    ["stage"],  # QUEUE_ENTER_PRECLICK, VQA_CHALLENGE, SEAT_STAGE
 )
 
 instrumentator = Instrumentator()
@@ -335,6 +358,7 @@ async def ai_precheck(
         }
     )
     _state_store.upsert(state_key, next_snap)
+    PRECHECK_REQUESTS.labels(result="pass" if passed else "fail").inc()
     return AiPrecheckResponse(allowed=passed)
 
 
@@ -429,6 +453,7 @@ async def ai_telemetry_ingest(
         update["latest_seat_stage_summary"] = summary
         update["latest_seat_stage_at_ms"] = now_ms
     _state_store.upsert(state_key, snap.model_copy(update=update))
+    TELEMETRY_INGEST_REQUESTS.labels(stage=req.stage).inc()
     return AiTelemetryIngestResponse(accepted=True)
 
 
