@@ -187,6 +187,11 @@ class DefenseRuntime:
         self.throttle = ThrottleActuator()
         self.block = BlockActuator(self.block_state)
 
+    def close(self) -> None:
+        close = getattr(self._user_blocker, "close", None)
+        if callable(close):
+            close()
+
     def _bootstrap_policy_authority(self) -> None:
         """Ensure Redis policy store has one active baseline policy doc.
 

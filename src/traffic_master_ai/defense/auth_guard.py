@@ -57,19 +57,46 @@ class UserBlocker(Protocol):
         session_id: str,
         trace_id: str,
         trigger: str,
-    ) -> BlockUserResult:
+        ) -> BlockUserResult:
         """Attempt to block one user in Auth-Guard."""
+
+
+class SyncHttpClient(Protocol):
+    """Minimal sync HTTP client interface for Auth-Guard calls."""
+
+    def post(
+        self,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        timeout: float,
+    ) -> httpx.Response:
+        """Send one POST request."""
+
+    def close(self) -> None:
+        """Release any underlying resources."""
 
 
 class AuthGuardBlockService:
     """Best-effort Auth-Guard block client with categorized logging."""
 
-    def __init__(self, config: Optional[AuthGuardConfig] = None) -> None:
+    def __init__(
+        self,
+        config: Optional[AuthGuardConfig] = None,
+        http_client: Optional[SyncHttpClient] = None,
+    ) -> None:
         self._config = config
+        self._http_client = http_client or httpx.Client()
+        self._owns_http_client = http_client is None
 
     @classmethod
     def from_env(cls) -> "AuthGuardBlockService":
         return cls(config=AuthGuardConfig.from_env())
+
+    def close(self) -> None:
+        if not self._owns_http_client:
+            return
+        self._http_client.close()
 
     def block_user(
         self,
@@ -106,7 +133,7 @@ class AuthGuardBlockService:
         headers = {_INTERNAL_API_KEY_HEADER: self._config.internal_api_key}
 
         try:
-            response = httpx.post(
+            response = self._http_client.post(
                 url,
                 headers=headers,
                 timeout=self._config.timeout_seconds,

@@ -6,16 +6,27 @@ import pytest
 from traffic_master_ai.defense.auth_guard import AuthGuardBlockService, AuthGuardConfig
 
 
-def test_auth_guard_block_service_posts_expected_request(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, object] = {}
+class _FakeHttpClient:
+    def __init__(self, response: httpx.Response) -> None:
+        self.response = response
+        self.calls: list[dict[str, object]] = []
 
-    def _fake_post(url: str, *, headers: dict[str, str], timeout: float) -> httpx.Response:
-        captured["url"] = url
-        captured["headers"] = headers
-        captured["timeout"] = timeout
-        return httpx.Response(
+    def post(self, url: str, *, headers: dict[str, str], timeout: float) -> httpx.Response:
+        self.calls.append({
+            "url": url,
+            "headers": headers,
+            "timeout": timeout,
+        })
+        return self.response
+
+    def close(self) -> None:
+        return None
+
+
+def test_auth_guard_block_service_posts_expected_request(
+) -> None:
+    fake_client = _FakeHttpClient(
+        httpx.Response(
             200,
             json={
                 "code": "OK",
@@ -23,14 +34,14 @@ def test_auth_guard_block_service_posts_expected_request(
                 "data": {"userId": 42, "status": "BLOCKED"},
             },
         )
-
-    monkeypatch.setattr("traffic_master_ai.defense.auth_guard.httpx.post", _fake_post)
+    )
     service = AuthGuardBlockService(
         AuthGuardConfig(
             base_url="http://auth-guard:8080/auth",
             internal_api_key="test-key",
             timeout_seconds=1.25,
-        )
+        ),
+        http_client=fake_client,
     )
 
     result = service.block_user(
@@ -41,9 +52,11 @@ def test_auth_guard_block_service_posts_expected_request(
     )
 
     assert result.outcome == "blocked"
-    assert captured["url"] == "http://auth-guard:8080/auth/internal/users/42/block"
-    assert captured["headers"] == {"X-Internal-Api-Key": "test-key"}
-    assert captured["timeout"] == 1.25
+    assert fake_client.calls == [{
+        "url": "http://auth-guard:8080/auth/internal/users/42/block",
+        "headers": {"X-Internal-Api-Key": "test-key"},
+        "timeout": 1.25,
+    }]
 
 
 @pytest.mark.parametrize(
@@ -55,26 +68,24 @@ def test_auth_guard_block_service_posts_expected_request(
     ],
 )
 def test_auth_guard_block_service_categorizes_non_200_responses(
-    monkeypatch: pytest.MonkeyPatch,
     status_code: int,
     expected_outcome: str,
 ) -> None:
-    def _fake_post(url: str, *, headers: dict[str, str], timeout: float) -> httpx.Response:
-        del url, headers, timeout
-        return httpx.Response(
+    fake_client = _FakeHttpClient(
+        httpx.Response(
             status_code,
             json={
                 "code": "ANY",
                 "message": "response",
             },
         )
-
-    monkeypatch.setattr("traffic_master_ai.defense.auth_guard.httpx.post", _fake_post)
+    )
     service = AuthGuardBlockService(
         AuthGuardConfig(
             base_url="http://auth-guard:8080/auth",
             internal_api_key="test-key",
-        )
+        ),
+        http_client=fake_client,
     )
 
     result = service.block_user(

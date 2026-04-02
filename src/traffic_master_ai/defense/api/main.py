@@ -19,7 +19,8 @@ from typing import Any, Optional
 
 import httpx
 import jwt
-from fastapi import Body, FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, Body, FastAPI, Header, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -179,7 +180,7 @@ async def _s3_archive_loop():
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_app: FastAPI):
     """FastAPI lifespan: Startup/Shutdown hooks."""
     archive_task = asyncio.create_task(_s3_archive_loop())
     yield
@@ -188,6 +189,12 @@ async def lifespan(app: FastAPI):
         await archive_task
     except asyncio.CancelledError:
         pass
+    auth_guard_close = getattr(_auth_guard_blocker, "close", None)
+    if callable(auth_guard_close):
+        auth_guard_close()
+    d0_runtime_close = getattr(_d0_runtime, "close", None)
+    if callable(d0_runtime_close):
+        d0_runtime_close()
 
 
 app = FastAPI(
@@ -438,6 +445,7 @@ async def ai_telemetry_ingest(
 async def ai_evaluate(
     request: Request,
     req: AiEvaluateRequest,
+    background_tasks: BackgroundTasks,
     authorization: str | None = Header(default=None, alias="Authorization"),
     x_user_id: str | None = Header(default=None, alias="X-User-Id"),
 ) -> AiEvaluateResponse:
@@ -464,7 +472,8 @@ async def ai_evaluate(
     )
 
     if req.event.event_type == "QUEUE_ENTER" and not _precheck_is_valid(snap, now_ms):
-        _block_user_in_auth_guard(
+        background_tasks.add_task(
+            _block_user_in_auth_guard,
             user_id=user_id,
             session_id=state_key,
             trace_id=trace_id,
@@ -489,7 +498,7 @@ async def ai_evaluate(
         now_ms=now_ms,
         snap=snap,
     )
-    legacy_resp, _ = _execute_legacy_evaluate(legacy_req)
+    legacy_resp, _ = await run_in_threadpool(_execute_legacy_evaluate, legacy_req)
     action = _target_action_from_legacy(legacy_resp.action)
     return AiEvaluateResponse(decision={"action": action})
 
@@ -543,6 +552,7 @@ async def ai_challenge_start(
 async def ai_challenge_verify(
     request: Request,
     req: AiChallengeVerifyRequest,
+    background_tasks: BackgroundTasks,
     authorization: str | None = Header(default=None, alias="Authorization"),
     x_user_id: str | None = Header(default=None, alias="X-User-Id"),
 ) -> AiChallengeVerifyResponse:
@@ -661,7 +671,8 @@ async def ai_challenge_verify(
         },
     )
     if remaining == 0:
-        _block_user_in_auth_guard(
+        background_tasks.add_task(
+            _block_user_in_auth_guard,
             user_id=user_id,
             session_id=state_key,
             trace_id=trace_id,
