@@ -15,6 +15,10 @@ def _headers(session_id: str) -> dict[str, str]:
     return {"X-Session-Id": session_id}
 
 
+def _headers_with_user(session_id: str, user_id: str) -> dict[str, str]:
+    return {"X-Session-Id": session_id, "X-User-Id": user_id}
+
+
 def _session_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
 
@@ -176,3 +180,43 @@ def test_ai_challenge_verify_rejects_mismatched_challenge_id() -> None:
     assert runtime.status_code == 200
     runtime_body = runtime.json()
     assert runtime_body["vqa_attempt_count"] == 0
+
+
+def test_ai_challenge_verify_block_invokes_auth_guard_with_stored_user_id(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    def _stub_block_user_in_auth_guard(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(
+        "traffic_master_ai.defense.api.main._block_user_in_auth_guard",
+        _stub_block_user_in_auth_guard,
+    )
+
+    session_id = _session_id("sess-ai-verify-auth-guard")
+    start = client.post(
+        "/ai/challenge/start",
+        json={"matchId": MATCH_ID},
+        headers=_headers_with_user(session_id, "42"),
+    )
+    assert start.status_code == 200
+    challenge_id = start.json()["challengeId"]
+
+    for attempt in range(1, 4):
+        verify = client.post(
+            "/ai/challenge/verify",
+            json={
+                "matchId": MATCH_ID,
+                "challengeId": challenge_id,
+                "caught": False,
+                "catchTsMs": attempt,
+                "catchXNorm": 0.5,
+                "catchYNorm": 0.5,
+            },
+            headers=_headers(session_id),
+        )
+        assert verify.status_code == 200
+
+    assert captured["user_id"] == "42"
+    assert captured["session_id"] == _state_key(session_id)
+    assert captured["trigger"] == "ai_challenge_verify_exhausted_block"
