@@ -77,11 +77,34 @@ from .models import (
 )
 from .state import build_runtime_store_from_env
 
-# Custom Metrics
+# Custom Prometheus Metrics
 EVALUATE_REQUESTS = Counter(
     "ai_defense_evaluate_total",
-    "Total evaluate requests by path, method, and decision",
-    ["path", "method", "decision"],
+    "Total evaluate requests by decision",
+    ["decision"],
+)
+
+PRECHECK_REQUESTS = Counter(
+    "ai_defense_precheck_total",
+    "Total precheck requests by result",
+    ["result"],  # pass, fail
+)
+
+CHALLENGE_START_REQUESTS = Counter(
+    "ai_defense_challenge_start_total",
+    "Total challenge start requests",
+)
+
+CHALLENGE_VERIFY_REQUESTS = Counter(
+    "ai_defense_challenge_verify_total",
+    "Total challenge verify requests by result",
+    ["result"],  # pass, fail
+)
+
+TELEMETRY_INGEST_REQUESTS = Counter(
+    "ai_defense_telemetry_ingest_total",
+    "Total telemetry ingest requests by stage",
+    ["stage"],  # QUEUE_ENTER_PRECLICK, VQA_CHALLENGE, SEAT_STAGE
 )
 
 instrumentator = Instrumentator()
@@ -341,6 +364,7 @@ async def ai_precheck(
         }
     )
     _state_store.upsert(state_key, next_snap)
+    PRECHECK_REQUESTS.labels(result="pass" if passed else "fail").inc()
     return AiPrecheckResponse(allowed=passed)
 
 
@@ -445,6 +469,7 @@ async def ai_telemetry_ingest(
         update["latest_seat_stage_summary"] = summary
         update["latest_seat_stage_at_ms"] = now_ms
     _state_store.upsert(state_key, snap.model_copy(update=update))
+    TELEMETRY_INGEST_REQUESTS.labels(stage=req.stage).inc()
     return AiTelemetryIngestResponse(accepted=True)
 
 
@@ -479,6 +504,7 @@ async def ai_evaluate(
     )
 
     if req.event.event_type == "QUEUE_ENTER" and not _precheck_is_valid(snap, now_ms):
+        EVALUATE_REQUESTS.labels(decision="BLOCK").inc()
         background_tasks.add_task(
             _block_user_in_auth_guard,
             user_id=user_id,
@@ -488,11 +514,14 @@ async def ai_evaluate(
         )
         return AiEvaluateResponse(decision={"action": "BLOCK"})
 
+
     if req.event.event_type == "SEAT_ENTRY" and not snap.vqa_passed:
+        EVALUATE_REQUESTS.labels(decision="REQUIRE_S3").inc()
         return AiEvaluateResponse(decision={"action": "REQUIRE_S3"})
 
     soft_action = _feature_soft_action(event_type=req.event.event_type, snap=snap)
     if soft_action is not None:
+        EVALUATE_REQUESTS.labels(decision=soft_action).inc()
         return AiEvaluateResponse(decision={"action": soft_action})
 
     legacy_req = _build_legacy_request_from_target(
@@ -505,8 +534,12 @@ async def ai_evaluate(
         now_ms=now_ms,
         snap=snap,
     )
+ 
     legacy_resp, _ = await run_in_threadpool(_execute_legacy_evaluate, legacy_req)
     action = _target_action_from_legacy(legacy_resp.action)
+    if req.event.event_type == "QUEUE_ENTER" and action == "REQUIRE_S3":
+        action = "THROTTLE"
+    EVALUATE_REQUESTS.labels(decision=action).inc()
     return AiEvaluateResponse(decision={"action": action})
 
 
@@ -548,6 +581,7 @@ async def ai_challenge_start(
             }
         ),
     )
+    CHALLENGE_START_REQUESTS.inc()
     return AiChallengeStartResponse(
         challengeId=resp.challenge_id,
         remainingAttempts=max(resp.attempt_limit - snap.vqa_attempt_count, 0),
@@ -582,8 +616,10 @@ async def ai_challenge_verify(
         _state_store.upsert(state_key, snap)
 
     if not snap.active_challenge_id or snap.active_challenge_id != req.challenge_id:
+        CHALLENGE_VERIFY_REQUESTS.labels(result="invalid").inc()
         return AiChallengeVerifyResponse(success=False, remainingAttempts=0)
     if snap.active_challenge_expires_at_ms and snap.active_challenge_expires_at_ms < now_ms:
+        CHALLENGE_VERIFY_REQUESTS.labels(result="expired").inc()
         return AiChallengeVerifyResponse(success=False, remainingAttempts=0)
 
     feature_summary = snap.latest_vqa_challenge_summary or {}
@@ -636,6 +672,7 @@ async def ai_challenge_verify(
                 "featureSummary": feature_summary,
             },
         )
+        CHALLENGE_VERIFY_REQUESTS.labels(result="pass").inc()
         return AiChallengeVerifyResponse(success=True, remainingAttempts=remaining)
 
     next_snap = snap.model_copy(
@@ -677,6 +714,7 @@ async def ai_challenge_verify(
             "featureSummary": feature_summary,
         },
     )
+    CHALLENGE_VERIFY_REQUESTS.labels(result="fail").inc()
     if remaining == 0:
         background_tasks.add_task(
             _block_user_in_auth_guard,
