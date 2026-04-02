@@ -220,7 +220,7 @@ SUM_COOLDOWN_SECONDS: int = _env("TM_SUM_COOLDOWN_SECONDS", 300)
 # ===================================================================
 # Offline observability / optimization logs
 # ===================================================================
-OFFLINE_OPT_AUDIT_FILENAME: str = "logs/offline_optimization_audit.jsonl"
-OFFLINE_AUDIT_SUMMARY_FILENAME: str = "logs/offline_audit_summary.jsonl"
-POLICY_STORE_FILENAME: str = "logs/policy_store.json"
+OFFLINE_OPT_AUDIT_FILENAME: str = _env("TM_OFFLINE_LLM_AUDIT_PATH", "/tmp/logs/offline_optimization_audit.jsonl")
+OFFLINE_AUDIT_SUMMARY_FILENAME: str = _env("TM_OFFLINE_AUDIT_SUMMARY_PATH", "/tmp/logs/offline_audit_summary.jsonl")
+POLICY_STORE_FILENAME: str = _env("TM_POLICY_STORE_PATH", "/tmp/logs/policy_store.json")
 POLICY_CACHE_SECONDS: int = _env("TM_POLICY_CACHE_SECONDS", 5)
