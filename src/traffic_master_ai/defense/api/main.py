@@ -475,13 +475,16 @@ async def ai_evaluate(
     )
 
     if req.event.event_type == "QUEUE_ENTER" and not _precheck_is_valid(snap, now_ms):
+        EVALUATE_REQUESTS.labels(decision="BLOCK").inc()
         return AiEvaluateResponse(decision={"action": "BLOCK"})
 
     if req.event.event_type == "SEAT_ENTRY" and not snap.vqa_passed:
+        EVALUATE_REQUESTS.labels(decision="REQUIRE_S3").inc()
         return AiEvaluateResponse(decision={"action": "REQUIRE_S3"})
 
     soft_action = _feature_soft_action(event_type=req.event.event_type, snap=snap)
     if soft_action is not None:
+        EVALUATE_REQUESTS.labels(decision=soft_action).inc()
         return AiEvaluateResponse(decision={"action": soft_action})
 
     legacy_req = _build_legacy_request_from_target(
@@ -494,6 +497,7 @@ async def ai_evaluate(
     )
     legacy_resp, _ = _execute_legacy_evaluate(legacy_req)
     action = _target_action_from_legacy(legacy_resp.action)
+    EVALUATE_REQUESTS.labels(decision=action).inc()
     if action == "BLOCK":
         background_tasks.add_task(_send_be_runtime_sanction, sid=sid)
     return AiEvaluateResponse(decision={"action": action})
@@ -528,6 +532,7 @@ async def ai_challenge_start(
             }
         ),
     )
+    CHALLENGE_START_REQUESTS.inc()
     return AiChallengeStartResponse(
         challengeId=resp.challenge_id,
         remainingAttempts=max(resp.attempt_limit - snap.vqa_attempt_count, 0),
@@ -550,8 +555,10 @@ async def ai_challenge_verify(
     snap = _get_or_create_snapshot(state_key, now_ms)
 
     if not snap.active_challenge_id or snap.active_challenge_id != req.challenge_id:
+        CHALLENGE_VERIFY_REQUESTS.labels(result="invalid").inc()
         return AiChallengeVerifyResponse(success=False, remainingAttempts=0)
     if snap.active_challenge_expires_at_ms and snap.active_challenge_expires_at_ms < now_ms:
+        CHALLENGE_VERIFY_REQUESTS.labels(result="expired").inc()
         return AiChallengeVerifyResponse(success=False, remainingAttempts=0)
 
     feature_summary = snap.latest_vqa_challenge_summary or {}
@@ -603,6 +610,7 @@ async def ai_challenge_verify(
                 "featureSummary": feature_summary,
             },
         )
+        CHALLENGE_VERIFY_REQUESTS.labels(result="pass").inc()
         return AiChallengeVerifyResponse(success=True, remainingAttempts=remaining)
 
     next_snap = snap.model_copy(
@@ -643,6 +651,7 @@ async def ai_challenge_verify(
             "featureSummary": feature_summary,
         },
     )
+    CHALLENGE_VERIFY_REQUESTS.labels(result="fail").inc()
     return AiChallengeVerifyResponse(success=False, remainingAttempts=remaining)
 
 
