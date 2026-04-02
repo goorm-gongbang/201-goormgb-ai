@@ -46,6 +46,16 @@ def test_queue_enter_blocks_without_precheck() -> None:
     assert response.json() == {"decision": {"action": "BLOCK"}}
 
 
+def test_storage_meta_exposes_snapshot_and_decision_state_backends() -> None:
+    response = client.get("/meta/storage")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "runtime_state_backend": "memory",
+        "decision_state_backend": "memory",
+    }
+
+
 def test_queue_enter_block_invokes_auth_guard(monkeypatch) -> None:
     sid = "sess-eval-precheck-block-auth-1"
     captured: dict[str, str] = {}
@@ -226,7 +236,7 @@ def test_post_vqa_guard_uses_sid_level_vqa_mark(monkeypatch) -> None:
     assert response.json() == {"decision": {"action": "NONE"}}
 
 
-def test_legacy_block_forwards_user_id_to_d0_runtime(monkeypatch) -> None:
+def test_legacy_block_forwards_user_id_to_decision_engine(monkeypatch) -> None:
     sid = "sess-eval-legacy-block-user-1"
     state_key = f"{sid}:{MATCH_ID}"
     precheck = client.post(

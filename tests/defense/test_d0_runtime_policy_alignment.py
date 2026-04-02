@@ -10,6 +10,7 @@ from traffic_master_ai.defense.d0_mvp.api.app import create_app
 from traffic_master_ai.defense.d0_mvp.api.runtime import DefenseRuntime
 from traffic_master_ai.defense.d0_mvp.observability.audit_logger import AuditLogger
 from traffic_master_ai.defense.d0_mvp.observability.warehouse import AuditWarehouse
+from traffic_master_ai.defense.d0_mvp.state.keyspace import CHALLENGE_KEY_PREFIX
 from traffic_master_ai.defense.d0_mvp.state.redis_client import InMemoryRedis
 
 
@@ -46,7 +47,7 @@ def test_verify_unavailable_defaults_to_fail_close(monkeypatch: pytest.MonkeyPat
     original_get = runtime.redis.get
 
     def _broken_get(name: str):
-        if name.startswith("tm:chal:"):
+        if name.startswith(CHALLENGE_KEY_PREFIX):
             raise RuntimeError("redis unavailable")
         return original_get(name)
 
@@ -73,7 +74,7 @@ def test_verify_unavailable_allows_fail_open_override(
     original_get = runtime.redis.get
 
     def _broken_get(name: str):
-        if name.startswith("tm:chal:"):
+        if name.startswith(CHALLENGE_KEY_PREFIX):
             raise RuntimeError("redis unavailable")
         return original_get(name)
 
