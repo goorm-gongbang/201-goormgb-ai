@@ -15,6 +15,8 @@ from typing import Any, Optional, Protocol
 
 logger = logging.getLogger(__name__)
 
+_REDIS_SOCKET_TIMEOUT_SECONDS = 2.0
+
 
 class RedisLike(Protocol):
     """Minimal Redis-compatible protocol for testability."""
@@ -169,4 +171,9 @@ def build_redis_from_url(redis_url: str) -> RedisLike:
             "redis package is required for decision-state Redis; install with pip install redis"
         ) from exc
 
-    return redis.Redis.from_url(redis_url, decode_responses=True)
+    return redis.Redis.from_url(
+        redis_url,
+        decode_responses=True,
+        socket_timeout=_REDIS_SOCKET_TIMEOUT_SECONDS,
+        socket_connect_timeout=_REDIS_SOCKET_TIMEOUT_SECONDS,
+    )

@@ -212,18 +212,24 @@ class DefenseRuntime:
                 version,
                 doc if isinstance(doc, dict) else snapshot_to_document(default_snapshot),
             )
-            rollout_state = self.policy_store.get_rollout_state()
-            self.policy_store.set_rollout_state(
-                rollout_state
-                if isinstance(rollout_state, dict)
-                else {
-                    "stage": "FULL",
-                    "base_policy_version": version,
-                    "candidate_policy_version": None,
-                    "ratio": 0.0,
-                    "updated_at_ms": int(time.time() * 1000),
-                }
+            primary_rollout_state = (
+                self.policy_store.get_primary_rollout_state()
+                if isinstance(self.policy_store, RedisPolicyStore)
+                else self.policy_store.get_rollout_state()
             )
+            if primary_rollout_state is None:
+                rollout_state = self.policy_store.get_rollout_state()
+                self.policy_store.set_rollout_state(
+                    rollout_state
+                    if isinstance(rollout_state, dict)
+                    else {
+                        "stage": "FULL",
+                        "base_policy_version": version,
+                        "candidate_policy_version": None,
+                        "ratio": 0.0,
+                        "updated_at_ms": int(time.time() * 1000),
+                    }
+                )
         except Exception:  # noqa: BLE001 - bootstrap should not break startup
             logger.exception("Failed to bootstrap policy authority")
 

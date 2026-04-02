@@ -101,6 +101,11 @@ class RedisPolicyStore:
             return None
         return self._fallback.get_rollout_state()
 
+    def get_primary_rollout_state(self) -> Optional[dict[str, Any]]:
+        """Read rollout state stored in Redis only, without fallback lookup."""
+        raw = self._redis.get(POLICY_ROLLOUT_STATE_KEY)
+        return _json_object(raw)
+
     def save_policy_version(self, version: str, document: dict[str, Any]) -> None:
         self._redis.set(
             self._policy_key(version),

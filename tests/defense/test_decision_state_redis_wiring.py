@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from traffic_master_ai.defense.d0_mvp.policy.loader import (
+    InMemoryPolicyStore,
+    PolicyLoader,
+    RedisPolicyStore,
+)
 from traffic_master_ai.defense.d0_mvp.api.runtime import DefenseRuntime, build_evaluate_request
 from traffic_master_ai.defense.d0_mvp.state.keyspace import (
     ANALYZER_WINDOW_KEY_PREFIX,
@@ -33,10 +38,77 @@ def test_build_runtime_redis_from_env_uses_redis_when_url_present(monkeypatch) -
         assert backend == "redis"
         assert hasattr(client, "hgetall")
         assert hasattr(client, "pipeline")
+        assert client.connection_pool.connection_kwargs["socket_timeout"] == 2.0
+        assert client.connection_pool.connection_kwargs["socket_connect_timeout"] == 2.0
     finally:
         close = getattr(client, "close", None)
         if callable(close):
             close()
+
+
+def test_bootstrap_skips_rollout_write_when_primary_state_exists() -> None:
+    redis = InMemoryRedis()
+    store = RedisPolicyStore(redis)
+    existing_state = {
+        "stage": "FULL",
+        "base_policy_version": "def-pol-2.0.0",
+        "candidate_policy_version": None,
+        "ratio": 0.0,
+        "updated_at_ms": 1710000000000,
+    }
+    store.set_rollout_state(existing_state)
+
+    set_calls = 0
+    original_set_rollout_state = store.set_rollout_state
+
+    def _recording_set_rollout_state(state):
+        nonlocal set_calls
+        set_calls += 1
+        original_set_rollout_state(state)
+
+    store.set_rollout_state = _recording_set_rollout_state  # type: ignore[method-assign]
+
+    runtime = DefenseRuntime(
+        redis=redis,
+        policy_loader=PolicyLoader(store=store),
+    )
+
+    assert set_calls == 0
+    assert store.get_primary_rollout_state() == existing_state
+    runtime.close()
+
+
+def test_bootstrap_syncs_fallback_rollout_state_into_primary_redis() -> None:
+    redis = InMemoryRedis()
+    fallback = InMemoryPolicyStore()
+    fallback_state = {
+        "stage": "FULL",
+        "base_policy_version": "def-pol-2.0.0",
+        "candidate_policy_version": None,
+        "ratio": 0.0,
+        "updated_at_ms": 1710000001234,
+    }
+    fallback.set_rollout_state(fallback_state)
+    store = RedisPolicyStore(redis, fallback=fallback)
+
+    set_calls = 0
+    original_set_rollout_state = store.set_rollout_state
+
+    def _recording_set_rollout_state(state):
+        nonlocal set_calls
+        set_calls += 1
+        original_set_rollout_state(state)
+
+    store.set_rollout_state = _recording_set_rollout_state  # type: ignore[method-assign]
+
+    runtime = DefenseRuntime(
+        redis=redis,
+        policy_loader=PolicyLoader(store=store),
+    )
+
+    assert set_calls == 1
+    assert store.get_primary_rollout_state() == fallback_state
+    runtime.close()
 
 
 def test_decision_state_uses_isolated_redis_keyspace() -> None:
