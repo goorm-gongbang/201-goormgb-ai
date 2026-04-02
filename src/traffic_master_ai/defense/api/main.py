@@ -37,10 +37,11 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.semconv.resource import ResourceAttributes
 
-from ..d0_mvp.api.runtime import DefenseRuntime as D0DefenseRuntime
+from ..d0_mvp.api.runtime import DefenseRuntime as DecisionEngineRuntime
 from ..d0_mvp.core.enums import DefenseAction as D0DefenseAction
 from ..d0_mvp.core.enums import FlowState as D0FlowState
 from ..d0_mvp.core.models import CheckRequest as D0CheckRequest
+from ..d0_mvp.state.redis_client import build_runtime_redis_from_env
 from ..auth_guard import AuthGuardBlockService
 from .audit import (
     DefenseDecisionAuditLogger,
@@ -194,9 +195,9 @@ async def lifespan(_app: FastAPI):
     auth_guard_close = getattr(_auth_guard_blocker, "close", None)
     if callable(auth_guard_close):
         auth_guard_close()
-    d0_runtime_close = getattr(_d0_runtime, "close", None)
-    if callable(d0_runtime_close):
-        d0_runtime_close()
+    decision_engine_close = getattr(_decision_engine, "close", None)
+    if callable(decision_engine_close):
+        decision_engine_close()
 
 
 app = FastAPI(
@@ -228,9 +229,13 @@ if _OTEL_ENABLED:
     FastAPIInstrumentor.instrument_app(app)
 
 _state_store, _state_backend = build_runtime_store_from_env()
+_decision_state_redis, _decision_state_backend = build_runtime_redis_from_env()
 _audit = DefenseDecisionAuditLogger.from_env()
 _challenge_runtime = ChallengeRuntime(ChallengeConfig.from_env())
-_d0_runtime = D0DefenseRuntime()
+_decision_engine = DecisionEngineRuntime(
+    redis=_decision_state_redis,
+    close_redis_on_close=_decision_state_backend == "redis",
+)
 _auth_guard_blocker = AuthGuardBlockService.from_env()
 
 
@@ -250,13 +255,13 @@ async def runtime_state(session_id: str) -> RuntimeStateSnapshot:
     if snap is not None:
         return snap
 
-    d0_state = _d0_runtime.session_state.get(session_id)
-    if d0_state is None:
+    decision_state = _decision_engine.session_state.get(session_id)
+    if decision_state is None:
         raise HTTPException(status_code=404, detail="session not found")
-    policy = _d0_runtime.policy_loader.load(session_id=session_id)
+    policy = _decision_engine.policy_loader.load(session_id=session_id)
     bridged = _legacy_snapshot_from_d0_state(
         session_id=session_id,
-        d0_state=d0_state,
+        d0_state=decision_state,
         policy_version=policy.policy_version,
         challenge_max_attempts=policy.challenge_max_attempts,
         now_ms=int(time.time() * 1000),
@@ -609,7 +614,7 @@ async def ai_challenge_verify(
             }
         )
         _state_store.upsert(state_key, next_snap)
-        _sync_mark_to_d0_runtime(
+        _sync_mark_to_decision_engine(
             req=RuntimeVqaMarkRequest(
                 session_id=state_key,
                 vqa_passed=True,
@@ -650,7 +655,7 @@ async def ai_challenge_verify(
         }
     )
     _state_store.upsert(state_key, next_snap)
-    _sync_mark_to_d0_runtime(
+    _sync_mark_to_decision_engine(
         req=RuntimeVqaMarkRequest(
             session_id=state_key,
             vqa_passed=False,
@@ -685,7 +690,10 @@ async def ai_challenge_verify(
 
 @app.get("/meta/storage", tags=["state"], include_in_schema=False)
 async def storage_meta() -> dict[str, str]:
-    return {"runtime_state_backend": _state_backend}
+    return {
+        "runtime_state_backend": _state_backend,
+        "decision_state_backend": _decision_state_backend,
+    }
 
 
 @app.post("/runtime/vqa/mark", response_model=RuntimeVqaMarkResponse, tags=["state"], include_in_schema=False)
@@ -718,7 +726,7 @@ async def runtime_mark_vqa(req: RuntimeVqaMarkRequest) -> RuntimeVqaMarkResponse
         )
 
     _state_store.upsert(req.session_id, next_snap)
-    _sync_mark_to_d0_runtime(req=req, now_ms=now_ms)
+    _sync_mark_to_decision_engine(req=req, now_ms=now_ms)
     return RuntimeVqaMarkResponse(
         session_id=req.session_id,
         vqa_passed=next_snap.vqa_passed,
@@ -768,7 +776,7 @@ def _hydrate_match_state_from_sid_vqa_mark(
         }
     )
     _state_store.upsert(state_key, promoted)
-    _sync_mark_to_d0_runtime(
+    _sync_mark_to_decision_engine(
         req=RuntimeVqaMarkRequest(
             session_id=state_key,
             vqa_passed=True,
@@ -1170,20 +1178,20 @@ def _execute_legacy_evaluate(req: EvaluateRequest) -> tuple[EvaluateResponse, Ru
     now_ms = int(time.time() * 1000)
     existing_snapshot = _state_store.get(req.session_id)
 
-    d0_check_req = _legacy_request_to_d0_check(req)
-    d0_eval_req = _d0_runtime.check_request_to_evaluate(d0_check_req)
+    decision_check_request = _legacy_request_to_d0_check(req)
+    decision_eval_request = _decision_engine.check_request_to_evaluate(decision_check_request)
     telemetry_features = _legacy_features_to_d0(req)
     if telemetry_features:
-        d0_eval_req.context.features = telemetry_features
+        decision_eval_request.context.features = telemetry_features
     try:
-        out = _d0_runtime.evaluate(d0_eval_req)
+        out = _decision_engine.evaluate(decision_eval_request)
     except Exception as exc:  # noqa: BLE001 - fail-open policy
-        out = _d0_runtime.fail_open_on_unavailable(request=d0_eval_req, error=exc)
+        out = _decision_engine.fail_open_on_unavailable(request=decision_eval_request, error=exc)
 
     resp = _legacy_response_from_d0(req=req, started_at=started_at, out=out)
     snap = _legacy_snapshot_from_d0_state(
         session_id=req.session_id,
-        d0_state=_d0_runtime.session_state.get(req.session_id),
+        d0_state=_decision_engine.session_state.get(req.session_id),
         policy_version=out.policy.policy_version,
         challenge_max_attempts=out.policy.challenge_max_attempts,
         now_ms=now_ms,
@@ -1266,7 +1274,7 @@ def _legacy_snapshot_from_d0_state(
             user_id=user_id,
         )
 
-    grace = _d0_runtime.session_state.get_s3_grace(session_id) or {}
+    grace = _decision_engine.session_state.get_s3_grace(session_id) or {}
     last_result: Optional[str] = None
     if bool(getattr(d0_state, "s3_passed", False)):
         last_result = "PASSED"
@@ -1441,12 +1449,12 @@ def _to_float(value: Any) -> Optional[float]:
         return None
 
 
-def _sync_mark_to_d0_runtime(*, req: RuntimeVqaMarkRequest, now_ms: int) -> None:
+def _sync_mark_to_decision_engine(*, req: RuntimeVqaMarkRequest, now_ms: int) -> None:
     session_id = req.session_id
-    existing = _d0_runtime.session_state.get_or_create(session_id)
+    existing = _decision_engine.session_state.get_or_create(session_id)
     flow_state = _to_d0_flow_state(req.flow_state) if req.flow_state else existing.flow_state
     if req.vqa_passed:
-        _d0_runtime.session_state.update_by_role(
+        _decision_engine.session_state.update_by_role(
             "orchestrator",
             session_id,
             {
@@ -1457,7 +1465,7 @@ def _sync_mark_to_d0_runtime(*, req: RuntimeVqaMarkRequest, now_ms: int) -> None
             },
             is_allow=True,
         )
-        _d0_runtime.session_state.update_by_role(
+        _decision_engine.session_state.update_by_role(
             "analyzer",
             session_id,
             {
@@ -1467,7 +1475,7 @@ def _sync_mark_to_d0_runtime(*, req: RuntimeVqaMarkRequest, now_ms: int) -> None
         )
         return
 
-    _d0_runtime.session_state.update_by_role(
+    _decision_engine.session_state.update_by_role(
         "orchestrator",
         session_id,
         {

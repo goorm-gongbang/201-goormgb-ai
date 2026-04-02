@@ -9,10 +9,13 @@ Ref: L1/runtime/state.yaml#redis, L1/runtime/state.yaml#atomicity_and_concurrenc
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any, Optional, Protocol
 
 logger = logging.getLogger(__name__)
+
+_REDIS_SOCKET_TIMEOUT_SECONDS = 2.0
 
 
 class RedisLike(Protocol):
@@ -140,3 +143,37 @@ class InMemoryRedis:
         if exp is None:
             return -1 if name in self._data else -2
         return max(0, int(exp - time.time()))
+
+
+def build_runtime_redis_from_env() -> tuple[RedisLike, str]:
+    """Build the decision-state Redis backend from environment settings."""
+    redis_url = os.getenv("TM_REDIS_URL", "").strip()
+    is_ci = os.getenv("CI", "false").lower() == "true"
+
+    if redis_url:
+        return build_redis_from_url(redis_url), "redis"
+
+    if not is_ci:
+        raise ValueError(
+            "TM_REDIS_URL is strictly required for non-CI environments. "
+            "In-memory fallback is only permitted when CI=true."
+        )
+
+    return InMemoryRedis(), "memory"
+
+
+def build_redis_from_url(redis_url: str) -> RedisLike:
+    """Create one sync Redis client with decoded string responses."""
+    try:
+        import redis  # type: ignore[import-not-found]
+    except Exception as exc:  # pragma: no cover - import error path
+        raise RuntimeError(
+            "redis package is required for decision-state Redis; install with pip install redis"
+        ) from exc
+
+    return redis.Redis.from_url(
+        redis_url,
+        decode_responses=True,
+        socket_timeout=_REDIS_SOCKET_TIMEOUT_SECONDS,
+        socket_connect_timeout=_REDIS_SOCKET_TIMEOUT_SECONDS,
+    )
