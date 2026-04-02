@@ -1,10 +1,22 @@
+import base64
 import os
+import time
 import uuid
 
 import jwt
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("CI", "true")
+_TEST_PRIVATE_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+_TEST_PUBLIC_KEY_DER = _TEST_PRIVATE_KEY.public_key().public_bytes(
+    encoding=serialization.Encoding.DER,
+    format=serialization.PublicFormat.SubjectPublicKeyInfo,
+)
+os.environ["JWT_PUBLIC_KEY"] = base64.b64encode(_TEST_PUBLIC_KEY_DER).decode("ascii")
+os.environ["JWT_ISSUER"] = "test-issuer"
+os.environ["JWT_ACCESS_TOKEN_AUDIENCE"] = "test-access"
 
 from traffic_master_ai.defense.api.main import app
 
@@ -16,8 +28,32 @@ def _headers(session_id: str) -> dict[str, str]:
     return {"X-Session-Id": session_id}
 
 
+def _access_token(
+    sid: str,
+    *,
+    user_id: str = "42",
+    signer: rsa.RSAPrivateKey | None = None,
+) -> str:
+    now = int(time.time())
+    token = jwt.encode(
+        {
+            "iss": os.environ["JWT_ISSUER"],
+            "sub": user_id,
+            "aud": os.environ["JWT_ACCESS_TOKEN_AUDIENCE"],
+            "iat": now,
+            "exp": now + 3600,
+            "jti": uuid.uuid4().hex,
+            "tokenType": "ACCESS",
+            "sid": sid,
+        },
+        signer or _TEST_PRIVATE_KEY,
+        algorithm="RS256",
+    )
+    return str(token)
+
+
 def _headers_with_authorization(session_id: str, auth_sid: str) -> dict[str, str]:
-    token = jwt.encode({"sid": auth_sid}, "test-secret-that-is-long-enough-32b", algorithm="HS256")
+    token = _access_token(auth_sid)
     return {
         "X-Session-Id": session_id,
         "Authorization": f"Bearer {token}",
@@ -259,6 +295,42 @@ def test_ai_challenge_verify_pass_survives_sid_source_drift() -> None:
     )
     assert evaluate.status_code == 200
     assert evaluate.json() == {"decision": {"action": "NONE"}}
+
+
+def test_ai_challenge_verify_ignores_unverified_sid_alias() -> None:
+    header_sid = _session_id("sess-ai-verify-safe-header")
+    forged_sid = _session_id("sess-ai-verify-safe-forged")
+    forged_signer = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    start_headers = {
+        "X-Session-Id": header_sid,
+        "Authorization": f"Bearer {_access_token(forged_sid, signer=forged_signer)}",
+    }
+
+    start = client.post(
+        "/ai/challenge/start",
+        json={"matchId": MATCH_ID},
+        headers=start_headers,
+    )
+    assert start.status_code == 200
+    challenge_id = start.json()["challengeId"]
+
+    verify = client.post(
+        "/ai/challenge/verify",
+        json={
+            "matchId": MATCH_ID,
+            "challengeId": challenge_id,
+            "caught": True,
+            "catchTsMs": 1,
+            "catchXNorm": 0.45,
+            "catchYNorm": 0.55,
+        },
+        headers=start_headers,
+    )
+    assert verify.status_code == 200
+    assert verify.json()["success"] is True
+
+    alias_runtime = client.get(f"/runtime/{forged_sid}")
+    assert alias_runtime.status_code == 404
 
 
 def test_ai_challenge_verify_rejects_mismatched_challenge_id() -> None:

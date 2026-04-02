@@ -8,13 +8,17 @@ Includes Prometheus metrics instrumentation + OpenTelemetry.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import logging
 import math
 import os
 import re
 import time
+import textwrap
 import uuid
 from contextlib import asynccontextmanager
+from functools import lru_cache
 from typing import Any, Optional
 
 import httpx
@@ -502,21 +506,6 @@ async def ai_evaluate(
         snap=snap,
         now_ms=now_ms,
     )
-    if snap.vqa_passed and req.event.event_type in {
-        "SEAT_ENTRY",
-        "RECOMMENDATION_BLOCKS",
-        "SECTION_BLOCKS",
-        "ASSIGN_HOLD",
-        "SEAT_HOLDS",
-    }:
-        _sync_mark_to_decision_engine(
-            req=RuntimeVqaMarkRequest(
-                session_id=state_key,
-                vqa_passed=True,
-                flow_state=snap.flow_state,
-            ),
-            now_ms=now_ms,
-        )
 
     if req.event.event_type == "QUEUE_ENTER" and not _precheck_is_valid(snap, now_ms):
         EVALUATE_REQUESTS.labels(decision="BLOCK").inc()
@@ -939,14 +928,71 @@ def _resolve_session_id(
 
 
 def _decode_bearer_payload(authorization: Optional[str]) -> Optional[dict[str, Any]]:
-    token = (authorization or "").removeprefix("Bearer").strip()
+    token = _extract_bearer_token(authorization)
     if not token:
         return None
+
+    public_key = _jwt_public_key_pem()
+    if public_key is None:
+        return None
+
+    issuer = _opt_str(os.getenv("JWT_ISSUER"))
+    audience = _opt_str(os.getenv("JWT_ACCESS_TOKEN_AUDIENCE"))
+    decode_options: dict[str, bool] = {}
+    decode_kwargs: dict[str, Any] = {
+        "key": public_key,
+        "algorithms": ["RS256"],
+    }
+    if issuer:
+        decode_kwargs["issuer"] = issuer
+    else:
+        decode_options["verify_iss"] = False
+    if audience:
+        decode_kwargs["audience"] = audience
+    else:
+        decode_options["verify_aud"] = False
+    if decode_options:
+        decode_kwargs["options"] = decode_options
+
     try:
-        payload = jwt.decode(token, options={"verify_signature": False})
+        payload = jwt.decode(token, **decode_kwargs)
     except Exception:
         return None
-    return payload if isinstance(payload, dict) else None
+
+    if not isinstance(payload, dict):
+        return None
+
+    token_type = _opt_str(payload.get("tokenType"))
+    if token_type is not None and token_type != "ACCESS":
+        return None
+
+    return payload
+
+
+def _extract_bearer_token(authorization: Optional[str]) -> str:
+    return (authorization or "").removeprefix("Bearer").strip()
+
+
+@lru_cache(maxsize=4)
+def _jwt_public_key_pem_from_env(raw_public_key: str) -> Optional[str]:
+    normalized = raw_public_key.strip()
+    if not normalized:
+        return None
+    if "BEGIN PUBLIC KEY" in normalized:
+        return normalized
+
+    compact = "".join(normalized.split())
+    try:
+        base64.b64decode(compact, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+
+    wrapped = "\n".join(textwrap.wrap(compact, 64))
+    return f"-----BEGIN PUBLIC KEY-----\n{wrapped}\n-----END PUBLIC KEY-----\n"
+
+
+def _jwt_public_key_pem() -> Optional[str]:
+    return _jwt_public_key_pem_from_env(os.getenv("JWT_PUBLIC_KEY", ""))
 
 
 def _resolve_user_id(
