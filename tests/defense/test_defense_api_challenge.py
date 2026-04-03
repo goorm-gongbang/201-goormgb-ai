@@ -1,6 +1,7 @@
 import os
 import uuid
 
+import jwt
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("CI", "true")
@@ -13,6 +14,14 @@ MATCH_ID = 687
 
 def _headers(session_id: str) -> dict[str, str]:
     return {"X-Session-Id": session_id}
+
+
+def _headers_with_authorization(session_id: str, auth_sid: str) -> dict[str, str]:
+    token = jwt.encode({"sid": auth_sid}, "test-secret-that-is-long-enough-32b", algorithm="HS256")
+    return {
+        "X-Session-Id": session_id,
+        "Authorization": f"Bearer {token}",
+    }
 
 
 def _headers_with_user(session_id: str, user_id: str) -> dict[str, str]:
@@ -140,14 +149,116 @@ def test_ai_challenge_verify_success_marks_runtime_passed() -> None:
     assert verify.status_code == 200
     body = verify.json()
     assert body["success"] is True
-    assert body["remainingAttempts"] == 2
+    assert body["remainingAttempts"] == 3
 
     runtime = client.get(f"/runtime/{_state_key(session_id)}")
     assert runtime.status_code == 200
     runtime_body = runtime.json()
     assert runtime_body["vqa_passed"] is True
     assert runtime_body["vqa_required"] is False
+    assert runtime_body["vqa_attempt_count"] == 0
     assert runtime_body["active_challenge_id"] is None
+
+
+def test_ai_challenge_verify_success_on_last_remaining_attempt_does_not_block() -> None:
+    session_id = _session_id("sess-ai-verify-last-success")
+    start = client.post(
+        "/ai/challenge/start",
+        json={"matchId": MATCH_ID},
+        headers=_headers(session_id),
+    )
+    assert start.status_code == 200
+    challenge_id = start.json()["challengeId"]
+
+    for attempt in range(1, 3):
+        verify_fail = client.post(
+            "/ai/challenge/verify",
+            json={
+                "matchId": MATCH_ID,
+                "challengeId": challenge_id,
+                "caught": False,
+                "catchTsMs": attempt,
+                "catchXNorm": 0.5,
+                "catchYNorm": 0.5,
+            },
+            headers=_headers(session_id),
+        )
+        assert verify_fail.status_code == 200
+        assert verify_fail.json()["success"] is False
+
+    verify_pass = client.post(
+        "/ai/challenge/verify",
+        json={
+            "matchId": MATCH_ID,
+            "challengeId": challenge_id,
+            "caught": True,
+            "catchTsMs": 3,
+            "catchXNorm": 0.45,
+            "catchYNorm": 0.55,
+        },
+        headers=_headers(session_id),
+    )
+    assert verify_pass.status_code == 200
+    body = verify_pass.json()
+    assert body["success"] is True
+    assert body["remainingAttempts"] == 1
+
+    runtime = client.get(f"/runtime/{_state_key(session_id)}")
+    assert runtime.status_code == 200
+    runtime_body = runtime.json()
+    assert runtime_body["vqa_passed"] is True
+    assert runtime_body["vqa_last_result"] == "PASSED"
+    assert runtime_body["vqa_attempt_count"] == 2
+
+
+def test_ai_challenge_verify_pass_survives_sid_source_drift() -> None:
+    header_sid = _session_id("sess-ai-verify-header")
+    auth_sid = _session_id("sess-ai-verify-auth")
+    start_headers = _headers_with_authorization(header_sid, auth_sid)
+
+    start = client.post(
+        "/ai/challenge/start",
+        json={"matchId": MATCH_ID},
+        headers=start_headers,
+    )
+    assert start.status_code == 200
+    challenge_id = start.json()["challengeId"]
+
+    verify_headers = {
+        "Authorization": start_headers["Authorization"],
+    }
+    verify = client.post(
+        "/ai/challenge/verify",
+        json={
+            "matchId": MATCH_ID,
+            "challengeId": challenge_id,
+            "caught": True,
+            "catchTsMs": 1,
+            "catchXNorm": 0.45,
+            "catchYNorm": 0.55,
+        },
+        headers=verify_headers,
+    )
+    assert verify.status_code == 200
+    assert verify.json()["success"] is True
+
+    alias_runtime = client.get(f"/runtime/{auth_sid}")
+    assert alias_runtime.status_code == 200
+    assert alias_runtime.json()["vqa_passed"] is True
+
+    evaluate = client.post(
+        "/ai/evaluate",
+        json={
+            "event": {
+                "eventType": "RECOMMENDATION_BLOCKS",
+                "requestPath": f"/seat/matches/{MATCH_ID}/recommendations/blocks",
+                "requestMethod": "GET",
+            },
+            "context": {"sid": auth_sid},
+        },
+    )
+    assert evaluate.status_code == 200
+    assert evaluate.json() == {"decision": {"action": "NONE"}}
 
 
 def test_ai_challenge_verify_rejects_mismatched_challenge_id() -> None:
@@ -182,7 +293,7 @@ def test_ai_challenge_verify_rejects_mismatched_challenge_id() -> None:
     assert runtime_body["vqa_attempt_count"] == 0
 
 
-def test_ai_challenge_verify_block_invokes_auth_guard_with_stored_user_id(monkeypatch) -> None:
+def test_ai_challenge_verify_exhaustion_does_not_invoke_auth_guard(monkeypatch) -> None:
     captured: dict[str, str] = {}
 
     def _stub_block_user_in_auth_guard(**kwargs):
@@ -217,6 +328,85 @@ def test_ai_challenge_verify_block_invokes_auth_guard_with_stored_user_id(monkey
         )
         assert verify.status_code == 200
 
-    assert captured["user_id"] == "42"
-    assert captured["session_id"] == _state_key(session_id)
-    assert captured["trigger"] == "ai_challenge_verify_exhausted_block"
+    assert captured == {}
+
+
+def test_ai_precheck_resets_exhausted_vqa_state_for_new_booking_attempt() -> None:
+    session_id = _session_id("sess-ai-precheck-reset")
+    start = client.post(
+        "/ai/challenge/start",
+        json={"matchId": MATCH_ID},
+        headers=_headers(session_id),
+    )
+    assert start.status_code == 200
+    challenge_id = start.json()["challengeId"]
+
+    for attempt in range(1, 4):
+        verify = client.post(
+            "/ai/challenge/verify",
+            json={
+                "matchId": MATCH_ID,
+                "challengeId": challenge_id,
+                "caught": False,
+                "catchTsMs": attempt,
+                "catchXNorm": 0.5,
+                "catchYNorm": 0.5,
+            },
+            headers=_headers(session_id),
+        )
+        assert verify.status_code == 200
+
+    precheck = client.post(
+        "/ai/precheck",
+        json={"matchId": MATCH_ID, "cfToken": "ok-token"},
+        headers=_headers(session_id),
+    )
+    assert precheck.status_code == 200
+    assert precheck.json()["allowed"] is True
+
+    runtime = client.get(f"/runtime/{_state_key(session_id)}")
+    assert runtime.status_code == 200
+    runtime_body = runtime.json()
+    assert runtime_body["vqa_attempt_count"] == 0
+    assert runtime_body["vqa_last_result"] is None
+    assert runtime_body["turnstile_verified"] is True
+
+    restarted = client.post(
+        "/ai/challenge/start",
+        json={"matchId": MATCH_ID},
+        headers=_headers(session_id),
+    )
+    assert restarted.status_code == 200
+    assert restarted.json()["remainingAttempts"] == 3
+
+
+def test_ai_precheck_clears_sid_level_vqa_pass_marker_for_new_booking_attempt() -> None:
+    session_id = _session_id("sess-ai-precheck-sid-reset")
+    marked = client.post(
+        "/runtime/vqa/mark",
+        json={"session_id": session_id, "vqa_passed": True, "flow_state": "S4"},
+    )
+    assert marked.status_code == 200
+    assert marked.json()["vqa_passed"] is True
+
+    precheck = client.post(
+        "/ai/precheck",
+        json={"matchId": MATCH_ID, "cfToken": "ok-token"},
+        headers=_headers(session_id),
+    )
+    assert precheck.status_code == 200
+    assert precheck.json()["allowed"] is True
+
+    response = client.post(
+        "/ai/evaluate",
+        json={
+            "event": {
+                "eventType": "SEAT_ENTRY",
+                "requestPath": f"/seat/matches/{MATCH_ID}/seat-groups",
+                "requestMethod": "GET",
+            },
+            "context": {"sid": session_id},
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == {"decision": {"action": "REQUIRE_S3"}}
