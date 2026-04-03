@@ -355,14 +355,33 @@ async def ai_precheck(
     _remember_runtime_user_id(session_id=sid, user_id=user_id, now_ms=now_ms)
     passed = await _verify_turnstile_token(req.cf_token)
     snap = _get_or_create_snapshot(state_key, now_ms)
-    next_snap = snap.model_copy(
-        update={
-            "turnstile_verified": passed,
-            "turnstile_verified_at_ms": now_ms if passed else 0,
-            "updated_ts_ms": now_ms,
-            "user_id": user_id or snap.user_id,
-        }
-    )
+    if passed:
+        next_snap = _reset_match_state_for_new_booking_attempt(
+            snap=snap,
+            now_ms=now_ms,
+            user_id=user_id,
+        ).model_copy(
+            update={
+                "turnstile_verified": True,
+                "turnstile_verified_at_ms": now_ms,
+            }
+        )
+        _reset_sid_level_vqa_state(
+            sid=sid,
+            now_ms=now_ms,
+            user_id=user_id,
+        )
+        _decision_engine.session_state.delete(state_key)
+        _decision_engine.session_state.delete(sid)
+    else:
+        next_snap = snap.model_copy(
+            update={
+                "turnstile_verified": False,
+                "turnstile_verified_at_ms": 0,
+                "updated_ts_ms": now_ms,
+                "user_id": user_id or snap.user_id,
+            }
+        )
     _state_store.upsert(state_key, next_snap)
     PRECHECK_REQUESTS.labels(result="pass" if passed else "fail").inc()
     return AiPrecheckResponse(allowed=passed)
@@ -796,6 +815,72 @@ def _get_or_create_snapshot(session_id: str, now_ms: int) -> RuntimeStateSnapsho
     if snap is not None:
         return snap
     return RuntimeStateSnapshot(updated_ts_ms=now_ms)
+
+
+def _reset_match_state_for_new_booking_attempt(
+    *,
+    snap: RuntimeStateSnapshot,
+    now_ms: int,
+    user_id: Optional[str],
+) -> RuntimeStateSnapshot:
+    return snap.model_copy(
+        update={
+            "flow_state": "S0",
+            "defense_tier": "T0",
+            "risk_score": 0.0,
+            "challenge_fail_count": 0,
+            "seat_taken_streak": 0,
+            "hold_fail_streak": 0,
+            "heavy_budget_left": 2,
+            "replan_budget_left": 3,
+            "probation_until_ms": None,
+            "updated_ts_ms": now_ms,
+            "user_id": user_id or snap.user_id,
+            "vqa_required": True,
+            "vqa_passed": False,
+            "vqa_attempt_count": 0,
+            "vqa_last_result": None,
+            "active_challenge_id": None,
+            "active_challenge_expires_at_ms": None,
+            "active_challenge_token": "",
+            "latest_queue_enter_preclick_summary": {},
+            "latest_queue_enter_preclick_at_ms": 0,
+            "latest_seat_stage_summary": {},
+            "latest_seat_stage_at_ms": 0,
+            "latest_vqa_challenge_summary": {},
+            "latest_vqa_challenge_at_ms": 0,
+            "vqa_behavior_score": 0.0,
+        }
+    )
+
+
+def _reset_sid_level_vqa_state(
+    *,
+    sid: str,
+    now_ms: int,
+    user_id: Optional[str],
+) -> None:
+    snap = _state_store.get(sid) or RuntimeStateSnapshot(updated_ts_ms=now_ms)
+    _state_store.upsert(
+        sid,
+        snap.model_copy(
+            update={
+                "flow_state": "S0",
+                "updated_ts_ms": now_ms,
+                "user_id": user_id or snap.user_id,
+                "vqa_required": True,
+                "vqa_passed": False,
+                "vqa_attempt_count": 0,
+                "vqa_last_result": None,
+                "active_challenge_id": None,
+                "active_challenge_expires_at_ms": None,
+                "active_challenge_token": "",
+                "latest_vqa_challenge_summary": {},
+                "latest_vqa_challenge_at_ms": 0,
+                "vqa_behavior_score": 0.0,
+            }
+        ),
+    )
 
 
 def _hydrate_match_state_from_sid_vqa_mark(

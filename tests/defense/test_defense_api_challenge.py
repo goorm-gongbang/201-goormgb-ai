@@ -331,3 +331,84 @@ def test_ai_challenge_verify_block_invokes_auth_guard_with_stored_user_id(monkey
     assert captured["user_id"] == "42"
     assert captured["session_id"] == _state_key(session_id)
     assert captured["trigger"] == "ai_challenge_verify_exhausted_block"
+
+
+def test_ai_precheck_resets_exhausted_vqa_state_for_new_booking_attempt() -> None:
+    session_id = _session_id("sess-ai-precheck-reset")
+    start = client.post(
+        "/ai/challenge/start",
+        json={"matchId": MATCH_ID},
+        headers=_headers(session_id),
+    )
+    assert start.status_code == 200
+    challenge_id = start.json()["challengeId"]
+
+    for attempt in range(1, 4):
+        verify = client.post(
+            "/ai/challenge/verify",
+            json={
+                "matchId": MATCH_ID,
+                "challengeId": challenge_id,
+                "caught": False,
+                "catchTsMs": attempt,
+                "catchXNorm": 0.5,
+                "catchYNorm": 0.5,
+            },
+            headers=_headers(session_id),
+        )
+        assert verify.status_code == 200
+
+    precheck = client.post(
+        "/ai/precheck",
+        json={"matchId": MATCH_ID, "cfToken": "ok-token"},
+        headers=_headers(session_id),
+    )
+    assert precheck.status_code == 200
+    assert precheck.json()["allowed"] is True
+
+    runtime = client.get(f"/runtime/{_state_key(session_id)}")
+    assert runtime.status_code == 200
+    runtime_body = runtime.json()
+    assert runtime_body["vqa_attempt_count"] == 0
+    assert runtime_body["vqa_last_result"] is None
+    assert runtime_body["turnstile_verified"] is True
+
+    restarted = client.post(
+        "/ai/challenge/start",
+        json={"matchId": MATCH_ID},
+        headers=_headers(session_id),
+    )
+    assert restarted.status_code == 200
+    assert restarted.json()["remainingAttempts"] == 3
+
+
+def test_ai_precheck_clears_sid_level_vqa_pass_marker_for_new_booking_attempt() -> None:
+    session_id = _session_id("sess-ai-precheck-sid-reset")
+    marked = client.post(
+        "/runtime/vqa/mark",
+        json={"session_id": session_id, "vqa_passed": True, "flow_state": "S4"},
+    )
+    assert marked.status_code == 200
+    assert marked.json()["vqa_passed"] is True
+
+    precheck = client.post(
+        "/ai/precheck",
+        json={"matchId": MATCH_ID, "cfToken": "ok-token"},
+        headers=_headers(session_id),
+    )
+    assert precheck.status_code == 200
+    assert precheck.json()["allowed"] is True
+
+    response = client.post(
+        "/ai/evaluate",
+        json={
+            "event": {
+                "eventType": "SEAT_ENTRY",
+                "requestPath": f"/seat/matches/{MATCH_ID}/seat-groups",
+                "requestMethod": "GET",
+            },
+            "context": {"sid": session_id},
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == {"decision": {"action": "REQUIRE_S3"}}
