@@ -1520,12 +1520,11 @@ def _apply_vqa_telemetry_to_decision_engine(
             state=state,
             policy=policy,
         )
-        if user_id:
-            _decision_engine.session_state.sync_policy_version(
-                session_id,
-                policy.policy_version,
-                refresh_ttl=result == "PASS",
-            )
+        _decision_engine.session_state.sync_policy_version(
+            session_id,
+            policy.policy_version,
+            refresh_ttl=result == "PASS",
+        )
     return True
 
 
