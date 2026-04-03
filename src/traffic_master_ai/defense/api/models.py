@@ -384,5 +384,6 @@ class AiChallengeVerifyResponse(BaseModel):
 
     success: bool
     remaining_attempts: int = Field(alias="remainingAttempts", ge=0)
+    reason: str | None = None
 
     model_config = {"populate_by_name": True, "extra": "forbid"}

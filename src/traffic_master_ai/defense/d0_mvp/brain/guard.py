@@ -101,7 +101,10 @@ class Guard:
         if external_score is None:
             if event.external_score is not None:
                 external_score = event.external_score
+            elif "external_score" in f:
+                external_score = _to_float(f.get("external_score"))
             elif "turnstile_score" in f:
+                # Legacy fallback for older callers that still send turnstile_score.
                 external_score = _to_float(f.get("turnstile_score"))
 
         rule_hits: list[str] = []

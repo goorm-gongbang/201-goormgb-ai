@@ -296,8 +296,8 @@ class DefenseRuntime:
 
         features = request.context.features or {}
 
-        # --- Turnstile integration (Gap 4) ---
-        # Ref: annex/turnstile_spec.yaml — S1 trigger, token verify → external_score
+        # --- Optional external score channel ---
+        # Turnstile is only one possible producer in the direct D0 runtime path.
         turnstile_verdict: Optional[TurnstileVerdict] = None
         external_score = _extract_external_score(event=event, features=features)
         turnstile_token = _extract_turnstile_token(request)
@@ -1394,7 +1394,10 @@ def _to_runtime_event(request: EvaluateRequest) -> RuntimeEvent:
 def _extract_external_score(*, event: RuntimeEvent, features: Mapping[str, Any]) -> Optional[float]:
     if event.external_score is not None:
         return event.external_score
-    val = features.get("turnstile_score")
+    val = features.get("external_score")
+    if val is None:
+        # Legacy fallback for older callers that still send turnstile_score.
+        val = features.get("turnstile_score")
     if val is None:
         return None
     try:
