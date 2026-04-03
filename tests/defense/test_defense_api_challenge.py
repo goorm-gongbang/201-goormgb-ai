@@ -293,7 +293,7 @@ def test_ai_challenge_verify_rejects_mismatched_challenge_id() -> None:
     assert runtime_body["vqa_attempt_count"] == 0
 
 
-def test_ai_challenge_verify_block_invokes_auth_guard_with_stored_user_id(monkeypatch) -> None:
+def test_ai_challenge_verify_exhaustion_does_not_invoke_auth_guard(monkeypatch) -> None:
     captured: dict[str, str] = {}
 
     def _stub_block_user_in_auth_guard(**kwargs):
@@ -328,9 +328,7 @@ def test_ai_challenge_verify_block_invokes_auth_guard_with_stored_user_id(monkey
         )
         assert verify.status_code == 200
 
-    assert captured["user_id"] == "42"
-    assert captured["session_id"] == _state_key(session_id)
-    assert captured["trigger"] == "ai_challenge_verify_exhausted_block"
+    assert captured == {}
 
 
 def test_ai_precheck_resets_exhausted_vqa_state_for_new_booking_attempt() -> None:

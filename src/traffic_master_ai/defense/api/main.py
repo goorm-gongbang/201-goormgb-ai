@@ -616,7 +616,6 @@ async def ai_challenge_start(
 async def ai_challenge_verify(
     request: Request,
     req: AiChallengeVerifyRequest,
-    background_tasks: BackgroundTasks,
     authorization: str | None = Header(default=None, alias="Authorization"),
     x_user_id: str | None = Header(default=None, alias="X-User-Id"),
 ) -> AiChallengeVerifyResponse:
@@ -629,7 +628,6 @@ async def ai_challenge_verify(
     sid = session_id_candidates[0]
     state_key = _build_state_key(sid, req.match_id)
     now_ms = int(time.time() * 1000)
-    trace_id = _resolve_trace_id(request)
     user_id = _resolve_user_id(
         explicit_user_id=None,
         x_user_id=x_user_id,
@@ -751,14 +749,6 @@ async def ai_challenge_verify(
         },
     )
     CHALLENGE_VERIFY_REQUESTS.labels(result="fail").inc()
-    if remaining == 0:
-        background_tasks.add_task(
-            _block_user_in_auth_guard,
-            user_id=user_id,
-            session_id=state_key,
-            trace_id=trace_id,
-            trigger="ai_challenge_verify_exhausted_block",
-        )
     return AiChallengeVerifyResponse(success=False, remainingAttempts=remaining)
 
 
