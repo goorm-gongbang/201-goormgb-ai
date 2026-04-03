@@ -283,6 +283,51 @@ def test_ai_challenge_verify_pass_applies_vqa_risk_and_seat_entry_does_not_recom
     assert runtime_after.json()["risk_score"] == risk_before
 
 
+def test_ai_challenge_verify_pass_with_user_header_does_not_500() -> None:
+    session_id = _session_id("sess-ai-verify-pass-user")
+    headers = _headers_with_user(session_id, "user-123")
+    start = client.post(
+        "/ai/challenge/start",
+        json={"matchId": MATCH_ID},
+        headers=headers,
+    )
+    assert start.status_code == 200
+    challenge_id = start.json()["challengeId"]
+
+    ingest = client.post(
+        "/ai/telemetry/ingest",
+        json={
+            "matchId": MATCH_ID,
+            "stage": "VQA_CHALLENGE",
+            "events": [
+                {"type": "mousemove", "tsMs": 0, "xNorm": 0.10, "yNorm": 0.50},
+                {"type": "mousemove", "tsMs": 80, "xNorm": 0.18, "yNorm": 0.53},
+                {"type": "mousemove", "tsMs": 170, "xNorm": 0.27, "yNorm": 0.47},
+                {"type": "mousemove", "tsMs": 280, "xNorm": 0.35, "yNorm": 0.55},
+                {"type": "mousemove", "tsMs": 410, "xNorm": 0.44, "yNorm": 0.48},
+                {"type": "mousemove", "tsMs": 560, "xNorm": 0.52, "yNorm": 0.52},
+            ],
+        },
+        headers=headers,
+    )
+    assert ingest.status_code == 200
+
+    verify = client.post(
+        "/ai/challenge/verify",
+        json={
+            "matchId": MATCH_ID,
+            "challengeId": challenge_id,
+            "caught": True,
+            "catchTsMs": 560,
+            "catchXNorm": 0.52,
+            "catchYNorm": 0.52,
+        },
+        headers=headers,
+    )
+    assert verify.status_code == 200
+    assert verify.json()["success"] is True
+
+
 def test_ai_challenge_verify_terminal_abnormal_pattern_returns_exhaustion_style_failure() -> None:
     session_id = _session_id("sess-ai-verify-abnormal")
     start = client.post(
