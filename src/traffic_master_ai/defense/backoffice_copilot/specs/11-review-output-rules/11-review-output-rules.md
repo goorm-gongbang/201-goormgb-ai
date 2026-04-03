@@ -8,6 +8,15 @@
 - export 파일은 DB 저장 이후 생성되는 부가 산출물이다.
 - 컬럼 계약은 `21-data-contract.md`와 일치해야 한다.
 
+관련 문서:
+
+- `../00-core-rules/00-core-rules.md`: 최상위 출력 원칙
+- `../01-service-overview/01-service-overview.md`: 최종 산출물 사용 방식
+- `../10-post-review-rules/10-post-review-rules.md`: suspicious 전달 및 저장 규칙
+- `../21-data-contract/21-data-contract.md`: 필드/컬럼 정의와 매핑 기준
+- `../30-ops-and-check/30-ops-and-checks.md`: DB 저장/후속 export 검증 규칙
+- `../30-ops-and-check/31-observability-merge-strategy.md`: Discord/Grafana 소비 시 정식 출력과 runtime observability를 어떻게 병행 사용하는지 정의
+
 ---
 
 ## 2. 출력 우선순위
