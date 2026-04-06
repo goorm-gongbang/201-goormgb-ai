@@ -23,6 +23,7 @@ from ..backoffice_copilot.storage.clickhouse_validators import ClickHouseAuditEv
 from ..storage_env import (
     ETLWorkerConfig,
     load_etl_worker_config_from_env,
+    StorageOperationalConfigError,
     validate_clickhouse_ingest_env_for_prod,
 )
 
@@ -33,11 +34,22 @@ class ETLIngestError(RuntimeError):
     """Raised when one S3 archive object cannot be ingested into ClickHouse."""
 
 
+class ETLConfigurationError(StorageOperationalConfigError):
+    """Raised when the ETL worker is missing required operational config."""
+
+
 @dataclass(slots=True, frozen=True)
 class S3AuditIngestResult:
     key: str
     accepted_row_count: int
     duplicate_row_count: int
+
+
+def _ensure_clickhouse_ingest_operational_config(config: ETLWorkerConfig) -> None:
+    if not (config.s3.bucket or "").strip():
+        raise ETLConfigurationError("TM_S3_BUCKET must be set to run the ClickHouse ETL worker.")
+    if not config.clickhouse.enabled:
+        raise ETLConfigurationError("TM_CLICKHOUSE_URL must be set to run the ClickHouse ETL worker.")
 
 
 class ETLWorker:
@@ -92,16 +104,16 @@ class ETLWorker:
     def from_env(cls) -> ETLWorker:
         """Build the ClickHouse ETL worker from env config."""
 
-        validate_clickhouse_ingest_env_for_prod()
+        try:
+            validate_clickhouse_ingest_env_for_prod()
+        except StorageOperationalConfigError as exc:
+            raise ETLConfigurationError(str(exc)) from exc
         return cls(load_etl_worker_config_from_env())
 
     def run_once(self) -> int:
         """Scan S3 for archived audit JSONL files and ingest them into ClickHouse."""
 
-        if not self.s3_bucket:
-            raise RuntimeError("TM_S3_BUCKET must be set to run the ClickHouse ETL worker.")
-        if not self.config.clickhouse.enabled:
-            raise RuntimeError("TM_CLICKHOUSE_URL must be set to run the ClickHouse ETL worker.")
+        self._ensure_runtime_ingest_config()
 
         total_rows = 0
         for key in self._iter_source_keys():
@@ -124,6 +136,16 @@ class ETLWorker:
             result = self.replay_key(key)
             total_rows += result.accepted_row_count
         return total_rows
+
+    def _ensure_runtime_ingest_config(self) -> None:
+        if not self.s3_bucket:
+            raise ETLConfigurationError(
+                "TM_S3_BUCKET must be set to run the ClickHouse ETL worker."
+            )
+        if not self.config.clickhouse.enabled:
+            raise ETLConfigurationError(
+                "TM_CLICKHOUSE_URL must be set to run the ClickHouse ETL worker."
+            )
 
     def _iter_source_keys(self) -> list[str]:
         keys: list[str] = []
@@ -240,30 +262,47 @@ class ETLWorker:
 def run_etl() -> None:
     """CLI entry point for the ClickHouse ETL worker."""
 
-    validate_clickhouse_ingest_env_for_prod()
-    config = load_etl_worker_config_from_env()
-    if not config.s3.archive_enabled:
-        raise SystemExit("TM_S3_BUCKET must be set to run the ClickHouse ETL worker.")
-    if not config.clickhouse.enabled:
-        raise SystemExit("TM_CLICKHOUSE_URL must be set to run the ClickHouse ETL worker.")
-
-    worker = ETLWorker(config=config)
     try:
+        validate_clickhouse_ingest_env_for_prod()
+        config = load_etl_worker_config_from_env()
+        _ensure_clickhouse_ingest_operational_config(config)
+        worker = ETLWorker(config=config)
         total = worker.run_once()
+    except ETLConfigurationError as exc:
+        logger.error("ClickHouse ETL configuration invalid: %s", exc)
+        raise SystemExit(str(exc)) from exc
     except CanonicalAuditMappingError as exc:
+        logger.error("Canonical audit -> ClickHouse mapping failed: %s", exc)
         raise SystemExit(f"Canonical audit -> ClickHouse mapping failed: {exc}") from exc
+    except ETLIngestError as exc:
+        logger.error("ClickHouse ETL failed: %s", exc)
+        raise SystemExit(str(exc)) from exc
+    except StorageOperationalConfigError as exc:
+        logger.error("ClickHouse ETL configuration invalid: %s", exc)
+        raise SystemExit(str(exc)) from exc
     print(f"ClickHouse ETL completed. Accepted {total} rows.")
 
 
 def run_etl_replay_keys(keys: list[str]) -> None:
     """Operational replay entry point for one explicit archive object list."""
 
-    validate_clickhouse_ingest_env_for_prod()
-    worker = ETLWorker.from_env()
     try:
+        config = load_etl_worker_config_from_env()
+        _ensure_clickhouse_ingest_operational_config(config)
+        worker = ETLWorker(config=config)
         total = worker.replay_keys(keys)
+    except ETLConfigurationError as exc:
+        logger.error("ClickHouse ETL replay configuration invalid: %s", exc)
+        raise SystemExit(str(exc)) from exc
     except CanonicalAuditMappingError as exc:
+        logger.error("Canonical audit -> ClickHouse mapping failed: %s", exc)
         raise SystemExit(f"Canonical audit -> ClickHouse mapping failed: {exc}") from exc
+    except ETLIngestError as exc:
+        logger.error("ClickHouse ETL replay failed: %s", exc)
+        raise SystemExit(str(exc)) from exc
+    except StorageOperationalConfigError as exc:
+        logger.error("ClickHouse ETL replay configuration invalid: %s", exc)
+        raise SystemExit(str(exc)) from exc
     print(f"ClickHouse ETL replay completed. Accepted {total} rows.")
 
 

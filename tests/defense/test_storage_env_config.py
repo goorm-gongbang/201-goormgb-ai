@@ -7,7 +7,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from traffic_master_ai.defense.api.etl_worker import run_etl
+from traffic_master_ai.defense.api.etl_worker import ETLConfigurationError, ETLWorker, run_etl
 from traffic_master_ai.defense.backoffice_copilot.storage import (
     build_clickhouse_read_model_config_from_env,
     build_clickhouse_write_config_from_env,
@@ -25,6 +25,10 @@ from traffic_master_ai.defense.storage_env import (
     DEFAULT_POLICY_STORE_PATH,
     DEFAULT_S3_ARCHIVE_INTERVAL_SECONDS,
     DEFAULT_S3_PREFIX,
+    ClickHouseStorageConfig,
+    ETLWorkerConfig,
+    PostgresStorageConfig,
+    S3ArchiveConfig,
     load_clickhouse_storage_config_from_env,
     load_projection_sync_config_from_env,
     load_audit_log_config_from_env,
@@ -225,6 +229,22 @@ class StorageEnvConfigTests(unittest.TestCase):
         ):
             with self.assertRaises(SystemExit) as exc_info:
                 run_etl()
+
+        self.assertIn("TM_CLICKHOUSE_URL must be set", str(exc_info.exception))
+
+    def test_etl_worker_raises_configuration_error_when_clickhouse_env_is_missing(self) -> None:
+        worker = ETLWorker(
+            config=ETLWorkerConfig(
+                s3=S3ArchiveConfig(bucket="audit-bucket", prefix="ai-defense/audit/"),
+                postgres=PostgresStorageConfig(url=None),
+                clickhouse=ClickHouseStorageConfig(url=None),
+            ),
+            s3_client=MagicMock(),
+            clickhouse_writer=MagicMock(),
+        )
+
+        with self.assertRaises(ETLConfigurationError) as exc_info:
+            worker.run_once()
 
         self.assertIn("TM_CLICKHOUSE_URL must be set", str(exc_info.exception))
 
