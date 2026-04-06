@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
 from typing import Any, Optional
 
+from ..storage_env import load_audit_log_config_from_env, load_s3_archive_config_from_env
 from .models import EvaluateRequest, EvaluateResponse, RuntimeStateSnapshot
 
 logger = logging.getLogger(__name__)
@@ -26,8 +26,7 @@ class DefenseDecisionAuditLogger:
 
     @classmethod
     def from_env(cls) -> DefenseDecisionAuditLogger:
-        path = os.getenv("TM_DEFENSE_AUDIT_LOG_PATH", "/tmp/logs/defense_decision_audit.jsonl")
-        return cls(path=path)
+        return cls(path=load_audit_log_config_from_env().file_path)
 
     def log(
         self,
@@ -109,6 +108,19 @@ class S3Uploader:
         except ImportError:
             logger.warning("boto3 not installed; S3Uploader will be inactive.")
             self._s3 = None
+
+    @classmethod
+    def from_env(cls) -> S3Uploader | None:
+        """Build the S3 uploader from env or return None when archiving is disabled."""
+
+        config = load_s3_archive_config_from_env()
+        if not config.archive_enabled:
+            return None
+        return cls(
+            bucket=config.bucket or "",
+            prefix=config.prefix,
+            region=config.region,
+        )
 
     def upload_file(self, local_path: Path) -> bool:
         if not self._s3 or not local_path.exists():

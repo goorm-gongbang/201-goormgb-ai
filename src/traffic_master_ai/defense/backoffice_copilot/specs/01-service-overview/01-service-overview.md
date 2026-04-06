@@ -11,6 +11,15 @@
 
 이 문서는 제품 정의 문서이며, 하위 문서는 이 문서를 기반으로 작성된다.
 
+관련 문서:
+
+- `../00-core-rules/00-core-rules.md`: 최상위 불변 원칙
+- `../10-post-review-rules/10-post-review-rules.md`: 사후판단 도메인 규칙
+- `../11-review-output-rules/11-review-output-rules.md`: 정식 저장 및 export 규칙
+- `../21-data-contract/21-data-contract.md`: DTO/DB 컬럼 계약
+- `../30-ops-and-check/31-observability-merge-strategy.md`: Discord/Grafana 외부 소비를 위한 병합 전략
+- `../../d0_mvp/ssot_specs/L2/obs_opt/defense_observability_ssot.yaml`: Runtime 관측 데이터와 KPI 정의
+
 ---
 
 ## 2. 서비스 한 줄 정의

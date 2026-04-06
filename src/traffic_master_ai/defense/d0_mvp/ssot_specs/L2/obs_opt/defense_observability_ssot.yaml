@@ -15,6 +15,13 @@ meta:
   owner_team: "defense-runtime"
   status: "final"
   language: "ko"
+  related_docs:
+    - "src/traffic_master_ai/defense/backoffice_copilot/specs/30-ops-and-check/31-observability-merge-strategy.md"
+    - "src/traffic_master_ai/defense/backoffice_copilot/specs/00-core-rules/00-core-rules.md"
+    - "src/traffic_master_ai/defense/backoffice_copilot/specs/01-service-overview/01-service-overview.md"
+    - "src/traffic_master_ai/defense/backoffice_copilot/specs/10-post-review-rules/10-post-review-rules.md"
+    - "src/traffic_master_ai/defense/backoffice_copilot/specs/11-review-output-rules/11-review-output-rules.md"
+    - "src/traffic_master_ai/defense/backoffice_copilot/specs/21-data-contract/21-data-contract.md"
 
 governance:
   precedence: "L0 > L1 > L2 > annex"
@@ -27,6 +34,10 @@ governance:
     - "중복(trace 재전송)으로 KPI가 왜곡되지 않도록 dedup-aware 집계를 기본으로 한다."
     - "PII/원문/DOM/원시 궤적은 audit에 기록하지 않는다."
     - "운영 콘솔은 초~수십초 수준 near-real-time 집계를 목표로 한다."
+  downstream_consumers:
+    - "Grafana or equivalent read-only observability dashboard"
+    - "Backoffice Copilot post-review pipeline"
+    - "Discord/notification pipeline via merged external consumption strategy"
 
 # =============================================================================
 # 1) decision_audit (JSONL) — canonical evidence log

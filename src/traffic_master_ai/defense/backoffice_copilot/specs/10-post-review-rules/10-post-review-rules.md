@@ -11,6 +11,15 @@
 
 스키마의 필드 상세 정의(의미/필요 이유)는 `21-data-contract.md`를 단일 기준으로 따른다.
 
+관련 문서:
+
+- `../00-core-rules/00-core-rules.md`: 최상위 원칙과 책임 분리
+- `../01-service-overview/01-service-overview.md`: 서비스 범위와 처리 흐름
+- `../11-review-output-rules/11-review-output-rules.md`: 결과 저장 및 export 우선순위
+- `../21-data-contract/21-data-contract.md`: DTO/DB 컬럼 계약
+- `../30-ops-and-check/31-observability-merge-strategy.md`: Runtime observability와 post-review 결과의 외부 소비 병합 전략
+- `../../d0_mvp/ssot_specs/L2/obs_opt/defense_observability_ssot.yaml`: Runtime audit/warehouse/KPI 정의
+
 ---
 
 ## 2. 범위
