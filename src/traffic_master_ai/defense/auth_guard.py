@@ -4,16 +4,29 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Protocol
 from urllib.parse import quote
 
 import httpx
+from prometheus_client import Counter, Histogram
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT_SECONDS = 2.0
 _INTERNAL_API_KEY_HEADER = "X-Internal-Api-Key"
+
+BLOCK_SYNC_REQUESTS = Counter(
+    "ai_defense_block_sync_total",
+    "Total Auth-Guard block sync attempts by outcome",
+    ["outcome"],
+)
+
+BLOCK_SYNC_LATENCY_SECONDS = Histogram(
+    "ai_defense_block_sync_latency_seconds",
+    "Auth-Guard block sync latency in seconds",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,7 +127,9 @@ class AuthGuardBlockService:
                 trace_id,
                 trigger,
             )
-            return BlockUserResult(outcome="skipped_missing_user_id")
+            result = BlockUserResult(outcome="skipped_missing_user_id")
+            _record_block_sync_result(result)
+            return result
 
         if self._config is None:
             logger.warning(
@@ -124,13 +139,16 @@ class AuthGuardBlockService:
                 trace_id,
                 trigger,
             )
-            return BlockUserResult(outcome="disabled")
+            result = BlockUserResult(outcome="disabled")
+            _record_block_sync_result(result)
+            return result
 
         url = (
             f"{self._config.base_url}/internal/users/"
             f"{quote(normalized_user_id, safe='')}/block"
         )
         headers = {_INTERNAL_API_KEY_HEADER: self._config.internal_api_key}
+        started_at = time.perf_counter()
 
         try:
             response = self._http_client.post(
@@ -147,7 +165,12 @@ class AuthGuardBlockService:
                 trigger,
                 exc,
             )
-            return BlockUserResult(outcome="request_error", message=str(exc))
+            result = BlockUserResult(outcome="request_error", message=str(exc))
+            _record_block_sync_result(
+                result,
+                latency_seconds=time.perf_counter() - started_at,
+            )
+            return result
 
         payload = _response_payload(response)
         code = _payload_str(payload, "code")
@@ -156,6 +179,10 @@ class AuthGuardBlockService:
             status_code=response.status_code,
             code=code,
             message=message,
+        )
+        _record_block_sync_result(
+            result,
+            latency_seconds=time.perf_counter() - started_at,
         )
         self._log_result(
             result=result,
@@ -229,6 +256,16 @@ def _payload_str(payload: Mapping[str, Any], key: str) -> Optional[str]:
     return text or None
 
 
+def _record_block_sync_result(
+    result: BlockUserResult,
+    *,
+    latency_seconds: Optional[float] = None,
+) -> None:
+    BLOCK_SYNC_REQUESTS.labels(outcome=result.outcome).inc()
+    if latency_seconds is not None:
+        BLOCK_SYNC_LATENCY_SECONDS.observe(latency_seconds)
+
+
 def _to_result(
     *,
     status_code: int,
@@ -259,6 +296,13 @@ def _to_result(
     if status_code == 401:
         return BlockUserResult(
             outcome="unauthorized",
+            http_status=status_code,
+            code=code,
+            message=message,
+        )
+    if status_code == 403:
+        return BlockUserResult(
+            outcome="forbidden",
             http_status=status_code,
             code=code,
             message=message,
