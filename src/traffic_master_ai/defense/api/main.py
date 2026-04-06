@@ -705,7 +705,6 @@ async def ai_challenge_verify(
     vqa_risk_applied = _apply_vqa_telemetry_to_decision_engine(
         session_id=state_key,
         trace_id=trace_id,
-        user_id=user_id or snap.user_id,
         flow_state=snap.flow_state,
         now_ms=now_ms,
         feature_summary=feature_summary,
@@ -1509,7 +1508,6 @@ def _apply_vqa_telemetry_to_decision_engine(
     *,
     session_id: str,
     trace_id: str,
-    user_id: Optional[str],
     flow_state: str,
     now_ms: int,
     feature_summary: dict[str, float],
