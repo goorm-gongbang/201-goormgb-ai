@@ -539,28 +539,41 @@ async def ai_evaluate(
     )
 
     if req.event.event_type == "QUEUE_ENTER" and not _precheck_is_valid(snap, now_ms):
-        EVALUATE_REQUESTS.labels(decision="BLOCK").inc()
-        background_tasks.add_task(
-            _block_user_in_auth_guard,
+        return _build_evaluate_response(
+            background_tasks=background_tasks,
+            action="BLOCK",
             user_id=user_id,
             session_id=state_key,
             trace_id=trace_id,
-            trigger="ai_evaluate_precheck_block",
+            block_trigger="ai_evaluate_precheck_block",
         )
-        return AiEvaluateResponse(decision={"action": "BLOCK"})
-
 
     if req.event.event_type == "SEAT_ENTRY":
         if not snap.vqa_passed:
-            EVALUATE_REQUESTS.labels(decision="REQUIRE_S3").inc()
-            return AiEvaluateResponse(decision={"action": "REQUIRE_S3"})
-        EVALUATE_REQUESTS.labels(decision="NONE").inc()
-        return AiEvaluateResponse(decision={"action": "NONE"})
+            return _build_evaluate_response(
+                background_tasks=background_tasks,
+                action="REQUIRE_S3",
+                user_id=user_id,
+                session_id=state_key,
+                trace_id=trace_id,
+            )
+        return _build_evaluate_response(
+            background_tasks=background_tasks,
+            action="NONE",
+            user_id=user_id,
+            session_id=state_key,
+            trace_id=trace_id,
+        )
 
     soft_action = _feature_soft_action(event_type=req.event.event_type, snap=snap)
     if soft_action is not None:
-        EVALUATE_REQUESTS.labels(decision=soft_action).inc()
-        return AiEvaluateResponse(decision={"action": soft_action})
+        return _build_evaluate_response(
+            background_tasks=background_tasks,
+            action=soft_action,
+            user_id=user_id,
+            session_id=state_key,
+            trace_id=trace_id,
+        )
 
     legacy_req = _build_legacy_request_from_target(
         state_key=state_key,
@@ -577,8 +590,14 @@ async def ai_evaluate(
     action = _target_action_from_legacy(legacy_resp.action)
     if req.event.event_type == "QUEUE_ENTER" and action == "REQUIRE_S3":
         action = "THROTTLE"
-    EVALUATE_REQUESTS.labels(decision=action).inc()
-    return AiEvaluateResponse(decision={"action": action})
+    return _build_evaluate_response(
+        background_tasks=background_tasks,
+        action=action,
+        user_id=user_id,
+        session_id=state_key,
+        trace_id=trace_id,
+        block_trigger="ai_evaluate_decision_block",
+    )
 
 
 @app.post("/ai/challenge/start", response_model=AiChallengeStartResponse, tags=["challenge"])
@@ -686,7 +705,6 @@ async def ai_challenge_verify(
     vqa_risk_applied = _apply_vqa_telemetry_to_decision_engine(
         session_id=state_key,
         trace_id=trace_id,
-        user_id=user_id or snap.user_id,
         flow_state=snap.flow_state,
         now_ms=now_ms,
         feature_summary=feature_summary,
@@ -1218,6 +1236,27 @@ def _block_user_in_auth_guard(
     )
 
 
+def _build_evaluate_response(
+    *,
+    background_tasks: BackgroundTasks,
+    action: str,
+    user_id: Optional[str],
+    session_id: str,
+    trace_id: str,
+    block_trigger: str = "ai_evaluate_block",
+) -> AiEvaluateResponse:
+    EVALUATE_REQUESTS.labels(decision=action).inc()
+    if action == "BLOCK":
+        background_tasks.add_task(
+            _block_user_in_auth_guard,
+            user_id=user_id,
+            session_id=session_id,
+            trace_id=trace_id,
+            trigger=block_trigger,
+        )
+    return AiEvaluateResponse(decision={"action": action})
+
+
 async def _verify_turnstile_token(turnstile_token: str) -> bool:
     token = turnstile_token.strip()
     if not token:
@@ -1469,7 +1508,6 @@ def _apply_vqa_telemetry_to_decision_engine(
     *,
     session_id: str,
     trace_id: str,
-    user_id: Optional[str],
     flow_state: str,
     now_ms: int,
     feature_summary: dict[str, float],

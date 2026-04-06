@@ -83,8 +83,14 @@ def test_queue_enter_block_invokes_auth_guard(monkeypatch) -> None:
     assert captured["trigger"] == "ai_evaluate_precheck_block"
 
 
-def test_post_vqa_events_require_s3_when_vqa_not_passed() -> None:
+def test_post_vqa_events_require_s3_when_vqa_not_passed(monkeypatch) -> None:
     sid = "sess-eval-post-vqa-guard-1"
+    captured: list[dict[str, str | None]] = []
+
+    def _stub_block_user_in_auth_guard(**kwargs):
+        captured.append(kwargs)
+
+    monkeypatch.setattr(api_main, "_block_user_in_auth_guard", _stub_block_user_in_auth_guard)
     response = client.post(
         "/ai/evaluate",
         json=_evaluate_payload(
@@ -96,10 +102,12 @@ def test_post_vqa_events_require_s3_when_vqa_not_passed() -> None:
     )
     assert response.status_code == 200
     assert response.json() == {"decision": {"action": "REQUIRE_S3"}}
+    assert captured == []
 
 
 def test_legacy_challenge_action_does_not_emit_require_s3(monkeypatch) -> None:
     sid = "sess-eval-legacy-challenge-1"
+    captured: list[dict[str, str | None]] = []
     precheck = client.post(
         "/ai/precheck",
         json={"matchId": MATCH_ID, "cfToken": "ok-token"},
@@ -107,6 +115,9 @@ def test_legacy_challenge_action_does_not_emit_require_s3(monkeypatch) -> None:
     )
     assert precheck.status_code == 200
     assert precheck.json()["allowed"] is True
+
+    def _stub_block_user_in_auth_guard(**kwargs):
+        captured.append(kwargs)
 
     def _stub_execute_legacy_evaluate(_req):
         return (
@@ -130,6 +141,7 @@ def test_legacy_challenge_action_does_not_emit_require_s3(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(api_main, "_execute_legacy_evaluate", _stub_execute_legacy_evaluate)
+    monkeypatch.setattr(api_main, "_block_user_in_auth_guard", _stub_block_user_in_auth_guard)
 
     response = client.post(
         "/ai/evaluate",
@@ -142,17 +154,22 @@ def test_legacy_challenge_action_does_not_emit_require_s3(monkeypatch) -> None:
     )
     assert response.status_code == 200
     assert response.json() == {"decision": {"action": "THROTTLE"}}
+    assert captured == []
 
 
 def test_post_vqa_guard_is_bypassed_after_vqa_pass(monkeypatch) -> None:
     sid = "sess-eval-post-vqa-pass-1"
     state_key = f"{sid}:{MATCH_ID}"
+    captured: list[dict[str, str | None]] = []
     marked = client.post(
         "/runtime/vqa/mark",
         json={"session_id": state_key, "vqa_passed": True, "flow_state": "S4"},
     )
     assert marked.status_code == 200
     assert marked.json()["vqa_passed"] is True
+
+    def _stub_block_user_in_auth_guard(**kwargs):
+        captured.append(kwargs)
 
     def _stub_execute_legacy_evaluate(_req):
         return (
@@ -176,6 +193,7 @@ def test_post_vqa_guard_is_bypassed_after_vqa_pass(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(api_main, "_execute_legacy_evaluate", _stub_execute_legacy_evaluate)
+    monkeypatch.setattr(api_main, "_block_user_in_auth_guard", _stub_block_user_in_auth_guard)
 
     response = client.post(
         "/ai/evaluate",
@@ -188,6 +206,7 @@ def test_post_vqa_guard_is_bypassed_after_vqa_pass(monkeypatch) -> None:
     )
     assert response.status_code == 200
     assert response.json() == {"decision": {"action": "NONE"}}
+    assert captured == []
 
 
 def test_post_vqa_guard_uses_sid_level_vqa_mark(monkeypatch) -> None:
@@ -247,6 +266,10 @@ def test_legacy_block_forwards_user_id_to_decision_engine(monkeypatch) -> None:
     assert precheck.status_code == 200
 
     captured: dict[str, str | None] = {}
+    block_sync_calls: list[dict[str, str | None]] = []
+
+    def _stub_block_user_in_auth_guard(**kwargs):
+        block_sync_calls.append(kwargs)
 
     def _stub_execute_legacy_evaluate(req):
         captured["user_id"] = req.user_id
@@ -271,6 +294,7 @@ def test_legacy_block_forwards_user_id_to_decision_engine(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(api_main, "_execute_legacy_evaluate", _stub_execute_legacy_evaluate)
+    monkeypatch.setattr(api_main, "_block_user_in_auth_guard", _stub_block_user_in_auth_guard)
 
     response = client.post(
         "/ai/evaluate",
@@ -286,3 +310,8 @@ def test_legacy_block_forwards_user_id_to_decision_engine(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json() == {"decision": {"action": "BLOCK"}}
     assert captured["user_id"] == "42"
+    assert len(block_sync_calls) == 1
+    assert block_sync_calls[0]["user_id"] == "42"
+    assert block_sync_calls[0]["session_id"] == state_key
+    assert block_sync_calls[0]["trigger"] == "ai_evaluate_decision_block"
+    assert block_sync_calls[0]["trace_id"]
