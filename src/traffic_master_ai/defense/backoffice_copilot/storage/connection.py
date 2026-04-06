@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING, Any
+
+from ...storage_env import load_postgres_storage_config_from_env
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import Engine
@@ -14,10 +15,7 @@ else:
 def get_postgres_url_from_env() -> str:
     """Return the configured PostgreSQL URL or raise when missing."""
 
-    pg_url = os.getenv("TM_PG_URL", "").strip()
-    if not pg_url:
-        raise ValueError("TM_PG_URL must be set to use Backoffice Copilot PostgreSQL storage.")
-    return pg_url
+    return load_postgres_storage_config_from_env(required=True).url or ""
 
 
 def build_postgres_engine(pg_url: str) -> Engine:

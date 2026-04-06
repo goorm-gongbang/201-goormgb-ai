@@ -196,6 +196,7 @@ agent에게 작업을 맡길 때는 아래 구조를 유지한다.
 - 관련 문서
 - 작업 지침
 - 검증
+- 작업 로그
 - 완료 조건
 
 최근 작업 스타일의 핵심은 아래였다.
@@ -204,10 +205,44 @@ agent에게 작업을 맡길 때는 아래 구조를 유지한다.
 - 무엇을 하지 말아야 하는지 강하게 적는다.
 - 작업 후 무엇을 기록해야 하는지 요구한다.
 
-자세한 패턴은 아래 문서를 본다.
+바로 복사해 쓸 수 있는 task 템플릿은 아래 문서를 본다.
 
-- [02-recent-agent-working-style.md](/Users/shadowmoon/201-goormgb-ai-1/src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/02-recent-agent-working-style.md)
 - [03-db-build-task-template.md](/Users/shadowmoon/201-goormgb-ai-1/src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/03-db-build-task-template.md)
+
+### 8.1 작업 로그를 명시적으로 남긴다
+
+각 task는 결과 메시지로만 끝내지 않는다.
+반드시 저장소 안의 작업 로그 파일에도 남긴다.
+
+기본 로그 파일:
+
+- [task-execution-log.md](/Users/shadowmoon/201-goormgb-ai-1/src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/task-execution-log.md)
+
+원칙:
+
+- task 하나가 끝날 때마다 로그를 append한다.
+- 사용자가 task 완료 결과를 다시 요약 전달하지 않아도 다음 task로 이어질 수 있게 남긴다.
+- 로그에는 최소 아래를 남긴다.
+  1. task 번호와 제목
+  2. 작업 일시
+  3. 실제로 수정한 파일 목록
+  4. 파일별 수정 요약
+  5. 검증에 사용한 명령과 결과 요약
+  6. 남은 리스크 또는 다음 task에 넘길 입력
+- 문서 task라도 로그를 생략하지 않는다.
+- 결과 메시지와 로그 내용이 서로 모순되면 안 된다.
+
+### 8.2 task 완료는 agent가 스스로 닫는다
+
+사용자가 task 완료 여부를 다시 판정해 주는 흐름을 기본 전제로 두지 않는다.
+
+원칙:
+
+- agent는 완료 조건을 기준으로 스스로 task 종료 여부를 판단한다.
+- 완료 조건을 충족하면 추가 확인을 기다리지 말고 작업 로그까지 남긴 뒤 종료 보고를 한다.
+- 완료 조건을 못 채우면 “완료”라고 쓰지 말고 같은 task 안에서 필요한 최소 보정까지 진행한다.
+- 정말 막히는 경우에만 사용자 판단을 요청한다.
+- 다음 task가 바로 사용할 입력을 종료 보고와 작업 로그에 같이 남긴다.
 
 ---
 
@@ -373,16 +408,13 @@ agent는 성공한 긴 로그보다 실패 순간의 정보에 집중한다.
 3. 어떤 문서/코드/테이블이 영향을 받는지
 4. 무엇으로 검증했는지
 5. 남은 리스크와 다음 task
+6. 작업 로그 파일에 append한 기록 위치
 
 ---
 
 ## 16. 이 폴더의 다른 문서
 
-- [00-readme.md](/Users/shadowmoon/201-goormgb-ai-1/src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/00-readme.md)
-  - 이 폴더의 entrypoint
 - [01-doc-map.md](/Users/shadowmoon/201-goormgb-ai-1/src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/01-doc-map.md)
   - 원본 문서와 코드 파일 맵
-- [02-recent-agent-working-style.md](/Users/shadowmoon/201-goormgb-ai-1/src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/02-recent-agent-working-style.md)
-  - 최근 위임 방식 분석
 - [03-db-build-task-template.md](/Users/shadowmoon/201-goormgb-ai-1/src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/03-db-build-task-template.md)
   - 바로 복사해서 쓸 수 있는 task 템플릿

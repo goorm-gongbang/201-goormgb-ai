@@ -4,6 +4,10 @@
 
 - [agent.md](/Users/shadowmoon/201-goormgb-ai-1/src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/agent.md)
   - DB 구축 작업용 최상위 작업 지침서
+- [task-execution-log.md](/Users/shadowmoon/201-goormgb-ai-1/src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/task-execution-log.md)
+  - DB 구축 task별 결과와 다음 task 입력을 누적하는 전용 로그
+- [11-final-drift-review-and-handoff.md](/Users/shadowmoon/201-goormgb-ai-1/src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/11-final-drift-review-and-handoff.md)
+  - Task 8~17 결과를 축별로 정리한 최종 drift / handoff 문서
 
 ## 1. 목표 구조 문서
 

@@ -12,9 +12,11 @@
 1. `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/agent.md`
 2. `src/traffic_master_ai/defense/backoffice_copilot/specs/30-ops-and-check/32-storage-architecture.md`
 3. `src/traffic_master_ai/defense/backoffice_copilot/specs/30-ops-and-check/33-docs-vs-current-code-gap-analysis.md`
-4. [이번 task와 직접 관련된 SSOT 문서]
-5. [이번 task와 직접 관련된 코드 파일]
-6. [관련 테스트 파일]
+4. `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/task-execution-log.md`
+5. [이전 task 산출물 문서]
+6. [이번 task와 직접 관련된 SSOT 문서]
+7. [이번 task와 직접 관련된 코드 파일]
+8. [관련 테스트 파일]
 
 ## 목적
 - [이 task가 해결해야 하는 한 가지 목적]
@@ -53,11 +55,24 @@
 4. 문서와 코드가 충돌하면 충돌 사실을 먼저 드러내라.
 5. 범위 밖 파일은 수정하지 마라.
 6. 검증 실패 시 성공 로그보다 실패 원인과 수정 포인트를 먼저 보고하라.
+7. 완료 조건을 충족할 때까지 같은 task 안에서 필요한 최소 보정을 스스로 진행하라.
+8. 완료 조건을 충족하면 사용자 추가 확인을 기다리지 말고 task를 스스로 종료하라.
 
 ## 검증
 - [문서 검증 명령]
 - [테스트 명령]
 - [필요 시 schema / lint / type check]
+
+## 작업 로그
+- 기본 로그 파일: `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/task-execution-log.md`
+- 이 task가 끝나면 위 파일에 아래 항목을 append하라.
+  1. task 번호와 제목
+  2. 작업 일시
+  3. 실제로 수정한 파일 목록
+  4. 파일별 수정 요약
+  5. 검증에 사용한 명령과 결과 요약
+  6. 남은 리스크 또는 다음 task에 넘길 입력
+- 결과 메시지에는 작업 로그에 기록한 위치 또는 섹션도 함께 적어라.
 
 ## 작업 완료 후 기록
 아래를 반드시 요약하라.
@@ -66,6 +81,8 @@
 3. 어떤 파일이 바뀌었는지
 4. 무엇으로 검증했는지
 5. 남은 리스크
+6. 다음 task가 바로 사용할 입력
+7. 작업 로그에 append한 위치
 
 ## 완료 조건
 - [완료 조건 1]

@@ -9,9 +9,10 @@ Ref: L1/runtime/state.yaml#redis, L1/runtime/state.yaml#atomicity_and_concurrenc
 from __future__ import annotations
 
 import logging
-import os
 import time
 from typing import Any, Optional, Protocol
+
+from ...storage_env import load_runtime_redis_config_from_env
 
 logger = logging.getLogger(__name__)
 
@@ -147,13 +148,12 @@ class InMemoryRedis:
 
 def build_runtime_redis_from_env() -> tuple[RedisLike, str]:
     """Build the decision-state Redis backend from environment settings."""
-    redis_url = os.getenv("TM_REDIS_URL", "").strip()
-    is_ci = os.getenv("CI", "false").lower() == "true"
+    config = load_runtime_redis_config_from_env()
 
-    if redis_url:
-        return build_redis_from_url(redis_url), "redis"
+    if config.redis_url:
+        return build_redis_from_url(config.redis_url), "redis"
 
-    if not is_ci:
+    if not config.allow_memory_fallback:
         raise ValueError(
             "TM_REDIS_URL is strictly required for non-CI environments. "
             "In-memory fallback is only permitted when CI=true."

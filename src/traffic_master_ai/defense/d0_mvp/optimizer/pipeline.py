@@ -4,9 +4,18 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Protocol
+from uuid import uuid4
 
+from ...backoffice_copilot.storage.policy_control_plane_models import (
+    PolicyOptimizationRunRecord,
+    PolicyRolloutEventRecord,
+    PolicyRolloutStateRecord,
+    PolicyVersionRecord,
+)
 from ..core.constants import OFFLINE_LLM_MAX_SAMPLE_TRACES, OFFLINE_OPT_AUDIT_FILENAME
 from ..observability.dashboard import AdminDashboardService
 from ..observability.warehouse import AuditWarehouse
@@ -16,6 +25,36 @@ from .audit_summarizer import AuditSummarizer
 from .effect_evaluator import EffectEvaluator
 from .rollout import RolloutExecutor, RolloutState
 from .validator import ProposalValidator, proposal_base_values_from_policy
+
+_OFFLINE_OPTIMIZER_ROLLOUT_ID = "offline-optimizer-default"
+
+
+class PolicyAuthorityService(Protocol):
+    """Official control-plane write surface for optimizer/admin actions."""
+
+    rollout_state_repository: Any
+
+    def save_policy_version(
+        self,
+        record: PolicyVersionRecord,
+        *,
+        project_to_runtime: bool = False,
+    ) -> Any:
+        ...
+
+    def save_rollout_state(
+        self,
+        record: PolicyRolloutStateRecord,
+        *,
+        additional_policy_versions: tuple[str, ...] | list[str] = (),
+    ) -> Any:
+        ...
+
+    def append_rollout_event(self, record: PolicyRolloutEventRecord) -> None:
+        ...
+
+    def save_optimization_run(self, record: PolicyOptimizationRunRecord) -> None:
+        ...
 
 
 class OfflineOptimizer:
@@ -30,6 +69,8 @@ class OfflineOptimizer:
         effect_evaluator: Optional[EffectEvaluator] = None,
         rollout_executor: Optional[RolloutExecutor] = None,
         audit_summarizer: Optional[AuditSummarizer] = None,
+        authority_service: PolicyAuthorityService | None = None,
+        rollout_id: str = _OFFLINE_OPTIMIZER_ROLLOUT_ID,
         audit_file: str = OFFLINE_OPT_AUDIT_FILENAME,
     ) -> None:
         self._warehouse = warehouse
@@ -39,6 +80,8 @@ class OfflineOptimizer:
         self._effect_evaluator = effect_evaluator or EffectEvaluator(validator=self._validator)
         self._rollout = rollout_executor or RolloutExecutor()
         self._summarizer = audit_summarizer or AuditSummarizer()
+        self._authority_service = authority_service
+        self._rollout_id = rollout_id
         self._audit_path = Path(audit_file)
         self._audit_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -94,6 +137,7 @@ class OfflineOptimizer:
         }
 
     def run_once(self, *, session_id: str = "offline-optimizer", window_seconds: int = 600) -> dict[str, Any]:
+        run_started_at = datetime.now(UTC)
         metrics = self.collect_metrics(window_seconds=window_seconds)
         base_policy = self._policy_loader.load(session_id=session_id)
         metrics_snapshot_id = _metrics_snapshot_id(metrics)
@@ -174,6 +218,14 @@ class OfflineOptimizer:
             result="REJECTED" if rejection_errors else "NO_CHANGE",
             summary_report_id=summary.report_id if summary else None,
         )
+        self._persist_optimization_run(
+            base_policy_version=base_policy.policy_version,
+            metrics_snapshot_id=metrics_snapshot_id,
+            metrics=metrics,
+            proposal=proposal,
+            rejection_errors=rejection_errors,
+            created_at=run_started_at,
+        )
         return result
 
     def start_canary(
@@ -196,14 +248,29 @@ class OfflineOptimizer:
             base_policy=base_policy,
             proposal=validated,
         )
-        self.store.save_policy_version(candidate_version, candidate_doc)
         rollout = self._rollout.start_canary(
             base_policy_version=base_policy.policy_version,
             candidate_policy_version=candidate_version,
             ratio=ratio,
         )
         rollout_state = _rollout_state_dict(rollout)
-        self.store.set_rollout_state(rollout_state)
+        self._save_candidate_policy_version(
+            candidate_version=candidate_version,
+            candidate_doc=candidate_doc,
+            base_policy_version=base_policy.policy_version,
+        )
+        self._append_rollout_event_authoritative(
+            event_type="OFFLINE_OPT_CANARY_STARTED",
+            before_state=None,
+            after_state=rollout,
+            base_policy_version=base_policy.policy_version,
+            candidate_policy_version=candidate_version,
+            reason_json={"trigger": "offline_optimizer"},
+        )
+        self._save_rollout_state_authoritative(
+            state=rollout,
+            previous_state=None,
+        )
         result = {
             "candidatePolicyVersion": candidate_version,
             "rolloutState": rollout_state,
@@ -234,7 +301,18 @@ class OfflineOptimizer:
             )
         expanded = self._rollout.expand(state, step_index)
         payload = _rollout_state_dict(expanded)
-        self.store.set_rollout_state(payload)
+        self._append_rollout_event_authoritative(
+            event_type="OFFLINE_OPT_ROLLOUT_EXPANDED",
+            before_state=state,
+            after_state=expanded,
+            base_policy_version=expanded.base_policy_version,
+            candidate_policy_version=expanded.candidate_policy_version,
+            reason_json={"trigger": "offline_optimizer", "step_index": step_index},
+        )
+        self._save_rollout_state_authoritative(
+            state=expanded,
+            previous_state=state,
+        )
         self._append_audit_event(
             "OFFLINE_OPT_ROLLOUT_EXPANDED",
             base_policy_version=expanded.base_policy_version,
@@ -251,7 +329,22 @@ class OfflineOptimizer:
         state = RolloutState(**current)
         rolled_back = self._rollout.rollback(state)
         payload = _rollout_state_dict(rolled_back)
-        self.store.set_rollout_state(payload)
+        self._append_rollout_event_authoritative(
+            event_type="OFFLINE_OPT_ROLLBACK_TRIGGERED",
+            before_state=state,
+            after_state=rolled_back,
+            base_policy_version=state.base_policy_version,
+            candidate_policy_version=state.candidate_policy_version,
+            reason_json={
+                "trigger": "offline_optimizer",
+                "rollback_reason": "manual_or_guardrail",
+            },
+        )
+        self._save_rollout_state_authoritative(
+            state=rolled_back,
+            previous_state=state,
+            rollback_reason="manual_or_guardrail",
+        )
         self._append_audit_event(
             "OFFLINE_OPT_ROLLBACK_TRIGGERED",
             base_policy_version=state.base_policy_version,
@@ -278,48 +371,17 @@ class OfflineOptimizer:
         return result
 
     def current_rollout_state(self) -> Optional[dict[str, Any]]:
+        if self._authority_service is not None:
+            authoritative = self._authority_service.rollout_state_repository.get_state(
+                self._rollout_id
+            )
+            if authoritative is None:
+                return None
+            return _rollout_state_from_authoritative_record(authoritative)
         rollout_state = self.store.get_rollout_state()
         if rollout_state is None:
             return None
-        required = {
-            "stage",
-            "base_policy_version",
-            "candidate_policy_version",
-            "ratio",
-            "updated_at_ms",
-        }
-        if not required.issubset(rollout_state.keys()):
-            return None
-        return {
-            "stage": str(rollout_state["stage"]),
-            "base_policy_version": str(rollout_state["base_policy_version"]),
-            "candidate_policy_version": (
-                str(rollout_state["candidate_policy_version"])
-                if rollout_state.get("candidate_policy_version")
-                else None
-            ),
-            "ratio": float(rollout_state["ratio"]),
-            "updated_at_ms": int(rollout_state["updated_at_ms"]),
-            "stage_duration_seconds": int(rollout_state.get("stage_duration_seconds", 0)),
-            "evaluation_window_seconds": int(rollout_state.get("evaluation_window_seconds", 60)),
-            "canary_duration_seconds": int(rollout_state.get("canary_duration_seconds", 120)),
-            "expand_step_index": (
-                int(rollout_state["expand_step_index"])
-                if rollout_state.get("expand_step_index") is not None
-                else None
-            ),
-            "stage_started_at_ms": int(rollout_state.get("stage_started_at_ms", rollout_state["updated_at_ms"])),
-            "canary_completed_at_ms": (
-                int(rollout_state["canary_completed_at_ms"])
-                if rollout_state.get("canary_completed_at_ms") is not None
-                else None
-            ),
-            "rollout_finished_at_ms": (
-                int(rollout_state["rollout_finished_at_ms"])
-                if rollout_state.get("rollout_finished_at_ms") is not None
-                else None
-            ),
-        }
+        return _normalize_rollout_state_dict(rollout_state)
 
     def latest_summary(self) -> Optional[dict[str, Any]]:
         return self._summarizer.latest()
@@ -442,6 +504,125 @@ class OfflineOptimizer:
         with self._audit_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
 
+    def _save_candidate_policy_version(
+        self,
+        *,
+        candidate_version: str,
+        candidate_doc: Mapping[str, Any],
+        base_policy_version: str,
+    ) -> None:
+        if self._authority_service is None:
+            self.store.save_policy_version(candidate_version, dict(candidate_doc))
+            return
+        created_at = datetime.now(UTC)
+        self._authority_service.save_policy_version(
+            PolicyVersionRecord(
+                policy_version=candidate_version,
+                schema_version=str(candidate_doc.get("schemaVersion", "policy.v1")),
+                status="CANDIDATE",
+                source_type="OFFLINE_OPTIMIZER",
+                document_json=dict(candidate_doc),
+                created_at=created_at,
+                parent_policy_version=base_policy_version,
+                validation_result_json={"status": "validated"},
+                validated_at=created_at,
+            ),
+            project_to_runtime=False,
+        )
+
+    def _save_rollout_state_authoritative(
+        self,
+        *,
+        state: RolloutState,
+        previous_state: RolloutState | None,
+        rollback_reason: str | None = None,
+    ) -> None:
+        payload = _rollout_state_dict(state)
+        if self._authority_service is None:
+            self.store.set_rollout_state(payload)
+            return
+        self._authority_service.save_rollout_state(
+            PolicyRolloutStateRecord(
+                rollout_id=self._rollout_id,
+                stage=state.stage,
+                base_policy_version=state.base_policy_version,
+                candidate_policy_version=state.candidate_policy_version,
+                ratio=_ratio_decimal(state.ratio),
+                evaluation_window_seconds=state.evaluation_window_seconds,
+                canary_duration_seconds=state.canary_duration_seconds,
+                expand_step_index=state.expand_step_index,
+                stage_started_at_ms=state.stage_started_at_ms,
+                updated_at_ms=state.updated_at_ms,
+                current_status=_rollout_current_status(state.stage),
+                rollback_reason=rollback_reason,
+            ),
+            additional_policy_versions=_projection_versions_for_transition(
+                previous_state,
+                state,
+            ),
+        )
+
+    def _append_rollout_event_authoritative(
+        self,
+        *,
+        event_type: str,
+        before_state: RolloutState | None,
+        after_state: RolloutState,
+        base_policy_version: str,
+        candidate_policy_version: str | None,
+        reason_json: Mapping[str, Any] | None = None,
+    ) -> None:
+        if self._authority_service is None:
+            return
+        self._authority_service.append_rollout_event(
+            PolicyRolloutEventRecord(
+                event_id=f"evt-{uuid4().hex}",
+                rollout_id=self._rollout_id,
+                event_type=event_type,
+                base_policy_version=base_policy_version,
+                candidate_policy_version=candidate_policy_version,
+                stage_before=None if before_state is None else before_state.stage,
+                stage_after=after_state.stage,
+                ratio_before=None if before_state is None else _ratio_decimal(before_state.ratio),
+                ratio_after=_ratio_decimal(after_state.ratio),
+                reason_json=None if reason_json is None else dict(reason_json),
+                created_at=datetime.now(UTC),
+            )
+        )
+
+    def _persist_optimization_run(
+        self,
+        *,
+        base_policy_version: str,
+        metrics_snapshot_id: str,
+        metrics: Mapping[str, Any],
+        proposal: Mapping[str, Any] | None,
+        rejection_errors: list[str] | None,
+        created_at: datetime,
+    ) -> None:
+        if self._authority_service is None:
+            return
+        result_status = "REJECTED" if rejection_errors else "NO_CHANGE"
+        if proposal is not None and not rejection_errors:
+            result_status = "PROPOSED"
+        self._authority_service.save_optimization_run(
+            PolicyOptimizationRunRecord(
+                run_id=f"opt-{uuid4().hex}",
+                base_policy_version=base_policy_version,
+                proposed_policy_version=None,
+                trigger_type="OFFLINE_OPTIMIZER",
+                metrics_snapshot_id=metrics_snapshot_id,
+                window_start_ms=int(metrics.get("window_start_ms", 0)),
+                window_end_ms=int(metrics.get("window_end_ms", 0)),
+                metrics_snapshot_json=dict(metrics),
+                proposal_json=None if proposal is None else dict(proposal),
+                validation_result_json={"errors": list(rejection_errors or [])},
+                result_status=result_status,
+                created_at=created_at,
+                finished_at=datetime.now(UTC),
+            )
+        )
+
 
 
 def _apply_patch(document: dict[str, Any], patch: Mapping[str, Any]) -> None:
@@ -466,6 +647,96 @@ def _apply_patch(document: dict[str, Any], patch: Mapping[str, Any]) -> None:
         parent[key] = int(result)
     else:
         parent[key] = result
+
+
+def _rollout_current_status(stage: str) -> str:
+    if stage == "ROLLED_BACK":
+        return "ROLLED_BACK"
+    if stage == "FULL":
+        return "PROMOTED"
+    return "ACTIVE"
+
+
+def _ratio_decimal(value: float) -> Decimal:
+    return Decimal(str(value)).quantize(Decimal("0.00001"))
+
+
+def _projection_versions_for_transition(
+    before_state: RolloutState | None,
+    after_state: RolloutState,
+) -> tuple[str, ...]:
+    versions: list[str] = []
+    for value in (
+        None if before_state is None else before_state.base_policy_version,
+        None if before_state is None else before_state.candidate_policy_version,
+        after_state.base_policy_version,
+        after_state.candidate_policy_version,
+    ):
+        if value and value not in versions:
+            versions.append(value)
+    return tuple(versions)
+
+
+def _normalize_rollout_state_dict(rollout_state: Mapping[str, Any]) -> Optional[dict[str, Any]]:
+    required = {
+        "stage",
+        "base_policy_version",
+        "candidate_policy_version",
+        "ratio",
+        "updated_at_ms",
+    }
+    if not required.issubset(rollout_state.keys()):
+        return None
+    return {
+        "stage": str(rollout_state["stage"]),
+        "base_policy_version": str(rollout_state["base_policy_version"]),
+        "candidate_policy_version": (
+            str(rollout_state["candidate_policy_version"])
+            if rollout_state.get("candidate_policy_version")
+            else None
+        ),
+        "ratio": float(rollout_state["ratio"]),
+        "updated_at_ms": int(rollout_state["updated_at_ms"]),
+        "stage_duration_seconds": int(rollout_state.get("stage_duration_seconds", 0)),
+        "evaluation_window_seconds": int(rollout_state.get("evaluation_window_seconds", 60)),
+        "canary_duration_seconds": int(rollout_state.get("canary_duration_seconds", 120)),
+        "expand_step_index": (
+            int(rollout_state["expand_step_index"])
+            if rollout_state.get("expand_step_index") is not None
+            else None
+        ),
+        "stage_started_at_ms": int(rollout_state.get("stage_started_at_ms", rollout_state["updated_at_ms"])),
+        "canary_completed_at_ms": (
+            int(rollout_state["canary_completed_at_ms"])
+            if rollout_state.get("canary_completed_at_ms") is not None
+            else None
+        ),
+        "rollout_finished_at_ms": (
+            int(rollout_state["rollout_finished_at_ms"])
+            if rollout_state.get("rollout_finished_at_ms") is not None
+            else None
+        ),
+    }
+
+
+def _rollout_state_from_authoritative_record(
+    record: PolicyRolloutStateRecord,
+) -> dict[str, Any]:
+    stage_duration_seconds = record.canary_duration_seconds if record.stage == "CANARY" else 0
+    return {
+        "stage": record.stage,
+        "base_policy_version": record.base_policy_version,
+        "candidate_policy_version": record.candidate_policy_version,
+        "ratio": float(record.ratio),
+        "updated_at_ms": record.updated_at_ms,
+        "stage_duration_seconds": stage_duration_seconds,
+        "evaluation_window_seconds": record.evaluation_window_seconds,
+        "canary_duration_seconds": record.canary_duration_seconds,
+        "expand_step_index": record.expand_step_index,
+        "stage_started_at_ms": record.stage_started_at_ms,
+        "canary_completed_at_ms": None,
+        "rollout_finished_at_ms": record.updated_at_ms if record.stage in {"FULL", "ROLLED_BACK"} else None,
+    }
 
 
 
