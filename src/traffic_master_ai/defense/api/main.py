@@ -702,15 +702,23 @@ async def ai_challenge_verify(
     passed = req.caught and in_bounds and timely and plausible
     vqa_attempt_score, vqa_reason_codes, vqa_terminal_abnormal = _score_vqa_attempt(feature_summary)
     d0_result = "PASS" if passed and not vqa_terminal_abnormal else "FAIL"
-    vqa_risk_applied = _apply_vqa_telemetry_to_decision_engine(
-        session_id=state_key,
-        trace_id=trace_id,
-        flow_state=snap.flow_state,
-        now_ms=now_ms,
-        feature_summary=feature_summary,
-        vqa_attempt_score=vqa_attempt_score,
-        result=d0_result,
-    )
+    try:
+        vqa_risk_applied = _apply_vqa_telemetry_to_decision_engine(
+            session_id=state_key,
+            trace_id=trace_id,
+            flow_state=snap.flow_state,
+            now_ms=now_ms,
+            feature_summary=feature_summary,
+            vqa_attempt_score=vqa_attempt_score,
+            result=d0_result,
+        )
+    except Exception:  # noqa: BLE001 - runtime risk sync must not break verify response
+        logger.exception(
+            "Best-effort VQA telemetry sync failed during challenge verify (session_id=%s, challenge_id=%s)",
+            state_key,
+            req.challenge_id,
+        )
+        vqa_risk_applied = False
 
     if not feature_summary:
         VQA_TELEMETRY_SCORE_REQUESTS.labels(decision="skip").inc()

@@ -328,6 +328,66 @@ def test_ai_challenge_verify_pass_with_user_header_does_not_500() -> None:
     assert verify.json()["success"] is True
 
 
+def test_ai_challenge_verify_pass_survives_runtime_policy_sync_failure(monkeypatch) -> None:
+    session_id = _session_id("sess-ai-verify-sync-fail-open")
+    start = client.post(
+        "/ai/challenge/start",
+        json={"matchId": MATCH_ID},
+        headers=_headers(session_id),
+    )
+    assert start.status_code == 200
+    challenge_id = start.json()["challengeId"]
+
+    ingest = client.post(
+        "/ai/telemetry/ingest",
+        json={
+            "matchId": MATCH_ID,
+            "stage": "VQA_CHALLENGE",
+            "events": [
+                {"type": "mousemove", "tsMs": 0, "xNorm": 0.10, "yNorm": 0.50},
+                {"type": "mousemove", "tsMs": 80, "xNorm": 0.18, "yNorm": 0.53},
+                {"type": "mousemove", "tsMs": 170, "xNorm": 0.27, "yNorm": 0.47},
+                {"type": "mousemove", "tsMs": 280, "xNorm": 0.35, "yNorm": 0.55},
+                {"type": "mousemove", "tsMs": 410, "xNorm": 0.44, "yNorm": 0.48},
+                {"type": "mousemove", "tsMs": 560, "xNorm": 0.52, "yNorm": 0.52},
+            ],
+        },
+        headers=_headers(session_id),
+    )
+    assert ingest.status_code == 200
+
+    original_load = _decision_engine.policy_loader.load
+
+    def _raise_policy_unavailable(session_id: str):
+        raise RuntimeError(f"runtime policy unavailable for {session_id}")
+
+    monkeypatch.setattr(_decision_engine.policy_loader, "load", _raise_policy_unavailable)
+    try:
+        verify = client.post(
+            "/ai/challenge/verify",
+            json={
+                "matchId": MATCH_ID,
+                "challengeId": challenge_id,
+                "caught": True,
+                "catchTsMs": 560,
+                "catchXNorm": 0.52,
+                "catchYNorm": 0.52,
+            },
+            headers=_headers(session_id),
+        )
+    finally:
+        monkeypatch.setattr(_decision_engine.policy_loader, "load", original_load)
+
+    assert verify.status_code == 200
+    assert verify.json()["success"] is True
+
+    runtime = client.get(f"/runtime/{_state_key(session_id)}")
+    assert runtime.status_code == 200
+    runtime_body = runtime.json()
+    assert runtime_body["vqa_passed"] is True
+    assert runtime_body["vqa_last_result"] == "PASSED"
+
+
 def test_ai_challenge_verify_pass_refreshes_anonymous_session_ttl() -> None:
     session_id = _session_id("sess-ai-verify-pass-anon")
     state_key = _state_key(session_id)
