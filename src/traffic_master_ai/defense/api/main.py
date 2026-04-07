@@ -12,10 +12,51 @@ import logging
 import math
 import os
 import re
+import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Optional
+
+from pythonjsonlogger import jsonlogger
+
+
+# =============================================================================
+# JSON Logging Setup
+# =============================================================================
+def _setup_json_logging() -> None:
+    """Configure JSON logging for structured log output."""
+    log_format = os.getenv("TM_LOG_FORMAT", "json")
+    if log_format != "json":
+        return
+
+    class CustomJsonFormatter(jsonlogger.JsonFormatter):
+        def add_fields(self, log_record: dict, record: logging.LogRecord, message_dict: dict) -> None:
+            super().add_fields(log_record, record, message_dict)
+            log_record["timestamp"] = self.formatTime(record, self.datefmt)
+            log_record["level"] = record.levelname
+            log_record["logger"] = record.name
+            if record.exc_info:
+                log_record["exc_info"] = self.formatException(record.exc_info)
+
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(CustomJsonFormatter(
+        fmt="%(timestamp)s %(level)s %(logger)s %(message)s"
+    ))
+
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()
+    root_logger.addHandler(handler)
+    root_logger.setLevel(logging.INFO)
+
+    # uvicorn 로거도 JSON 포맷 적용
+    for name in ["uvicorn", "uvicorn.error", "uvicorn.access"]:
+        uv_logger = logging.getLogger(name)
+        uv_logger.handlers.clear()
+        uv_logger.addHandler(handler)
+
+
+_setup_json_logging()
 
 import httpx
 import jwt
