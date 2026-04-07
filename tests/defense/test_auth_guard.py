@@ -62,6 +62,7 @@ def test_auth_guard_block_service_posts_expected_request(
 @pytest.mark.parametrize(
     ("status_code", "expected_outcome"),
     [
+        (403, "forbidden"),
         (409, "already_blocked"),
         (404, "not_found"),
         (401, "unauthorized"),

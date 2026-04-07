@@ -11,6 +11,16 @@
 
 이 문서는 서비스의 헌법 역할을 하며, 하위 문서는 이 문서를 위반할 수 없다.
 
+관련 문서:
+
+- `01-service-overview.md`: 서비스 범위/사용자/입출력/처리 흐름
+- `10-post-review-rules.md`: 후보 추출/세션 분석/LLM/backend 전달 도메인 규칙
+- `11-review-output-rules.md`: PostgreSQL 정식 출력 및 export 파생 규칙
+- `21-data-contract.md`: DTO/DB 컬럼 계약
+- `30-ops-and-checks.md`: 운영/검증 체크 규칙
+- `31-observability-merge-strategy.md`: Runtime observability와 Backoffice 결과물의 외부 소비 병합 전략
+- `../../d0_mvp/ssot_specs/L2/obs_opt/defense_observability_ssot.yaml`: Runtime 관측 이벤트/KPI/warehouse 권위 문서
+
 ---
 
 ## 2. 서비스 정의

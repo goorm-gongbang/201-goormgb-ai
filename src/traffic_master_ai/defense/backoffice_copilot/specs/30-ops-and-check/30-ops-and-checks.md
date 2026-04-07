@@ -9,6 +9,14 @@
 - JSON 컬럼 구조(`summary_text_json`, `session_analysis_json`)를 검증한다.
 - export 검증은 DB 저장 이후 후속 단계로 다룬다.
 
+관련 문서:
+
+- `../00-core-rules/00-core-rules.md`: 최상위 운영/책임 분리 원칙
+- `../10-post-review-rules/10-post-review-rules.md`: 후보/세션 분석/backend 전달 규칙
+- `../11-review-output-rules/11-review-output-rules.md`: 정식 저장과 export 우선순위
+- `../21-data-contract/21-data-contract.md`: 컬럼/DTO 계약
+- `31-observability-merge-strategy.md`: Grafana/Discord 외부 소비 시 검증 포인트와 데이터 소스 분리 원칙
+
 ---
 
 ## 2. 운영 범위

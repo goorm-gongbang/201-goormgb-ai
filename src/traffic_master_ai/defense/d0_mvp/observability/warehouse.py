@@ -1,4 +1,4 @@
-"""Local warehouse for near-real-time defense audit queries."""
+"""Legacy local warehouse for near-real-time defense audit queries."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
+from ...storage_env import load_warehouse_file_config_from_env
 from ..core.constants import AUDIT_RETENTION_DAYS, WAREHOUSE_FILENAME
 from .jsonl_retention import is_within_retention, load_rows, persist_rows
 from .schemas import AuditEntry
@@ -14,7 +15,8 @@ from .schemas import AuditEntry
 class AuditWarehouse:
     """Append-only local warehouse of normalized audit events.
 
-    MVP implementation of the L2 warehouse contract using JSONL rows.
+    Legacy local-only implementation of the L2 warehouse contract using JSONL rows.
+    Production raw-fact ingest authority now lives in ClickHouse ETL, not this file.
     """
 
     def __init__(
@@ -27,6 +29,12 @@ class AuditWarehouse:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._retention_days = max(0, int(retention_days))
 
+    @classmethod
+    def from_env(cls) -> AuditWarehouse:
+        """Build the local JSONL warehouse using the current MVP file-path env."""
+
+        return cls(file_path=load_warehouse_file_config_from_env().file_path)
+
     @property
     def file_path(self) -> Path:
         return self._path
@@ -37,10 +45,10 @@ class AuditWarehouse:
 
     def metadata(self) -> dict[str, Any]:
         return {
-            "backend": "jsonl_mvp",
+            "backend": "legacy_jsonl_local_only",
             "table": "defense_audit_events",
             "filePath": str(self._path),
-            "primaryOptions": ["Postgres", "ClickHouse"],
+            "primaryOptions": ["ClickHouse"],
             "indices": ["traceId", "sessionId", "eventType", "tsMs"],
             "partitioning": "by day(tsMs)",
             "retentionDays": self._retention_days,

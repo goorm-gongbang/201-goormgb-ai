@@ -8,6 +8,14 @@
 - DTO와 DB 컬럼 매핑 관계를 확정한다.
 - undocumented field 추가를 금지한다.
 
+관련 문서:
+
+- `../00-core-rules/00-core-rules.md`: 최상위 저장 원칙
+- `../10-post-review-rules/10-post-review-rules.md`: DTO 생성 규칙과 backend 전달 규칙
+- `../11-review-output-rules/11-review-output-rules.md`: DB 컬럼 기반 output 계약
+- `../30-ops-and-check/30-ops-and-checks.md`: 컬럼 수준 검증 규칙
+- `../30-ops-and-check/31-observability-merge-strategy.md`: 외부 소비 시 runtime observability와 post-review 결과의 조합 방식
+
 ---
 
 ## 2. 공통 원칙

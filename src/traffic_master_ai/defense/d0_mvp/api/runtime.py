@@ -13,8 +13,12 @@ import logging
 import math
 import time
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Mapping, Optional
 
+from ...storage_env import (
+    load_runtime_policy_config_from_env,
+    validate_runtime_policy_env_for_prod,
+)
 from ...auth_guard import AuthGuardBlockService, UserBlocker
 from ..actuators.block import BlockActuator
 from ..actuators.challenge import ChallengeActuator
@@ -68,14 +72,20 @@ from ..policy.loader import (
     FilePolicyStore,
     PolicyLoader,
     RedisPolicyStore,
+    RuntimePolicyAuthorityError,
     snapshot_to_document,
 )
 from ..policy.snapshot import PolicySnapshot
 from ..state.keyspace import DEDUP_KEY_PREFIX
 from ..state.block_state import BlockStateManager
 from ..state.dedup import DedupChecker
-from ..state.redis_client import InMemoryRedis, RedisLike
+from ..state.redis_client import InMemoryRedis, RedisLike, build_runtime_redis_from_env
 from ..state.session_state import SessionStateManager
+
+if TYPE_CHECKING:
+    from ...backoffice_copilot.storage.policy_projection_repository import (
+        PostgresStrictPolicyAuthorityService,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -132,25 +142,47 @@ class DefenseRuntime:
         *,
         redis: Optional[RedisLike] = None,
         policy_loader: Optional[PolicyLoader] = None,
+        policy_authority_service: Optional["PostgresStrictPolicyAuthorityService"] = None,
         audit_logger: Optional[AuditLogger] = None,
         audit_warehouse: Optional[AuditWarehouse] = None,
         user_blocker: Optional[UserBlocker] = None,
         close_redis_on_close: bool = False,
     ) -> None:
-        self.redis = redis or InMemoryRedis()
-        self._close_redis_on_close = close_redis_on_close
-        self.policy_store = (
-            policy_loader.store
-            if policy_loader is not None
-            else RedisPolicyStore(
-                self.redis,
-                fallback=FilePolicyStore(),
-            )
+        runtime_policy_config = load_runtime_policy_config_from_env()
+        if policy_loader is None:
+            validate_runtime_policy_env_for_prod()
+        if redis is None:
+            self.redis, redis_backend = build_runtime_redis_from_env()
+            self._close_redis_on_close = close_redis_on_close or redis_backend == "redis"
+        else:
+            self.redis = redis
+            self._close_redis_on_close = close_redis_on_close
+        allow_local_policy_fallback = runtime_policy_config.allow_local_fallback or isinstance(
+            self.redis, InMemoryRedis
         )
-        self.policy_loader = policy_loader or PolicyLoader(store=self.policy_store)
-        self._bootstrap_policy_authority()
-        self.audit_logger = audit_logger or AuditLogger()
-        self.audit_warehouse = audit_warehouse or AuditWarehouse()
+        if policy_loader is not None:
+            self.policy_store = policy_loader.store
+            self.policy_loader = policy_loader
+        else:
+            self.policy_store = RedisPolicyStore(
+                self.redis,
+                fallback=(
+                    FilePolicyStore(file_path=runtime_policy_config.store_path)
+                    if allow_local_policy_fallback
+                    else None
+                ),
+            )
+            self.policy_loader = PolicyLoader(
+                store=self.policy_store,
+                rollout_salt=runtime_policy_config.rollout_salt,
+                cache_seconds=runtime_policy_config.cache_seconds,
+                projection_max_staleness_ms=runtime_policy_config.projection_max_staleness_ms,
+                strict_authority=not allow_local_policy_fallback,
+            )
+        if not self.policy_loader.strict_authority:
+            self._bootstrap_policy_authority()
+        self.audit_logger = audit_logger or AuditLogger.from_env()
+        self.audit_warehouse = audit_warehouse or AuditWarehouse.from_env()
         self.audit_collector = AuditCollector(
             audit_logger=self.audit_logger,
             warehouse=self.audit_warehouse,
@@ -158,6 +190,7 @@ class DefenseRuntime:
         self._dashboard: Optional[AdminDashboardService] = None
         self._audit_summarizer: Optional[AuditSummarizer] = None
         self._offline_optimizer: Optional[OfflineOptimizer] = None
+        self._policy_authority_service = policy_authority_service
         self._user_blocker = user_blocker or AuthGuardBlockService.from_env()
 
         self.session_state = SessionStateManager(self.redis)
@@ -202,7 +235,7 @@ class DefenseRuntime:
     def _bootstrap_policy_authority(self) -> None:
         """Ensure Redis policy store has one active baseline policy doc.
 
-        Redis is runtime authority. File store is fallback for bootstrap/local dev.
+        Redis is runtime authority. This bootstrap is local-only and never runs in strict mode.
         """
         try:
             default_snapshot = PolicySnapshot()
@@ -233,6 +266,20 @@ class DefenseRuntime:
         except Exception:  # noqa: BLE001 - bootstrap should not break startup
             logger.exception("Failed to bootstrap policy authority")
 
+    def _load_policy_or_raise_runtime_unavailable(self, *, session_id: str) -> PolicySnapshot:
+        try:
+            return self.policy_loader.load(session_id=session_id)
+        except RuntimePolicyAuthorityError as exc:
+            raise RuntimeAPIError(
+                status_code=503,
+                reason_code=ReasonCode.INTERNAL_ERROR.value,
+                message="Runtime policy projection is unavailable.",
+                detail={
+                    "authority": "redis_projection",
+                    "repairHint": exc.repair_hint,
+                },
+            ) from exc
+
     def dashboard_service(self) -> AdminDashboardService:
         """Lazily create admin dashboard service.
 
@@ -254,8 +301,21 @@ class DefenseRuntime:
                 warehouse=self.audit_warehouse,
                 policy_loader=self.policy_loader,
                 audit_summarizer=self._audit_summarizer,
+                authority_service=self._get_policy_authority_service(),
             )
         return self._offline_optimizer
+
+    def _get_policy_authority_service(self):
+        if self._policy_authority_service is not None:
+            return self._policy_authority_service
+        if not self.policy_loader.strict_authority:
+            return None
+        from ...backoffice_copilot.storage import PostgresStrictPolicyAuthorityService
+
+        self._policy_authority_service = PostgresStrictPolicyAuthorityService.from_env(
+            redis_client=self.redis
+        )
+        return self._policy_authority_service
 
     def evaluate(self, request: EvaluateRequest) -> EvaluatePipelineResult:
         with self.session_state.session_lock(request.session_id):
@@ -296,8 +356,8 @@ class DefenseRuntime:
 
         features = request.context.features or {}
 
-        # --- Turnstile integration (Gap 4) ---
-        # Ref: annex/turnstile_spec.yaml — S1 trigger, token verify → external_score
+        # --- Optional external score channel ---
+        # Turnstile is only one possible producer in the direct D0 runtime path.
         turnstile_verdict: Optional[TurnstileVerdict] = None
         external_score = _extract_external_score(event=event, features=features)
         turnstile_token = _extract_turnstile_token(request)
@@ -834,7 +894,7 @@ class DefenseRuntime:
     ):
         """Issue one S3 challenge and emit S3_CHALLENGE_ISSUED audit."""
         with self.session_state.session_lock(session_id):
-            policy = self.policy_loader.load(session_id=session_id)
+            policy = self._load_policy_or_raise_runtime_unavailable(session_id=session_id)
             state = self.session_state.get_or_create(
                 session_id,
                 policy_version=policy.policy_version,
@@ -903,7 +963,7 @@ class DefenseRuntime:
         _validate_challenge_client_answer(client_answer)
         feature_summary = _extract_challenge_feature_summary(client_answer)
         with self.session_state.session_lock(session_id):
-            policy = self.policy_loader.load(session_id=session_id)
+            policy = self._load_policy_or_raise_runtime_unavailable(session_id=session_id)
             state = self.session_state.get_or_create(
                 session_id,
                 policy_version=policy.policy_version,
@@ -1197,7 +1257,7 @@ class DefenseRuntime:
     def check_request_to_evaluate(self, request: CheckRequest) -> EvaluateRequest:
         """Convert /check contract into /evaluate contract."""
         now_ms = int(time.time() * 1000)
-        policy = self.policy_loader.load(session_id=request.session_id)
+        policy = self._load_policy_or_raise_runtime_unavailable(session_id=request.session_id)
         event = EvaluateRequestEvent(
             event_type="API_CALL_OBS",
             ts_ms=now_ms,
@@ -1394,7 +1454,10 @@ def _to_runtime_event(request: EvaluateRequest) -> RuntimeEvent:
 def _extract_external_score(*, event: RuntimeEvent, features: Mapping[str, Any]) -> Optional[float]:
     if event.external_score is not None:
         return event.external_score
-    val = features.get("turnstile_score")
+    val = features.get("external_score")
+    if val is None:
+        # Legacy fallback for older callers that still send turnstile_score.
+        val = features.get("turnstile_score")
     if val is None:
         return None
     try:

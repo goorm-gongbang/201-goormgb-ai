@@ -19,7 +19,7 @@ from .response_utils import (
     merge_headers,
     parse_request_meta_headers,
 )
-from .runtime import DefenseRuntime, build_check_request, _to_runtime_event
+from .runtime import DefenseRuntime, RuntimeAPIError, build_check_request, _to_runtime_event
 
 
 def create_check_router(runtime: Optional[DefenseRuntime] = None) -> APIRouter:
@@ -76,7 +76,14 @@ def create_check_router(runtime: Optional[DefenseRuntime] = None) -> APIRouter:
                 status_code=400,
             )
 
-        eval_req = rt.check_request_to_evaluate(check_req)
+        try:
+            eval_req = rt.check_request_to_evaluate(check_req)
+        except RuntimeAPIError as exc:
+            raise_contract_http_error(
+                exc.to_error_body(),
+                status_code=exc.status_code,
+                headers=passthrough_headers,
+            )
         if request_meta:
             if eval_req.context.meta is None:
                 eval_req.context.meta = {}

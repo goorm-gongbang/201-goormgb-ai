@@ -12,10 +12,51 @@ import logging
 import math
 import os
 import re
+import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Optional
+
+from pythonjsonlogger import jsonlogger
+
+
+# =============================================================================
+# JSON Logging Setup
+# =============================================================================
+def _setup_json_logging() -> None:
+    """Configure JSON logging for structured log output."""
+    log_format = os.getenv("TM_LOG_FORMAT", "json")
+    if log_format != "json":
+        return
+
+    class CustomJsonFormatter(jsonlogger.JsonFormatter):
+        def add_fields(self, log_record: dict, record: logging.LogRecord, message_dict: dict) -> None:
+            super().add_fields(log_record, record, message_dict)
+            log_record["timestamp"] = self.formatTime(record, self.datefmt)
+            log_record["level"] = record.levelname
+            log_record["logger"] = record.name
+            if record.exc_info:
+                log_record["exc_info"] = self.formatException(record.exc_info)
+
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(CustomJsonFormatter(
+        fmt="%(timestamp)s %(level)s %(logger)s %(message)s"
+    ))
+
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()
+    root_logger.addHandler(handler)
+    root_logger.setLevel(logging.INFO)
+
+    # uvicorn 로거도 JSON 포맷 적용
+    for name in ["uvicorn", "uvicorn.error", "uvicorn.access"]:
+        uv_logger = logging.getLogger(name)
+        uv_logger.handlers.clear()
+        uv_logger.addHandler(handler)
+
+
+_setup_json_logging()
 
 import httpx
 import jwt
@@ -41,6 +82,7 @@ from ..d0_mvp.api.runtime import DefenseRuntime as DecisionEngineRuntime
 from ..d0_mvp.core.enums import DefenseAction as D0DefenseAction
 from ..d0_mvp.core.enums import FlowState as D0FlowState
 from ..d0_mvp.core.models import CheckRequest as D0CheckRequest
+from ..d0_mvp.events.common import RuntimeEvent as D0RuntimeEvent
 from ..d0_mvp.state.redis_client import build_runtime_redis_from_env
 from ..auth_guard import AuthGuardBlockService
 from .audit import (
@@ -99,6 +141,12 @@ CHALLENGE_VERIFY_REQUESTS = Counter(
     "ai_defense_challenge_verify_total",
     "Total challenge verify requests by result",
     ["result"],  # pass, fail
+)
+
+VQA_TELEMETRY_SCORE_REQUESTS = Counter(
+    "ai_defense_vqa_telemetry_score_total",
+    "Total VQA telemetry scoring outcomes",
+    ["decision"],  # skip, observe, allow, terminal
 )
 
 TELEMETRY_INGEST_REQUESTS = Counter(
@@ -170,6 +218,15 @@ _TURNSTILE_SITEVERIFY_URL = os.getenv(
 )
 _TURNSTILE_TIMEOUT_MS = int(os.getenv("TM_TURNSTILE_VERIFY_TIMEOUT_MS", "500"))
 _PRECHECK_TTL_MS = int(os.getenv("TM_PRECHECK_TTL_MS", "300000"))
+_VQA_TERMINAL_RISK_THRESHOLD = float(os.getenv("TM_VQA_TERMINAL_RISK_THRESHOLD", "0.92"))
+_VQA_REVIEW_RISK_FLOOR = float(os.getenv("TM_VQA_REVIEW_RISK_FLOOR", "0.84"))
+_VQA_EXTREME_LINEARITY_THRESHOLD = float(os.getenv("TM_VQA_EXTREME_LINEARITY_THRESHOLD", "0.985"))
+_VQA_EXTREME_PATH_RATIO_THRESHOLD = float(os.getenv("TM_VQA_EXTREME_PATH_RATIO_THRESHOLD", "1.03"))
+_VQA_LOW_TREMOR_THRESHOLD = float(os.getenv("TM_VQA_LOW_TREMOR_THRESHOLD", "0.20"))
+_VQA_HIGH_VELOCITY_THRESHOLD = float(os.getenv("TM_VQA_HIGH_VELOCITY_THRESHOLD", "2200"))
+_VQA_LOW_DWELL_THRESHOLD = float(os.getenv("TM_VQA_LOW_DWELL_THRESHOLD", "80"))
+_VQA_MIN_POINTS_FOR_ABNORMAL_TERMINAL = int(os.getenv("TM_VQA_MIN_POINTS_FOR_ABNORMAL_TERMINAL", "6"))
+_VQA_MIN_STRONG_SIGNALS_FOR_TERMINAL = int(os.getenv("TM_VQA_MIN_STRONG_SIGNALS_FOR_TERMINAL", "3"))
 
 _S3_UPLOADER = S3Uploader(bucket=_S3_BUCKET, prefix=_S3_PREFIX, region=_S3_REGION) if _S3_BUCKET else None
 
@@ -355,14 +412,33 @@ async def ai_precheck(
     _remember_runtime_user_id(session_id=sid, user_id=user_id, now_ms=now_ms)
     passed = await _verify_turnstile_token(req.cf_token)
     snap = _get_or_create_snapshot(state_key, now_ms)
-    next_snap = snap.model_copy(
-        update={
-            "turnstile_verified": passed,
-            "turnstile_verified_at_ms": now_ms if passed else 0,
-            "updated_ts_ms": now_ms,
-            "user_id": user_id or snap.user_id,
-        }
-    )
+    if passed:
+        next_snap = _reset_match_state_for_new_booking_attempt(
+            snap=snap,
+            now_ms=now_ms,
+            user_id=user_id,
+        ).model_copy(
+            update={
+                "turnstile_verified": True,
+                "turnstile_verified_at_ms": now_ms,
+            }
+        )
+        _reset_sid_level_vqa_state(
+            sid=sid,
+            now_ms=now_ms,
+            user_id=user_id,
+        )
+        _decision_engine.session_state.delete(state_key)
+        _decision_engine.session_state.delete(sid)
+    else:
+        next_snap = snap.model_copy(
+            update={
+                "turnstile_verified": False,
+                "turnstile_verified_at_ms": 0,
+                "updated_ts_ms": now_ms,
+                "user_id": user_id or snap.user_id,
+            }
+        )
     _state_store.upsert(state_key, next_snap)
     PRECHECK_REQUESTS.labels(result="pass" if passed else "fail").inc()
     return AiPrecheckResponse(allowed=passed)
@@ -504,25 +580,41 @@ async def ai_evaluate(
     )
 
     if req.event.event_type == "QUEUE_ENTER" and not _precheck_is_valid(snap, now_ms):
-        EVALUATE_REQUESTS.labels(decision="BLOCK").inc()
-        background_tasks.add_task(
-            _block_user_in_auth_guard,
+        return _build_evaluate_response(
+            background_tasks=background_tasks,
+            action="BLOCK",
             user_id=user_id,
             session_id=state_key,
             trace_id=trace_id,
-            trigger="ai_evaluate_precheck_block",
+            block_trigger="ai_evaluate_precheck_block",
         )
-        return AiEvaluateResponse(decision={"action": "BLOCK"})
 
-
-    if req.event.event_type == "SEAT_ENTRY" and not snap.vqa_passed:
-        EVALUATE_REQUESTS.labels(decision="REQUIRE_S3").inc()
-        return AiEvaluateResponse(decision={"action": "REQUIRE_S3"})
+    if req.event.event_type == "SEAT_ENTRY":
+        if not snap.vqa_passed:
+            return _build_evaluate_response(
+                background_tasks=background_tasks,
+                action="REQUIRE_S3",
+                user_id=user_id,
+                session_id=state_key,
+                trace_id=trace_id,
+            )
+        return _build_evaluate_response(
+            background_tasks=background_tasks,
+            action="NONE",
+            user_id=user_id,
+            session_id=state_key,
+            trace_id=trace_id,
+        )
 
     soft_action = _feature_soft_action(event_type=req.event.event_type, snap=snap)
     if soft_action is not None:
-        EVALUATE_REQUESTS.labels(decision=soft_action).inc()
-        return AiEvaluateResponse(decision={"action": soft_action})
+        return _build_evaluate_response(
+            background_tasks=background_tasks,
+            action=soft_action,
+            user_id=user_id,
+            session_id=state_key,
+            trace_id=trace_id,
+        )
 
     legacy_req = _build_legacy_request_from_target(
         state_key=state_key,
@@ -539,8 +631,14 @@ async def ai_evaluate(
     action = _target_action_from_legacy(legacy_resp.action)
     if req.event.event_type == "QUEUE_ENTER" and action == "REQUIRE_S3":
         action = "THROTTLE"
-    EVALUATE_REQUESTS.labels(decision=action).inc()
-    return AiEvaluateResponse(decision={"action": action})
+    return _build_evaluate_response(
+        background_tasks=background_tasks,
+        action=action,
+        user_id=user_id,
+        session_id=state_key,
+        trace_id=trace_id,
+        block_trigger="ai_evaluate_decision_block",
+    )
 
 
 @app.post("/ai/challenge/start", response_model=AiChallengeStartResponse, tags=["challenge"])
@@ -550,10 +648,13 @@ async def ai_challenge_start(
     authorization: str | None = Header(default=None, alias="Authorization"),
     x_user_id: str | None = Header(default=None, alias="X-User-Id"),
 ) -> AiChallengeStartResponse:
-    sid = _resolve_session_id(
+    session_id_candidates = _resolve_session_id_candidates(
         request.headers.get("X-Auth-Sid") or request.headers.get("X-Session-Id"),
         authorization,
     )
+    if not session_id_candidates:
+        raise HTTPException(status_code=401, detail="missing auth context")
+    sid = session_id_candidates[0]
     state_key = _build_state_key(sid, req.match_id)
     now_ms = int(time.time() * 1000)
     user_id = _resolve_user_id(
@@ -568,19 +669,20 @@ async def ai_challenge_start(
         challenge_type="catch_ball",
     )
     resp = await _start_challenge_internal(start_req)
-    snap = _get_or_create_snapshot(state_key, now_ms)
-    _state_store.upsert(
-        state_key,
-        snap.model_copy(
-            update={
-                "active_challenge_id": resp.challenge_id,
-                "active_challenge_token": resp.challenge_token,
-                "active_challenge_expires_at_ms": resp.expires_at_ms,
-                "updated_ts_ms": resp.issued_at_ms,
-                "user_id": user_id or snap.user_id,
-            }
-        ),
+    challenge_update = {
+        "active_challenge_id": resp.challenge_id,
+        "active_challenge_token": resp.challenge_token,
+        "active_challenge_expires_at_ms": resp.expires_at_ms,
+        "updated_ts_ms": resp.issued_at_ms,
+    }
+    _upsert_match_state_aliases(
+        session_ids=session_id_candidates,
+        match_id=req.match_id,
+        now_ms=now_ms,
+        update=challenge_update,
+        user_id=user_id,
     )
+    snap = _get_or_create_snapshot(state_key, now_ms)
     CHALLENGE_START_REQUESTS.inc()
     return AiChallengeStartResponse(
         challengeId=resp.challenge_id,
@@ -593,14 +695,16 @@ async def ai_challenge_start(
 async def ai_challenge_verify(
     request: Request,
     req: AiChallengeVerifyRequest,
-    background_tasks: BackgroundTasks,
     authorization: str | None = Header(default=None, alias="Authorization"),
     x_user_id: str | None = Header(default=None, alias="X-User-Id"),
 ) -> AiChallengeVerifyResponse:
-    sid = _resolve_session_id(
+    session_id_candidates = _resolve_session_id_candidates(
         request.headers.get("X-Auth-Sid") or request.headers.get("X-Session-Id"),
         authorization,
     )
+    if not session_id_candidates:
+        raise HTTPException(status_code=401, detail="missing auth context")
+    sid = session_id_candidates[0]
     state_key = _build_state_key(sid, req.match_id)
     now_ms = int(time.time() * 1000)
     trace_id = _resolve_trace_id(request)
@@ -617,10 +721,18 @@ async def ai_challenge_verify(
 
     if not snap.active_challenge_id or snap.active_challenge_id != req.challenge_id:
         CHALLENGE_VERIFY_REQUESTS.labels(result="invalid").inc()
-        return AiChallengeVerifyResponse(success=False, remainingAttempts=0)
+        return AiChallengeVerifyResponse(
+            success=False,
+            remainingAttempts=0,
+            reason="invalid_challenge",
+        )
     if snap.active_challenge_expires_at_ms and snap.active_challenge_expires_at_ms < now_ms:
         CHALLENGE_VERIFY_REQUESTS.labels(result="expired").inc()
-        return AiChallengeVerifyResponse(success=False, remainingAttempts=0)
+        return AiChallengeVerifyResponse(
+            success=False,
+            remainingAttempts=0,
+            reason="expired_challenge",
+        )
 
     feature_summary = snap.latest_vqa_challenge_summary or {}
     in_bounds = 0.0 <= req.catch_x_norm <= 1.0 and 0.0 <= req.catch_y_norm <= 1.0
@@ -629,27 +741,118 @@ async def ai_challenge_verify(
     if feature_summary:
         plausible = bool(feature_summary.get("mousePointCount", 0.0) >= 2.0)
     passed = req.caught and in_bounds and timely and plausible
+    vqa_attempt_score, vqa_reason_codes, vqa_terminal_abnormal = _score_vqa_attempt(feature_summary)
+    d0_result = "PASS" if passed and not vqa_terminal_abnormal else "FAIL"
+    try:
+        vqa_risk_applied = _apply_vqa_telemetry_to_decision_engine(
+            session_id=state_key,
+            trace_id=trace_id,
+            flow_state=snap.flow_state,
+            now_ms=now_ms,
+            feature_summary=feature_summary,
+            vqa_attempt_score=vqa_attempt_score,
+            result=d0_result,
+        )
+    except Exception:  # noqa: BLE001 - runtime risk sync must not break verify response
+        logger.exception(
+            "Best-effort VQA telemetry sync failed during challenge verify (session_id=%s, challenge_id=%s)",
+            state_key,
+            req.challenge_id,
+        )
+        vqa_risk_applied = False
 
-    next_attempts = snap.vqa_attempt_count + 1
-    remaining = max(snap.vqa_retry_limit - next_attempts, 0)
-    if passed:
-        next_flow = "S4" if snap.flow_state == "S3" else snap.flow_state
+    if not feature_summary:
+        VQA_TELEMETRY_SCORE_REQUESTS.labels(decision="skip").inc()
+    elif passed and vqa_terminal_abnormal:
+        VQA_TELEMETRY_SCORE_REQUESTS.labels(decision="terminal").inc()
+    elif passed:
+        VQA_TELEMETRY_SCORE_REQUESTS.labels(decision="allow").inc()
+    else:
+        VQA_TELEMETRY_SCORE_REQUESTS.labels(decision="observe").inc()
+
+    if passed and vqa_terminal_abnormal:
+        next_attempts = snap.vqa_attempt_count + 1
         next_snap = snap.model_copy(
             update={
-                "flow_state": next_flow,
-                "vqa_required": False,
-                "vqa_passed": True,
-                "vqa_last_result": "PASSED",
+                "vqa_required": True,
+                "vqa_passed": False,
+                "vqa_last_result": "BLOCKED",
                 "vqa_attempt_count": next_attempts,
-                "vqa_behavior_score": float(feature_summary.get("linearityRatio", 0.0)),
+                "challenge_fail_count": snap.challenge_fail_count + 1,
+                "updated_ts_ms": now_ms,
                 "active_challenge_id": None,
                 "active_challenge_token": "",
                 "active_challenge_expires_at_ms": None,
-                "updated_ts_ms": now_ms,
                 "user_id": user_id or snap.user_id,
+                "vqa_behavior_score": vqa_attempt_score,
             }
         )
         _state_store.upsert(state_key, next_snap)
+        _sync_mark_to_decision_engine(
+            req=RuntimeVqaMarkRequest(
+                session_id=state_key,
+                vqa_passed=False,
+                flow_state=next_snap.flow_state,
+            ),
+            now_ms=now_ms,
+        )
+        runtime_overlay = _decision_engine_runtime_overlay(
+            session_id=state_key,
+            now_ms=now_ms,
+            user_id=user_id or snap.user_id,
+        ) if vqa_risk_applied else {}
+        _audit.log_challenge_event(
+            session_id=state_key,
+            challenge_id=req.challenge_id,
+            event_type="CHALLENGE_VERIFIED",
+            payload={
+                "matchId": req.match_id,
+                "result": "ABNORMAL_TERMINAL",
+                "caught": req.caught,
+                "catchTsMs": req.catch_ts_ms,
+                "catchXNorm": req.catch_x_norm,
+                "catchYNorm": req.catch_y_norm,
+                "featureSummary": feature_summary,
+                "vqaAttemptScore": vqa_attempt_score,
+                "reasonCodes": vqa_reason_codes,
+            },
+        )
+        CHALLENGE_VERIFY_REQUESTS.labels(result="abnormal_terminal").inc()
+        _state_store.upsert(state_key, next_snap.model_copy(update=runtime_overlay))
+        return AiChallengeVerifyResponse(
+            success=False,
+            remainingAttempts=0,
+            reason="abnormal_pattern",
+        )
+
+    if passed:
+        remaining = max(snap.vqa_retry_limit - snap.vqa_attempt_count, 0)
+        next_flow = "S4" if snap.flow_state == "S3" else snap.flow_state
+        pass_update = {
+            "flow_state": next_flow,
+            "vqa_required": False,
+            "vqa_passed": True,
+            "vqa_last_result": "PASSED",
+            "vqa_attempt_count": snap.vqa_attempt_count,
+            "vqa_behavior_score": vqa_attempt_score,
+            "active_challenge_id": None,
+            "active_challenge_token": "",
+            "active_challenge_expires_at_ms": None,
+            "updated_ts_ms": now_ms,
+        }
+        _upsert_match_state_aliases(
+            session_ids=session_id_candidates,
+            match_id=req.match_id,
+            now_ms=now_ms,
+            update=pass_update,
+            user_id=user_id or snap.user_id,
+        )
+        _upsert_sid_level_vqa_pass_aliases(
+            session_ids=session_id_candidates,
+            now_ms=now_ms,
+            flow_state=next_flow,
+            user_id=user_id or snap.user_id,
+        )
         _sync_mark_to_decision_engine(
             req=RuntimeVqaMarkRequest(
                 session_id=state_key,
@@ -658,6 +861,20 @@ async def ai_challenge_verify(
             ),
             now_ms=now_ms,
         )
+        runtime_overlay = _decision_engine_runtime_overlay(
+            session_id=state_key,
+            now_ms=now_ms,
+            user_id=user_id or snap.user_id,
+        ) if vqa_risk_applied else {}
+        if runtime_overlay:
+            pass_update.update(runtime_overlay)
+            _upsert_match_state_aliases(
+                session_ids=session_id_candidates,
+                match_id=req.match_id,
+                now_ms=now_ms,
+                update=pass_update,
+                user_id=user_id or snap.user_id,
+            )
         _audit.log_challenge_event(
             session_id=state_key,
             challenge_id=req.challenge_id,
@@ -670,11 +887,15 @@ async def ai_challenge_verify(
                 "catchXNorm": req.catch_x_norm,
                 "catchYNorm": req.catch_y_norm,
                 "featureSummary": feature_summary,
+                "vqaAttemptScore": vqa_attempt_score,
+                "reasonCodes": vqa_reason_codes,
             },
         )
         CHALLENGE_VERIFY_REQUESTS.labels(result="pass").inc()
         return AiChallengeVerifyResponse(success=True, remainingAttempts=remaining)
 
+    next_attempts = snap.vqa_attempt_count + 1
+    remaining = max(snap.vqa_retry_limit - next_attempts, 0)
     next_snap = snap.model_copy(
         update={
             "vqa_required": True,
@@ -689,6 +910,7 @@ async def ai_challenge_verify(
                 snap.active_challenge_expires_at_ms if remaining > 0 else None
             ),
             "user_id": user_id or snap.user_id,
+            "vqa_behavior_score": vqa_attempt_score,
         }
     )
     _state_store.upsert(state_key, next_snap)
@@ -700,6 +922,11 @@ async def ai_challenge_verify(
         ),
         now_ms=now_ms,
     )
+    runtime_overlay = _decision_engine_runtime_overlay(
+        session_id=state_key,
+        now_ms=now_ms,
+        user_id=user_id or snap.user_id,
+    ) if vqa_risk_applied else {}
     _audit.log_challenge_event(
         session_id=state_key,
         challenge_id=req.challenge_id,
@@ -712,18 +939,17 @@ async def ai_challenge_verify(
             "catchXNorm": req.catch_x_norm,
             "catchYNorm": req.catch_y_norm,
             "featureSummary": feature_summary,
+            "vqaAttemptScore": vqa_attempt_score,
+            "reasonCodes": vqa_reason_codes,
         },
     )
     CHALLENGE_VERIFY_REQUESTS.labels(result="fail").inc()
-    if remaining == 0:
-        background_tasks.add_task(
-            _block_user_in_auth_guard,
-            user_id=user_id,
-            session_id=state_key,
-            trace_id=trace_id,
-            trigger="ai_challenge_verify_exhausted_block",
-        )
-    return AiChallengeVerifyResponse(success=False, remainingAttempts=remaining)
+    _state_store.upsert(state_key, next_snap.model_copy(update=runtime_overlay))
+    return AiChallengeVerifyResponse(
+        success=False,
+        remainingAttempts=remaining,
+        reason="challenge_fail" if remaining > 0 else "max_attempts",
+    )
 
 
 @app.get("/meta/storage", tags=["state"], include_in_schema=False)
@@ -781,6 +1007,72 @@ def _get_or_create_snapshot(session_id: str, now_ms: int) -> RuntimeStateSnapsho
     return RuntimeStateSnapshot(updated_ts_ms=now_ms)
 
 
+def _reset_match_state_for_new_booking_attempt(
+    *,
+    snap: RuntimeStateSnapshot,
+    now_ms: int,
+    user_id: Optional[str],
+) -> RuntimeStateSnapshot:
+    return snap.model_copy(
+        update={
+            "flow_state": "S0",
+            "defense_tier": "T0",
+            "risk_score": 0.0,
+            "challenge_fail_count": 0,
+            "seat_taken_streak": 0,
+            "hold_fail_streak": 0,
+            "heavy_budget_left": 2,
+            "replan_budget_left": 3,
+            "probation_until_ms": None,
+            "updated_ts_ms": now_ms,
+            "user_id": user_id or snap.user_id,
+            "vqa_required": True,
+            "vqa_passed": False,
+            "vqa_attempt_count": 0,
+            "vqa_last_result": None,
+            "active_challenge_id": None,
+            "active_challenge_expires_at_ms": None,
+            "active_challenge_token": "",
+            "latest_queue_enter_preclick_summary": {},
+            "latest_queue_enter_preclick_at_ms": 0,
+            "latest_seat_stage_summary": {},
+            "latest_seat_stage_at_ms": 0,
+            "latest_vqa_challenge_summary": {},
+            "latest_vqa_challenge_at_ms": 0,
+            "vqa_behavior_score": 0.0,
+        }
+    )
+
+
+def _reset_sid_level_vqa_state(
+    *,
+    sid: str,
+    now_ms: int,
+    user_id: Optional[str],
+) -> None:
+    snap = _state_store.get(sid) or RuntimeStateSnapshot(updated_ts_ms=now_ms)
+    _state_store.upsert(
+        sid,
+        snap.model_copy(
+            update={
+                "flow_state": "S0",
+                "updated_ts_ms": now_ms,
+                "user_id": user_id or snap.user_id,
+                "vqa_required": True,
+                "vqa_passed": False,
+                "vqa_attempt_count": 0,
+                "vqa_last_result": None,
+                "active_challenge_id": None,
+                "active_challenge_expires_at_ms": None,
+                "active_challenge_token": "",
+                "latest_vqa_challenge_summary": {},
+                "latest_vqa_challenge_at_ms": 0,
+                "vqa_behavior_score": 0.0,
+            }
+        ),
+    )
+
+
 def _hydrate_match_state_from_sid_vqa_mark(
     *,
     sid: str,
@@ -829,6 +1121,66 @@ def _build_state_key(sid: str, match_id: int) -> str:
     return f"{sid}:{match_id}"
 
 
+def _resolve_session_id_candidates(
+    x_auth_sid: Optional[str],
+    authorization: Optional[str],
+) -> list[str]:
+    candidates: list[str] = []
+    header_sid = _opt_str(x_auth_sid)
+    if header_sid:
+        candidates.append(header_sid)
+
+    payload = _decode_bearer_payload(authorization)
+    if payload:
+        token_sid = _opt_str(payload.get("sid"))
+        if token_sid and token_sid not in candidates:
+            candidates.append(token_sid)
+
+    return candidates
+
+
+def _upsert_match_state_aliases(
+    *,
+    session_ids: list[str],
+    match_id: int,
+    now_ms: int,
+    update: dict[str, Any],
+    user_id: Optional[str],
+) -> None:
+    for session_id in session_ids:
+        state_key = _build_state_key(session_id, match_id)
+        snap = _get_or_create_snapshot(state_key, now_ms)
+        next_update = dict(update)
+        next_update["user_id"] = user_id or snap.user_id
+        _state_store.upsert(state_key, snap.model_copy(update=next_update))
+
+
+def _upsert_sid_level_vqa_pass_aliases(
+    *,
+    session_ids: list[str],
+    now_ms: int,
+    flow_state: str,
+    user_id: Optional[str],
+) -> None:
+    for session_id in session_ids:
+        snap = _state_store.get(session_id) or RuntimeStateSnapshot(updated_ts_ms=now_ms)
+        _state_store.upsert(
+            session_id,
+            snap.model_copy(
+                update={
+                    "flow_state": flow_state,
+                    "vqa_required": False,
+                    "vqa_passed": True,
+                    "vqa_last_result": "PASSED",
+                    "active_challenge_id": None,
+                    "active_challenge_expires_at_ms": None,
+                    "updated_ts_ms": now_ms,
+                    "user_id": user_id or snap.user_id,
+                }
+            ),
+        )
+
+
 def _extract_match_id_from_request_path(request_path: str) -> int:
     match = _MATCH_ID_PATH_RE.search(request_path)
     if match is None:
@@ -840,14 +1192,9 @@ def _resolve_session_id(
     x_auth_sid: Optional[str],
     authorization: Optional[str],
 ) -> str:
-    sid = (x_auth_sid or "").strip()
-    if sid:
-        return sid
-    payload = _decode_bearer_payload(authorization)
-    if payload:
-        token_sid = _opt_str(payload.get("sid"))
-        if token_sid:
-            return token_sid
+    candidates = _resolve_session_id_candidates(x_auth_sid, authorization)
+    if candidates:
+        return candidates[0]
     raise HTTPException(status_code=401, detail="missing auth context")
 
 
@@ -936,6 +1283,27 @@ def _block_user_in_auth_guard(
         trace_id=trace_id,
         trigger=trigger,
     )
+
+
+def _build_evaluate_response(
+    *,
+    background_tasks: BackgroundTasks,
+    action: str,
+    user_id: Optional[str],
+    session_id: str,
+    trace_id: str,
+    block_trigger: str = "ai_evaluate_block",
+) -> AiEvaluateResponse:
+    EVALUATE_REQUESTS.labels(decision=action).inc()
+    if action == "BLOCK":
+        background_tasks.add_task(
+            _block_user_in_auth_guard,
+            user_id=user_id,
+            session_id=session_id,
+            trace_id=trace_id,
+            trigger=block_trigger,
+        )
+    return AiEvaluateResponse(decision={"action": action})
 
 
 async def _verify_turnstile_token(turnstile_token: str) -> bool:
@@ -1133,6 +1501,142 @@ def _compute_bot_risk(summary: dict[str, float]) -> float:
         + 0.10 * linear_path
     )
     return max(0.0, min(1.0, risk))
+
+
+def _score_vqa_attempt(summary: dict[str, float]) -> tuple[float, list[str], bool]:
+    if not summary:
+        return 0.0, [], False
+
+    point_count = _opt_int(summary.get("mousePointCount")) or 0
+    if point_count < 2:
+        return 0.0, [], False
+
+    base_risk = _to_float(summary.get("botRisk"))
+    if base_risk is None:
+        base_risk = _compute_bot_risk(summary)
+
+    linearity = max(0.0, min(1.0, float(summary.get("linearityRatio", 0.0))))
+    path_ratio = max(1.0, min(3.0, float(summary.get("pathRatio", 1.0))))
+    tremor = max(0.0, min(6.0, float(summary.get("tremorStdDev", 0.0))))
+    velocity = max(0.0, min(4000.0, float(summary.get("avgVelocity", 0.0))))
+    dwell = max(0.0, min(2000.0, float(summary.get("dwellTime", 0.0))))
+
+    boosted_risk = (
+        0.40 * linearity
+        + 0.25 * (1.0 - _normalize(path_ratio, 1.0, 1.20))
+        + 0.15 * (1.0 - _normalize(tremor, 0.0, 1.5))
+        + 0.10 * _normalize(velocity, 600.0, 2400.0)
+        + 0.10 * (1.0 - _normalize(dwell, 50.0, 500.0))
+    )
+    attempt_score = max(0.0, min(1.0, max(base_risk, boosted_risk)))
+
+    reason_codes: list[str] = []
+    if linearity >= _VQA_EXTREME_LINEARITY_THRESHOLD:
+        reason_codes.append("linearity_extreme")
+    if path_ratio <= _VQA_EXTREME_PATH_RATIO_THRESHOLD:
+        reason_codes.append("path_ratio_extreme")
+    if tremor <= _VQA_LOW_TREMOR_THRESHOLD:
+        reason_codes.append("tremor_low")
+    if velocity >= _VQA_HIGH_VELOCITY_THRESHOLD:
+        reason_codes.append("velocity_high")
+    if dwell <= _VQA_LOW_DWELL_THRESHOLD:
+        reason_codes.append("dwell_low")
+
+    terminal = point_count >= _VQA_MIN_POINTS_FOR_ABNORMAL_TERMINAL and (
+        attempt_score >= _VQA_TERMINAL_RISK_THRESHOLD
+        or (
+            attempt_score >= _VQA_REVIEW_RISK_FLOOR
+            and len(reason_codes) >= _VQA_MIN_STRONG_SIGNALS_FOR_TERMINAL
+            and "linearity_extreme" in reason_codes
+        )
+    )
+    return attempt_score, reason_codes, terminal
+
+
+def _apply_vqa_telemetry_to_decision_engine(
+    *,
+    session_id: str,
+    trace_id: str,
+    flow_state: str,
+    now_ms: int,
+    feature_summary: dict[str, float],
+    vqa_attempt_score: float,
+    result: str,
+) -> bool:
+    point_count = _opt_int(feature_summary.get("mousePointCount")) or 0
+    if point_count < 2:
+        return False
+
+    policy = _decision_engine.policy_loader.load(session_id=session_id)
+    external_score = max(0.0, min(1.0, 1.0 - vqa_attempt_score))
+    event = D0RuntimeEvent(
+        event_type="S3_RESULT",
+        ts_ms=now_ms,
+        flow_state=_to_d0_flow_state(flow_state),
+        session_id=session_id,
+        trace_id=trace_id,
+        source="AI_RUNTIME",
+        payload={"result": result},
+    )
+
+    with _decision_engine.session_state.session_lock(session_id):
+        state = _decision_engine.session_state.get_or_create(
+            session_id,
+            policy_version=policy.policy_version,
+        )
+        guard_output = _decision_engine.guard.score(
+            trace_id=trace_id,
+            event=event,
+            state=state,
+            policy=policy,
+            features=feature_summary,
+            external_score=external_score,
+        )
+        _decision_engine.guard.persist(
+            state_manager=_decision_engine.session_state,
+            session_id=session_id,
+            ts_ms=now_ms,
+            output=guard_output,
+        )
+        state.risk_score = guard_output.r_new
+        state.defense_tier = guard_output.tier
+        _decision_engine.analyzer.analyze(
+            session_id=session_id,
+            trace_id=trace_id,
+            event=event,
+            state=state,
+            policy=policy,
+        )
+        _decision_engine.session_state.sync_policy_version(
+            session_id,
+            policy.policy_version,
+            refresh_ttl=result == "PASS",
+        )
+    return True
+
+
+def _decision_engine_runtime_overlay(
+    *,
+    session_id: str,
+    now_ms: int,
+    user_id: Optional[str],
+) -> dict[str, Any]:
+    d0_state = _decision_engine.session_state.get(session_id)
+    if d0_state is None:
+        return {}
+
+    return {
+        "flow_state": d0_state.flow_state.value,
+        "defense_tier": d0_state.defense_tier.value,
+        "risk_score": float(d0_state.risk_score),
+        "challenge_fail_count": int(d0_state.challenge_fail_count),
+        "seat_taken_streak": int(d0_state.seat_taken_streak),
+        "hold_fail_streak": int(d0_state.hold_fail_streak),
+        "probation_until_ms": d0_state.probation_until_ms,
+        "policy_version": d0_state.policy_version or "v2.0.0-mvp",
+        "updated_ts_ms": now_ms,
+        "user_id": user_id,
+    }
 
 
 def _feature_soft_action(

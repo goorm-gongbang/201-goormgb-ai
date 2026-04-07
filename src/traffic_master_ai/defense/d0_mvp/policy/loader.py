@@ -13,16 +13,44 @@ import time
 from pathlib import Path
 from typing import Any, Optional, Protocol
 
+from ...storage_env import (
+    load_runtime_policy_config_from_env,
+    validate_runtime_policy_env_for_prod,
+)
 from ..core.constants import POLICY_CACHE_SECONDS, POLICY_STORE_FILENAME
 from ..state.keyspace import (
     POLICY_ROLLOUT_STATE_KEY,
     POLICY_VERSION_INDEX_KEY,
     POLICY_VERSION_KEY_PREFIX,
 )
-from ..state.redis_client import InMemoryRedis, RedisLike
+from ..state.redis_client import InMemoryRedis, RedisLike, build_runtime_redis_from_env
 from .snapshot import PolicySnapshot
+from .runtime_read_adapter import (
+    RuntimeProjectionDecodeError,
+    RuntimeProjectionNotFoundError,
+    RuntimeProjectionStaleError,
+    RuntimePolicyReadAdapter,
+    serialize_runtime_projected_policy_document,
+    serialize_runtime_projected_rollout_state,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class RuntimePolicyAuthorityError(RuntimeError):
+    """Raised when strict runtime authority cannot load a policy from Redis projection."""
+
+    def __init__(self, *, session_id: str, reason: str) -> None:
+        self.session_id = session_id
+        self.reason = reason
+        self.repair_hint = (
+            "Repair Redis runtime projection from PostgreSQL authoritative rows before "
+            "serving strict-authority traffic."
+        )
+        super().__init__(
+            f"Runtime policy authority unavailable for session_id={session_id!r}: {reason}. "
+            f"{self.repair_hint}"
+        )
 
 class PolicyStore(Protocol):
     """Storage backend for policy documents and rollout state."""
@@ -91,6 +119,11 @@ class RedisPolicyStore:
         if self._fallback is None:
             return None
         return self._fallback.fetch_policy_by_version(version)
+
+    def fetch_primary_policy_by_version(self, version: str) -> Optional[dict[str, Any]]:
+        """Read policy document stored in Redis only, without fallback lookup."""
+        raw = self._redis.get(self._policy_key(version))
+        return _json_object(raw)
 
     def get_rollout_state(self) -> Optional[dict[str, Any]]:
         raw = self._redis.get(POLICY_ROLLOUT_STATE_KEY)
@@ -264,24 +297,69 @@ class PolicyLoader:
         store: Optional[PolicyStore] = None,
         rollout_salt: str = "",
         cache_seconds: int = POLICY_CACHE_SECONDS,
+        read_adapter: Optional[RuntimePolicyReadAdapter] = None,
+        projection_max_staleness_ms: int | None = None,
+        strict_authority: bool = False,
     ) -> None:
         self._store = store or RedisPolicyStore(
             InMemoryRedis(),
             fallback=FilePolicyStore(),
         )
         self._salt = rollout_salt
+        self._read_adapter = read_adapter or RuntimePolicyReadAdapter(self._store)
         self._default = PolicySnapshot()
         self._cache_seconds = max(0, cache_seconds)
+        self._projection_max_staleness_ms = projection_max_staleness_ms
+        self._strict_authority = strict_authority
         self._rollout_cache_expires_at = 0.0
         self._rollout_cache: Optional[dict[str, Any]] = None
         self._policy_cache: dict[str, tuple[float, PolicySnapshot]] = {}
+
+    @classmethod
+    def from_env(
+        cls,
+        *,
+        store: Optional[PolicyStore] = None,
+        read_adapter: Optional[RuntimePolicyReadAdapter] = None,
+    ) -> PolicyLoader:
+        """Build the runtime policy loader using the Task 6 env contract."""
+
+        validate_runtime_policy_env_for_prod()
+        config = load_runtime_policy_config_from_env()
+        effective_store = store
+        if effective_store is None:
+            redis_backend, _ = build_runtime_redis_from_env()
+            fallback_store = (
+                FilePolicyStore(file_path=config.store_path)
+                if config.allow_local_fallback
+                else None
+            )
+            effective_store = RedisPolicyStore(redis_backend, fallback=fallback_store)
+        return cls(
+            store=effective_store,
+            rollout_salt=config.rollout_salt,
+            cache_seconds=config.cache_seconds,
+            read_adapter=read_adapter,
+            projection_max_staleness_ms=config.projection_max_staleness_ms,
+            strict_authority=config.strict_authority,
+        )
 
     @property
     def store(self) -> PolicyStore:
         return self._store
 
+    @property
+    def read_adapter(self) -> RuntimePolicyReadAdapter:
+        return self._read_adapter
+
+    @property
+    def strict_authority(self) -> bool:
+        return self._strict_authority
+
     def load(self, session_id: str) -> PolicySnapshot:
         """Load and validate the active policy for a session."""
+        if self._strict_authority:
+            return self._load_strict(session_id)
         rollout_state = self._get_rollout_state()
         version = resolve_policy_version(session_id, rollout_state, self._salt)
 
@@ -289,9 +367,14 @@ class PolicyLoader:
         if cached is not None:
             return cached
 
-        raw = self._store.fetch_policy_by_version(version)
-        if raw is None:
+        projected_policy = self._read_adapter.fetch_projected_policy_document(version)
+        if projected_policy is None:
+            logger.warning(
+                "Runtime policy projection missing or invalid for version %s; using default baseline policy and requiring Redis projection repair.",
+                version,
+            )
             return self._default
+        raw = serialize_runtime_projected_policy_document(projected_policy)
 
         try:
             policy = _build_snapshot_from_dict(raw, version)
@@ -302,20 +385,65 @@ class PolicyLoader:
         errors = policy.validate()
         if errors:
             logger.warning(
-                "Policy %s failed validation: %s — using default", version, errors
+                "Policy %s failed validation: %s — using default and requiring projection repair",
+                version,
+                errors,
             )
             return self._default
 
         self._remember_policy(version, policy)
         return policy
 
+    def _load_strict(self, session_id: str) -> PolicySnapshot:
+        rollout_state = self._get_rollout_state_strict(session_id)
+        version = resolve_policy_version(session_id, rollout_state, self._salt)
+
+        cached = self._get_cached_policy(version)
+        if cached is not None:
+            return cached
+
+        try:
+            projected_policy = self._read_adapter.require_projected_policy_document(version)
+        except (RuntimeProjectionDecodeError, RuntimeProjectionNotFoundError) as exc:
+            raise RuntimePolicyAuthorityError(
+                session_id=session_id,
+                reason=str(exc),
+            ) from exc
+        raw = serialize_runtime_projected_policy_document(projected_policy)
+
+        try:
+            policy = _build_snapshot_from_dict(raw, version)
+        except Exception as exc:
+            raise RuntimePolicyAuthorityError(
+                session_id=session_id,
+                reason=f"failed to parse runtime policy projection for version {version!r}",
+            ) from exc
+
+        errors = policy.validate()
+        if errors:
+            raise RuntimePolicyAuthorityError(
+                session_id=session_id,
+                reason=f"runtime policy projection {version!r} failed validation: {errors}",
+            )
+
+        self._remember_policy(version, policy)
+        return policy
+
     def _get_rollout_state(self) -> Optional[dict[str, Any]]:
         if self._cache_seconds <= 0:
-            return self._store.get_rollout_state()
+            projected = self._load_projected_rollout_state()
+            if projected is None:
+                return None
+            return serialize_runtime_projected_rollout_state(projected)
         now = time.time()
         if now < self._rollout_cache_expires_at:
             return None if self._rollout_cache is None else dict(self._rollout_cache)
-        rollout_state = self._store.get_rollout_state()
+        projected = self._load_projected_rollout_state()
+        rollout_state = (
+            None
+            if projected is None
+            else serialize_runtime_projected_rollout_state(projected)
+        )
         self._rollout_cache = None if rollout_state is None else dict(rollout_state)
         self._rollout_cache_expires_at = now + self._cache_seconds
         return None if self._rollout_cache is None else dict(self._rollout_cache)
@@ -336,6 +464,40 @@ class PolicyLoader:
         if self._cache_seconds <= 0:
             return
         self._policy_cache[version] = (time.time() + self._cache_seconds, snapshot)
+
+    def _load_projected_rollout_state(self):
+        if self._projection_max_staleness_ms is None:
+            return self._read_adapter.get_projected_rollout_state()
+        return self._read_adapter.get_projected_rollout_state_with_staleness_check(
+            max_staleness_ms=self._projection_max_staleness_ms,
+        )
+
+    def _get_rollout_state_strict(self, session_id: str) -> dict[str, Any]:
+        if self._cache_seconds <= 0:
+            return self._require_projected_rollout_state(session_id)
+        now = time.time()
+        if now < self._rollout_cache_expires_at and self._rollout_cache is not None:
+            return dict(self._rollout_cache)
+        rollout_state = self._require_projected_rollout_state(session_id)
+        self._rollout_cache = dict(rollout_state)
+        self._rollout_cache_expires_at = now + self._cache_seconds
+        return dict(self._rollout_cache)
+
+    def _require_projected_rollout_state(self, session_id: str) -> dict[str, Any]:
+        try:
+            projected = self._read_adapter.require_projected_rollout_state(
+                max_staleness_ms=self._projection_max_staleness_ms,
+            )
+        except (
+            RuntimeProjectionDecodeError,
+            RuntimeProjectionNotFoundError,
+            RuntimeProjectionStaleError,
+        ) as exc:
+            raise RuntimePolicyAuthorityError(
+                session_id=session_id,
+                reason=str(exc),
+            ) from exc
+        return serialize_runtime_projected_rollout_state(projected)
 
 
 def snapshot_to_document(snapshot: PolicySnapshot) -> dict[str, Any]:
@@ -635,6 +797,8 @@ __all__ = [
     "InMemoryPolicyStore",
     "RedisPolicyStore",
     "FilePolicyStore",
+    "RuntimePolicyAuthorityError",
+    "RuntimePolicyReadAdapter",
     "resolve_policy_version",
     "snapshot_to_document",
 ]

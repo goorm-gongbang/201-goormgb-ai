@@ -2,106 +2,308 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-from datetime import UTC, datetime
-from typing import Any, Mapping
+from dataclasses import dataclass
+from typing import Any
 
-import boto3
-from sqlalchemy import Column, DateTime, String, Table, MetaData
-from sqlalchemy.dialects.postgresql import JSONB
-
-from .database import engine
+from ..backoffice_copilot.storage.clickhouse_connection import (
+    ClickHouseWriteConfig,
+    build_clickhouse_batch_write_client,
+)
+from ..backoffice_copilot.storage.clickhouse_ingest import (
+    CanonicalAuditMappingError,
+    compute_clickhouse_raw_fact_dedup_key,
+    map_canonical_audit_payload_to_clickhouse_row,
+)
+from ..backoffice_copilot.storage.clickhouse_repository import (
+    ClickHouseAuditEventWriterRepository,
+    ClickHouseBatchWriteRequest,
+    ClickHouseBatchWriteRetryPolicy,
+)
+from ..backoffice_copilot.storage.clickhouse_validators import ClickHouseAuditEventInsertRow
+from ..storage_env import (
+    ETLWorkerConfig,
+    load_etl_worker_config_from_env,
+    StorageOperationalConfigError,
+    validate_clickhouse_ingest_env_for_prod,
+)
 
 logger = logging.getLogger(__name__)
 
-metadata = MetaData()
 
-# Define the audit events table using metadata for flexibility
-audit_events = Table(
-    "defense_audit_events",
-    metadata,
-    Column("id", String, primary_key=True),  # decision_id or composite
-    Column("ts_ms", DateTime, index=True),
-    Column("session_id", String, index=True),
-    Column("event_type", String, index=True),
-    Column("payload", JSONB),
-    Column("created_at", DateTime, default=datetime.now(UTC)),
-)
+class ETLIngestError(RuntimeError):
+    """Raised when one S3 archive object cannot be ingested into ClickHouse."""
+
+
+class ETLConfigurationError(StorageOperationalConfigError):
+    """Raised when the ETL worker is missing required operational config."""
+
+
+@dataclass(slots=True, frozen=True)
+class S3AuditIngestResult:
+    key: str
+    accepted_row_count: int
+    duplicate_row_count: int
+
+
+def _ensure_clickhouse_ingest_operational_config(config: ETLWorkerConfig) -> None:
+    if not (config.s3.bucket or "").strip():
+        raise ETLConfigurationError("TM_S3_BUCKET must be set to run the ClickHouse ETL worker.")
+    if not config.clickhouse.enabled:
+        raise ETLConfigurationError("TM_CLICKHOUSE_URL must be set to run the ClickHouse ETL worker.")
 
 
 class ETLWorker:
-    """ETL process to move logs from S3 to PostgreSQL."""
+    """ETL process to move rotated audit JSONL files from S3 into ClickHouse."""
 
-    def __init__(self, s3_bucket: str) -> None:
-        self.s3_bucket = s3_bucket
-        self.s3 = boto3.client("s3")
-        self.engine = engine
+    def __init__(
+        self,
+        config: ETLWorkerConfig,
+        *,
+        s3_client: Any | None = None,
+        clickhouse_writer: ClickHouseAuditEventWriterRepository | None = None,
+        clickhouse_client: Any | None = None,
+    ) -> None:
+        self.config = config
+        self.s3_bucket = config.s3.bucket or ""
+        self.s3_prefix = config.s3.prefix
+        self.s3 = s3_client or self._build_s3_client(region_name=config.s3.region)
+        self.writer = clickhouse_writer or self._build_default_clickhouse_writer(
+            clickhouse_client=clickhouse_client,
+        )
+        self.retry_policy = ClickHouseBatchWriteRetryPolicy(
+            max_attempts=config.clickhouse.write_retry_max_attempts,
+            backoff_ms=config.clickhouse.write_retry_backoff_ms,
+        )
+
+    @staticmethod
+    def _build_s3_client(*, region_name: str | None) -> Any:
+        try:
+            import boto3
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "boto3 is required to construct the ETL worker S3 client. "
+                "Install boto3 or inject s3_client explicitly."
+            ) from exc
+        return boto3.client("s3", region_name=region_name)
+
+    def _build_default_clickhouse_writer(
+        self,
+        *,
+        clickhouse_client: Any | None,
+    ) -> ClickHouseAuditEventWriterRepository:
+        write_config = ClickHouseWriteConfig(
+            url=self.config.clickhouse.url,
+            table_name=self.config.clickhouse.audit_table,
+            batch_size=self.config.clickhouse.ingest_batch_size,
+            timeout_ms=self.config.clickhouse.ingest_timeout_ms,
+        )
+        client = clickhouse_client or build_clickhouse_batch_write_client(write_config)
+        return ClickHouseAuditEventWriterRepository(client=client, config=write_config)
+
+    @classmethod
+    def from_env(cls) -> ETLWorker:
+        """Build the ClickHouse ETL worker from env config."""
+
+        try:
+            validate_clickhouse_ingest_env_for_prod()
+        except StorageOperationalConfigError as exc:
+            raise ETLConfigurationError(str(exc)) from exc
+        return cls(load_etl_worker_config_from_env())
 
     def run_once(self) -> int:
-        """Scan S3 for new logs and insert into DB."""
-        if not self.engine:
-            logger.warning("PostgreSQL engine not configured. Skipping ETL.")
-            return 0
+        """Scan S3 for archived audit JSONL files and ingest them into ClickHouse."""
 
-        # Note: In a real prod environment, we would use S3 Event Notifications (SQS/Lambda).
-        # For this PoC/Phase 2, we list the bucket's recent prefix.
-        count = 0
-        try:
-            # Simple list operation for PoC
-            response = self.s3.list_objects_v2(Bucket=self.s3_bucket, Prefix="ai-defense/audit/")
+        self._ensure_runtime_ingest_config()
+
+        total_rows = 0
+        for key in self._iter_source_keys():
+            result = self._process_s3_file(key)
+            total_rows += result.accepted_row_count
+        return total_rows
+
+    def replay_key(self, key: str) -> S3AuditIngestResult:
+        """Replay one explicit archive object into ClickHouse."""
+
+        if not key or not self._is_ingest_candidate_key(key):
+            raise ETLIngestError("replay key must be one .jsonl archive object.")
+        return self._process_s3_file(key)
+
+    def replay_keys(self, keys: list[str]) -> int:
+        """Replay a fixed archive object list in order."""
+
+        total_rows = 0
+        for key in keys:
+            result = self.replay_key(key)
+            total_rows += result.accepted_row_count
+        return total_rows
+
+    def _ensure_runtime_ingest_config(self) -> None:
+        if not self.s3_bucket:
+            raise ETLConfigurationError(
+                "TM_S3_BUCKET must be set to run the ClickHouse ETL worker."
+            )
+        if not self.config.clickhouse.enabled:
+            raise ETLConfigurationError(
+                "TM_CLICKHOUSE_URL must be set to run the ClickHouse ETL worker."
+            )
+
+    def _iter_source_keys(self) -> list[str]:
+        keys: list[str] = []
+        continuation_token: str | None = None
+        while True:
+            request: dict[str, object] = {
+                "Bucket": self.s3_bucket,
+                "Prefix": self.s3_prefix,
+            }
+            if continuation_token is not None:
+                request["ContinuationToken"] = continuation_token
+
+            response = self.s3.list_objects_v2(**request)
             for obj in response.get("Contents", []):
-                key = obj["Key"]
-                if not key.endswith(".jsonl"):
-                    continue
-                
-                count += self._process_s3_file(key)
-        except Exception as exc:
-            logger.error("ETL process failed: %s", exc)
-        
-        return count
+                key = obj.get("Key")
+                if isinstance(key, str) and self._is_ingest_candidate_key(key):
+                    keys.append(key)
 
-    def _process_s3_file(self, key: str) -> int:
-        """Download file from S3 and upsert rows."""
-        count = 0
+            if not response.get("IsTruncated"):
+                break
+            continuation_token = response.get("NextContinuationToken")
+            if not continuation_token:
+                break
+        return keys
+
+    def _process_s3_file(self, key: str) -> S3AuditIngestResult:
+        """Download one S3 JSONL object, map canonical rows, dedupe, and batch-write."""
+
         try:
             response = self.s3.get_object(Bucket=self.s3_bucket, Key=key)
-            lines = response["Body"].read().decode("utf-8").splitlines()
-            
-            with self.engine.begin() as conn:
-                for line in lines:
-                    if not line.strip():
-                        continue
-                    payload = json.loads(line)
-                    
-                    # Normalize and Insert
-                    stmt = audit_events.insert().values(
-                        id=payload.get("decision_id") or payload.get("challenge_id") or os.urandom(8).hex(),
-                        ts_ms=datetime.fromtimestamp(payload.get("ts_ms", 0) / 1000.0, UTC),
-                        session_id=payload.get("session_id"),
-                        event_type=payload.get("event_type"),
-                        payload=payload
-                    )
-                    # Simple insert for MVP; duplicate handling would be added for Staging
-                    conn.execute(stmt)
-                    count += 1
-            
-            # Optional: Move key to /processed/ folder
-            return count
+            raw_body = response["Body"].read()
+            if isinstance(raw_body, bytes):
+                lines = raw_body.decode("utf-8").splitlines()
+            else:
+                lines = str(raw_body).splitlines()
+
+            accepted_row_count = 0
+            duplicate_row_count = 0
+            dedup_keys: set[str] = set()
+            batch = []
+            for line_number, raw_line in enumerate(lines, start=1):
+                stripped = raw_line.strip()
+                if not stripped:
+                    continue
+                payload = self._parse_json_line(stripped, key=key, line_number=line_number)
+                row = map_canonical_audit_payload_to_clickhouse_row(payload)
+                dedup_key = compute_clickhouse_raw_fact_dedup_key(row)
+                if dedup_key in dedup_keys:
+                    duplicate_row_count += 1
+                    continue
+                dedup_keys.add(dedup_key)
+                batch.append(row)
+                if len(batch) >= self.writer.config.batch_size:
+                    accepted_row_count += self._flush_batch(key=key, rows=tuple(batch))
+                    batch.clear()
+
+            if batch:
+                accepted_row_count += self._flush_batch(key=key, rows=tuple(batch))
+
+            logger.info(
+                "Ingested ClickHouse raw-fact archive key=%s accepted_row_count=%s duplicate_row_count=%s",
+                key,
+                accepted_row_count,
+                duplicate_row_count,
+            )
+            return S3AuditIngestResult(
+                key=key,
+                accepted_row_count=accepted_row_count,
+                duplicate_row_count=duplicate_row_count,
+            )
         except Exception as exc:
-            logger.error("Failed to process S3 key %s: %s", key, exc)
-            return 0
+            logger.exception("Failed to ingest S3 archive key=%s into ClickHouse", key)
+            raise ETLIngestError(
+                f"ClickHouse raw-fact ingest failed for S3 key={key!r}."
+            ) from exc
+
+    def _flush_batch(self, *, key: str, rows: tuple[ClickHouseAuditEventInsertRow, ...]) -> int:
+        result = self.writer.write_batch_request_with_retry(
+            ClickHouseBatchWriteRequest(rows=rows),
+            retry_policy=self.retry_policy,
+        )
+        logger.info(
+            "Flushed ClickHouse raw-fact batch key=%s table=%s accepted_row_count=%s",
+            key,
+            result.table_name,
+            result.accepted_row_count,
+        )
+        return result.accepted_row_count
+
+    @staticmethod
+    def _is_ingest_candidate_key(key: str) -> bool:
+        return key.endswith(".jsonl")
+
+    @staticmethod
+    def _parse_json_line(raw_line: str, *, key: str, line_number: int) -> dict[str, object]:
+        try:
+            payload = json.loads(raw_line)
+        except json.JSONDecodeError as exc:
+            raise ETLIngestError(
+                f"invalid JSONL in S3 key={key!r} line={line_number}: {exc}"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ETLIngestError(
+                f"invalid canonical audit row in S3 key={key!r} line={line_number}: JSON object required."
+            )
+        try:
+            return {str(field_name): value for field_name, value in payload.items()}
+        except Exception as exc:  # pragma: no cover - defensive, mapping keys should already be strings
+            raise ETLIngestError(
+                f"invalid canonical audit row in S3 key={key!r} line={line_number}: mapping conversion failed."
+            ) from exc
 
 
-def run_etl():
-    """CLI entry point for the ETL worker."""
-    bucket = os.getenv("TM_S3_BUCKET")
-    if not bucket:
-        print("TM_S3_BUCKET must be set to run ETL worker.")
-        return
-    
-    worker = ETLWorker(s3_bucket=bucket)
-    total = worker.run_once()
-    print(f"ETL completed. Processed {total} rows.")
+def run_etl() -> None:
+    """CLI entry point for the ClickHouse ETL worker."""
+
+    try:
+        validate_clickhouse_ingest_env_for_prod()
+        config = load_etl_worker_config_from_env()
+        _ensure_clickhouse_ingest_operational_config(config)
+        worker = ETLWorker(config=config)
+        total = worker.run_once()
+    except ETLConfigurationError as exc:
+        logger.error("ClickHouse ETL configuration invalid: %s", exc)
+        raise SystemExit(str(exc)) from exc
+    except CanonicalAuditMappingError as exc:
+        logger.error("Canonical audit -> ClickHouse mapping failed: %s", exc)
+        raise SystemExit(f"Canonical audit -> ClickHouse mapping failed: {exc}") from exc
+    except ETLIngestError as exc:
+        logger.error("ClickHouse ETL failed: %s", exc)
+        raise SystemExit(str(exc)) from exc
+    except StorageOperationalConfigError as exc:
+        logger.error("ClickHouse ETL configuration invalid: %s", exc)
+        raise SystemExit(str(exc)) from exc
+    print(f"ClickHouse ETL completed. Accepted {total} rows.")
+
+
+def run_etl_replay_keys(keys: list[str]) -> None:
+    """Operational replay entry point for one explicit archive object list."""
+
+    try:
+        config = load_etl_worker_config_from_env()
+        _ensure_clickhouse_ingest_operational_config(config)
+        worker = ETLWorker(config=config)
+        total = worker.replay_keys(keys)
+    except ETLConfigurationError as exc:
+        logger.error("ClickHouse ETL replay configuration invalid: %s", exc)
+        raise SystemExit(str(exc)) from exc
+    except CanonicalAuditMappingError as exc:
+        logger.error("Canonical audit -> ClickHouse mapping failed: %s", exc)
+        raise SystemExit(f"Canonical audit -> ClickHouse mapping failed: {exc}") from exc
+    except ETLIngestError as exc:
+        logger.error("ClickHouse ETL replay failed: %s", exc)
+        raise SystemExit(str(exc)) from exc
+    except StorageOperationalConfigError as exc:
+        logger.error("ClickHouse ETL replay configuration invalid: %s", exc)
+        raise SystemExit(str(exc)) from exc
+    print(f"ClickHouse ETL replay completed. Accepted {total} rows.")
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
+from ...storage_env import load_audit_log_config_from_env
 from ..core.constants import AUDIT_FILENAME, AUDIT_RETENTION_DAYS
 from .jsonl_retention import is_within_retention, load_rows, persist_rows
 from .schemas import AuditEntry, MANDATORY_AUDIT_EVENT_TYPES
@@ -23,6 +24,12 @@ class AuditLogger:
         self._path = Path(file_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._retention_days = max(0, int(retention_days))
+
+    @classmethod
+    def from_env(cls) -> AuditLogger:
+        """Build the runtime audit logger using the Task 6 audit path contract."""
+
+        return cls(file_path=load_audit_log_config_from_env().file_path)
 
     @property
     def file_path(self) -> Path:
