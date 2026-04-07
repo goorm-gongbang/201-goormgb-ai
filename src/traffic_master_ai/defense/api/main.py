@@ -189,19 +189,10 @@ _VQA_MIN_STRONG_SIGNALS_FOR_TERMINAL = int(os.getenv("TM_VQA_MIN_STRONG_SIGNALS_
 
 _S3_UPLOADER = S3Uploader(bucket=_S3_BUCKET, prefix=_S3_PREFIX, region=_S3_REGION) if _S3_BUCKET else None
 
-_DEFAULT_CORS_ALLOW_ORIGINS = (
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "https://staging.playball.one",
-    "https://playball.one",
-)
-
-
 def _cors_allow_origins_from_env() -> list[str]:
     raw = os.getenv("TM_CORS_ALLOW_ORIGINS", "")
     configured = [origin.strip() for origin in raw.split(",") if origin.strip()]
-    merged = list(dict.fromkeys([*_DEFAULT_CORS_ALLOW_ORIGINS, *configured]))
-    return merged
+    return list(dict.fromkeys(configured))
 
 
 async def _s3_archive_loop():
