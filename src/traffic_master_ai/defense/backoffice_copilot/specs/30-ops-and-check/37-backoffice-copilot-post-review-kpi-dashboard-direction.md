@@ -1,7 +1,7 @@
 # Backoffice Copilot Post-Review KPI Dashboard Direction
 
 이 문서의 주요 내용은
-[36-ai-defense-grafana-main-dashboard-direction.md](/Users/shadowmoon/201-goormgb-ai-1/src/traffic_master_ai/defense/backoffice_copilot/specs/30-ops-and-check/36-ai-defense-grafana-main-dashboard-direction.md)로 병합했다.
+[36-ai-defense-grafana-main-dashboard-direction.md](./36-ai-defense-grafana-main-dashboard-direction.md)로 병합했다.
 
 이유:
 
@@ -12,6 +12,6 @@
 
 현재 권위 문서:
 
-- [36-ai-defense-grafana-main-dashboard-direction.md](/Users/shadowmoon/201-goormgb-ai-1/src/traffic_master_ai/defense/backoffice_copilot/specs/30-ops-and-check/36-ai-defense-grafana-main-dashboard-direction.md)
+- [36-ai-defense-grafana-main-dashboard-direction.md](./36-ai-defense-grafana-main-dashboard-direction.md)
 
 이 문서는 중복 설명을 피하기 위한 안내 문서로만 유지한다.

@@ -239,11 +239,11 @@
   - 명령: `.env.ai`에서 `LANGSMITH_API_KEY`, `LANGSMITH_TRACING`, `LANGSMITH_PROJECT`, `LANGSMITH_WORKSPACE_ID`, `TM_AI_ENV`, `TM_OFFLINE_LLM_API_KEY`, `TM_OFFLINE_LLM_MODEL`, `OPENAI_BASE_URL` set 여부 확인
   - 결과: 필요한 key는 모두 존재
 - 시스템 Python 설치 제한 확인
-  - 명령: `python3 -m pip install -e /Users/shadowmoon/201-goormgb-ai-1`
+  - 명령: `python3 -m pip install -e .`
   - 결과: PEP 668 `externally-managed-environment`로 차단
 - 검증용 venv 생성 및 설치
-  - 명령: `python3 -m venv /Users/shadowmoon/201-goormgb-ai-1/.venv-langsmith-check`
-  - 명령: `/Users/shadowmoon/201-goormgb-ai-1/.venv-langsmith-check/bin/python -m pip install -e /Users/shadowmoon/201-goormgb-ai-1`
+  - 명령: `python3 -m venv .venv-langsmith-check`
+  - 명령: `./.venv-langsmith-check/bin/python -m pip install -e .`
   - 결과: `langsmith` 포함 editable install 성공
 - LangSmith client 기본 연결 확인
   - 명령: `.env.ai` 로드 후 `Client()` 생성 및 메서드 시그니처 확인
