@@ -1,5 +1,46 @@
 # LangSmith 최소 도입 Task Execution Log
 
+## Task 13
+
+### 1. task 번호와 제목
+
+- Task 13. LangSmith PR 코드리뷰 반영: trace URL / 실패 run 표시 보정
+
+### 2. 작업 일시
+
+- 2026-04-09 00:07:54 KST
+
+### 3. 실제로 수정한 파일 목록
+
+- `src/traffic_master_ai/defense/langsmith_support.py`
+- `src/traffic_master_ai/defense/d0_mvp/optimizer/effect_evaluator.py`
+- `tests/defense/test_langsmith_support.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/task-execution-log-langsmith.md`
+
+### 4. 파일별 수정 요약
+
+- `langsmith_support.py`: trace URL을 수동 경로 조립 대신 `RunTree.get_url()` 기반으로 가져오도록 변경했다. project name 기반 `/projects/p/{project}` 수동 URL은 잘못된 링크를 만들 수 있어 제거했다. 또한 `record_error()`가 내부 `_error` 상태를 저장하고 `__exit__()`에서 `end(error=...)`를 호출하도록 바꿔, LangSmith UI에서 실패 run이 실제 실패 상태로 표시되게 했다.
+- `effect_evaluator.py`: reviewer가 제안한 `empty patches` 허용 구조 변경은 validator / pipeline 계약과 충돌해 수용하지 않았다. 대신 prompt의 `no-op-like minimal patch` 문구를 더 명확하게 바꿔, 별도 no-change schema를 만들지 않는 현재 계약을 유지하면서도 오해를 줄였다.
+- `test_langsmith_support.py`: `get_langsmith_link()`가 `RunTree.get_url()`을 쓰는지, `record_error()` 이후 `__exit__()`가 `end(error=...)`를 호출하는지 검증하는 테스트를 추가했다.
+
+### 5. 검증에 사용한 명령과 결과 요약
+
+- 단위 테스트
+  - 명령: `PYTHONPATH=src python3 -m unittest tests.defense.test_langsmith_support tests.defense.test_audit_summarizer_langsmith tests.defense.test_backoffice_copilot_openai tests.defense.test_effect_evaluator_openai -v`
+  - 결과: `Ran 9 tests ... OK`
+- SDK 구조 확인
+  - 명령: 로컬 `langsmith` 설치 환경에서 `RunTree.get_url()` / `RunTree.end()` 시그니처 확인
+  - 결과:
+    - `RunTree.get_url()` 존재 확인
+    - `RunTree.end(outputs=..., error=...)` 지원 확인
+
+### 6. 남은 리스크 또는 다음 task에 넘길 입력
+
+- 남은 리스크
+  - 없음
+- 다음 task에 넘길 입력
+  - 이 변경은 기존 LangSmith PR 브랜치에 추가 커밋으로 올리면 된다.
+
 ## Task 12
 
 ### 1. task 번호와 제목

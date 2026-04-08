@@ -10,14 +10,6 @@ def current_tm_ai_environment() -> str:
     return value or "dev"
 
 
-def _langsmith_project_name() -> str:
-    return os.getenv("LANGSMITH_PROJECT", "tm-ai")
-
-
-def _langsmith_base_url() -> str:
-    return os.getenv("LANGSMITH_ENDPOINT", "https://smith.langchain.com").rstrip("/")
-
-
 def start_langsmith_llm_trace(
     *,
     name: str,
@@ -48,6 +40,7 @@ class _LangSmithLLMTrace:
     _run_tree: Any = field(default=None, init=False, repr=False)
     _output_payload: dict[str, Any] | None = field(default=None, init=False, repr=False)
     _usage_metadata: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    _error: str | None = field(default=None, init=False, repr=False)
 
     def __enter__(self) -> "_LangSmithLLMTrace":
         if not _langsmith_tracing_enabled():
@@ -79,9 +72,9 @@ class _LangSmithLLMTrace:
                     self._run_tree.usage_metadata = dict(self._usage_metadata)
                 except Exception:
                     pass
-            if self._output_payload is not None:
+            if self._output_payload is not None or self._error is not None:
                 try:
-                    self._run_tree.end(outputs=self._output_payload)
+                    self._run_tree.end(outputs=self._output_payload, error=self._error)
                 except Exception:
                     pass
         if self._trace_context is not None:
@@ -101,16 +94,16 @@ class _LangSmithLLMTrace:
 
     @property
     def trace_url(self) -> str | None:
-        """Build the LangSmith trace URL from run_id and project name."""
-        rid = self.run_id
-        if rid is None:
+        """Return the LangSmith trace URL if the active RunTree can provide it."""
+        if self._run_tree is None:
             return None
         try:
-            project = _langsmith_project_name()
-            base = _langsmith_base_url()
-            return f"{base}/o/{_langsmith_workspace_id()}/projects/p/{project}/r/{rid}"
+            get_url = getattr(self._run_tree, "get_url", None)
+            if callable(get_url):
+                return str(get_url())
         except Exception:
-            return None
+            pass
+        return None
 
     def get_langsmith_link(self) -> dict[str, str]:
         """Return a dict suitable for embedding as {'runId': ..., 'traceUrl': ...}.
@@ -140,9 +133,10 @@ class _LangSmithLLMTrace:
         self._output_payload = payload
 
     def record_error(self, exc: Exception | str) -> None:
+        error_text = str(exc)
+        self._error = error_text
         if self._run_tree is None:
             return
-        error_text = str(exc)
         try:
             self._run_tree.metadata["error"] = error_text
         except Exception:
@@ -152,11 +146,6 @@ class _LangSmithLLMTrace:
 def _langsmith_tracing_enabled() -> bool:
     raw = os.getenv("LANGSMITH_TRACING", "")
     return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
-
-
-def _langsmith_workspace_id() -> str:
-    """Return the workspace ID for URL construction. Falls back to 'default'."""
-    return os.getenv("LANGSMITH_WORKSPACE_ID", "default")
 
 
 __all__ = ["current_tm_ai_environment", "start_langsmith_llm_trace"]

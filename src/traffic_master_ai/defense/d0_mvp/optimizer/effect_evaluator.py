@@ -87,7 +87,7 @@ _EFFECT_EVALUATOR_PROMPT = (
     "- Tier thresholds must stay monotonic: T0_max < T1_max < T2_max < 1.0.\n"
     "- T2 throttle delay must be >= T1 throttle delay.\n"
     "- Only propose changes supported by evidence in the metrics.\n"
-    "- If no change is warranted, still produce a valid JSON with a single no-op-like minimal patch and confidence near 0.\n"
+    "- If evidence for change is weak, prefer a single very small reversible patch with low confidence instead of inventing a separate no-change schema.\n"
     "- Do NOT include any text outside the JSON object."
 )
 
