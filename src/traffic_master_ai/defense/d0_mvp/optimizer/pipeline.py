@@ -159,6 +159,12 @@ class OfflineOptimizer:
             metrics_snapshot=metrics,
             base_policy_version=base_policy.policy_version,
             base_policy=base_policy,
+            metrics_snapshot_id=metrics_snapshot_id,
+        )
+        langsmith_link = (
+            proposal_raw.get("langsmith")
+            if proposal_raw is not None and isinstance(proposal_raw, dict)
+            else None
         )
         sampled_traces = self._sample_traces(limit=OFFLINE_LLM_MAX_SAMPLE_TRACES)
         summary = self._summarizer.summarize(
@@ -175,6 +181,7 @@ class OfflineOptimizer:
                 proposal_id=str(proposal_raw.get("proposal_id", "")),
                 patches=proposal_raw.get("patches"),
                 result="NO_CHANGE",
+                langsmith=langsmith_link,
             )
             validation = self._validator.validate(
                 proposal_raw,
@@ -190,6 +197,7 @@ class OfflineOptimizer:
                     proposal_id=str(proposal.get("proposal_id", "")),
                     patches=proposal.get("patches"),
                     result="NO_CHANGE",
+                    langsmith=langsmith_link,
                 )
             else:
                 rejection_errors = list(validation.errors)
@@ -202,6 +210,7 @@ class OfflineOptimizer:
                     rollback_reason="; ".join(rejection_errors),
                     result="REJECTED",
                     errors=rejection_errors,
+                    langsmith=langsmith_link,
                 )
         result = {
             "metricsSnapshotId": metrics_snapshot_id,
@@ -210,6 +219,8 @@ class OfflineOptimizer:
             "proposalRejectedErrors": rejection_errors,
             "summary": summary.report_id if summary else None,
         }
+        if langsmith_link:
+            result["langsmith"] = langsmith_link
         self._append_audit_event(
             "OFFLINE_OPT_RUN_FINISHED",
             base_policy_version=base_policy.policy_version,
@@ -217,6 +228,7 @@ class OfflineOptimizer:
             proposal_id=str(proposal.get("proposal_id", "")) if proposal else None,
             result="REJECTED" if rejection_errors else "NO_CHANGE",
             summary_report_id=summary.report_id if summary else None,
+            langsmith=langsmith_link,
         )
         self._persist_optimization_run(
             base_policy_version=base_policy.policy_version,
@@ -474,6 +486,7 @@ class OfflineOptimizer:
         errors: Optional[list[str]] = None,
         summary_report_id: Optional[str] = None,
         guardrail_eval: Optional[Mapping[str, Any]] = None,
+        langsmith: Optional[Mapping[str, str]] = None,
     ) -> None:
         payload = {
             "tsMs": int(time.time() * 1000),
@@ -501,6 +514,8 @@ class OfflineOptimizer:
             payload["summary_report_id"] = summary_report_id
         if guardrail_eval is not None:
             payload["guardrail_eval"] = dict(guardrail_eval)
+        if langsmith is not None:
+            payload["langsmith"] = dict(langsmith)
         with self._audit_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
 
