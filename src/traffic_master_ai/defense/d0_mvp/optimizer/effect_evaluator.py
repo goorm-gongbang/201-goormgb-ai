@@ -14,6 +14,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Protocol
 
+from ...langsmith_support import current_tm_ai_environment, start_langsmith_llm_trace
 from ..core.constants import (
     EVAL_COOLDOWN_SECONDS,
     EVAL_MIN_EVENTS_TOTAL,
@@ -53,9 +54,41 @@ _OFFLINE_LLM_ALLOWED_MODELS: frozenset[str] = frozenset(
 )
 
 _EFFECT_EVALUATOR_PROMPT = (
-    "You are the Traffic-Master Defense Effect Evaluator (OFFLINE). "
-    "Analyze aggregated decision_audit metrics and propose small, reversible policy parameter changes. "
-    "Output valid JSON only."
+    "You are the Traffic-Master Defense Effect Evaluator (OFFLINE).\n"
+    "Analyze the aggregated decision_audit metrics below and propose small, reversible policy parameter changes.\n\n"
+    "You MUST respond with a single, valid JSON object matching this exact schema:\n"
+    '{\n'
+    '  "proposal_id": "<unique string, e.g. proposal-abc123>",\n'
+    '  "base_policy_version": "<echo the policy_version from input>",\n'
+    '  "patches": [\n'
+    '    { "path": "<parameter path>", "op": "set|inc|dec", "value": <number>, "why": "<reason>" }\n'
+    '  ],\n'
+    '  "rationale": "<1-3 sentences explaining the overall change>",\n'
+    '  "confidence": <float 0.0-1.0>,\n'
+    '  "rollback_conditions": ["<condition 1>", "<condition 2>"],\n'
+    '  "notes": "<optional notes>"\n'
+    '}\n\n'
+    "Allowed parameter paths (use ONLY these):\n"
+    "  risk.alpha (float 0.05-0.60) — EWMA smoothing factor\n"
+    "  tier.thresholds.T0_max (float 0.05-0.40)\n"
+    "  tier.thresholds.T1_max (float 0.20-0.70)\n"
+    "  tier.thresholds.T2_max (float 0.50-0.95)\n"
+    "  tier.hysteresis.margin (float 0.0-0.10)\n"
+    "  risk.probation_seconds (int 10-120)\n"
+    "  planner.throttle_delay_ms.T1 (int 0-200)\n"
+    "  planner.throttle_delay_ms.T2 (int 100-600)\n"
+    "  challenge.max_attempts (int 1-3)\n"
+    "  challenge.cooldown_ms.first (int 0-3000)\n"
+    "  challenge.cooldown_ms.second (int 0-5000)\n"
+    "  challenge.halt_seconds (int 0-120)\n\n"
+    "Rules:\n"
+    "- patches must be non-empty (1-12 items).\n"
+    "- Each patch 'op' must be 'set', 'inc', or 'dec'.\n"
+    "- Tier thresholds must stay monotonic: T0_max < T1_max < T2_max < 1.0.\n"
+    "- T2 throttle delay must be >= T1 throttle delay.\n"
+    "- Only propose changes supported by evidence in the metrics.\n"
+    "- If evidence for change is weak, prefer a single very small reversible patch with low confidence instead of inventing a separate no-change schema.\n"
+    "- Do NOT include any text outside the JSON object."
 )
 
 _DEFAULT_ROLLBACK_CONDITIONS: tuple[str, ...] = (
@@ -76,6 +109,8 @@ class LLMCaller(Protocol):
         user_input: str,
         max_output_tokens: int,
         timeout_ms: int,
+        trace_name: str | None = None,
+        trace_metadata: Mapping[str, object] | None = None,
     ) -> "LLMCallResult":
         ...
 
@@ -89,6 +124,7 @@ class LLMCallResult:
     tokens_in: int = 0
     tokens_out: int = 0
     is_timeout: bool = False
+    langsmith_link: dict[str, str] = field(default_factory=dict)
 
 
 class StubLLMCaller:
@@ -101,8 +137,10 @@ class StubLLMCaller:
         user_input: str,
         max_output_tokens: int = OFFLINE_LLM_MAX_OUTPUT_TOKENS,
         timeout_ms: int = OFFLINE_LLM_TIMEOUT_MS,
+        trace_name: str | None = None,
+        trace_metadata: Mapping[str, object] | None = None,
     ) -> LLMCallResult:
-        del system_prompt, user_input, max_output_tokens, timeout_ms
+        del system_prompt, user_input, max_output_tokens, timeout_ms, trace_name, trace_metadata
         return LLMCallResult(success=True, output_text=None)
 
 
@@ -139,6 +177,8 @@ class OpenAICompatibleLLMCaller:
         user_input: str,
         max_output_tokens: int,
         timeout_ms: int,
+        trace_name: str | None = None,
+        trace_metadata: Mapping[str, object] | None = None,
     ) -> LLMCallResult:
         started_at = time.time()
         if not self._api_key:
@@ -167,66 +207,91 @@ class OpenAICompatibleLLMCaller:
         last_http_error: Optional[urllib.error.HTTPError] = None
         last_timeout = False
         last_error: Optional[Exception] = None
-        for attempt in range(OFFLINE_LLM_MAX_RETRIES + 1):
-            try:
-                with urllib.request.urlopen(
-                    request,
-                    timeout=max(1.0, timeout_ms / 1000.0),
-                ) as response:
-                    raw = response.read().decode("utf-8")
-                break
-            except urllib.error.HTTPError as exc:
-                last_http_error = exc
-                if not _should_retry_llm_http_error(exc) or attempt >= OFFLINE_LLM_MAX_RETRIES:
-                    break
-                _sleep_ms(OFFLINE_LLM_RETRY_BACKOFF_MS)
-            except TimeoutError as exc:
-                last_error = exc
-                last_timeout = True
-                if attempt >= OFFLINE_LLM_MAX_RETRIES:
-                    break
-                _sleep_ms(OFFLINE_LLM_RETRY_BACKOFF_MS)
-            except Exception as exc:
-                last_error = exc
-                last_timeout = exc.__class__.__name__.lower() == "timeouterror"
-                if not last_timeout or attempt >= OFFLINE_LLM_MAX_RETRIES:
-                    break
-                _sleep_ms(OFFLINE_LLM_RETRY_BACKOFF_MS)
-
-        if raw is None:
-            latency_ms = int((time.time() - started_at) * 1000)
-            if last_http_error is not None:
+        trace_inputs = {
+            "model": self._model,
+            "messages": payload["messages"],
+            "max_completion_tokens": max_output_tokens,
+        }
+        with start_langsmith_llm_trace(
+            name=trace_name or "policy_optimizer.evaluate_policy_effect",
+            model_name=self._model,
+            inputs=trace_inputs,
+            metadata=dict(trace_metadata or {}),
+            tags=("policy_optimizer", "evaluate_policy_effect"),
+        ) as trace:
+            for attempt in range(OFFLINE_LLM_MAX_RETRIES + 1):
                 try:
-                    body = last_http_error.read().decode("utf-8", errors="replace")
-                except Exception:
-                    body = ""
-                error = f"http_{last_http_error.code}"
-                if body:
-                    error = f"{error}:{body[:400]}"
-                return LLMCallResult(success=False, error=error, latency_ms=latency_ms)
-            if last_timeout:
-                return LLMCallResult(success=False, error="timeout", latency_ms=latency_ms, is_timeout=True)
-            error_name = str(last_error.__class__.__name__) if last_error is not None else "unknown_error"
-            return LLMCallResult(success=False, error=error_name, latency_ms=latency_ms, is_timeout=last_timeout)
+                    with urllib.request.urlopen(
+                        request,
+                        timeout=max(1.0, timeout_ms / 1000.0),
+                    ) as response:
+                        raw = response.read().decode("utf-8")
+                    break
+                except urllib.error.HTTPError as exc:
+                    last_http_error = exc
+                    if not _should_retry_llm_http_error(exc) or attempt >= OFFLINE_LLM_MAX_RETRIES:
+                        break
+                    _sleep_ms(OFFLINE_LLM_RETRY_BACKOFF_MS)
+                except TimeoutError as exc:
+                    last_error = exc
+                    last_timeout = True
+                    if attempt >= OFFLINE_LLM_MAX_RETRIES:
+                        break
+                    _sleep_ms(OFFLINE_LLM_RETRY_BACKOFF_MS)
+                except Exception as exc:
+                    last_error = exc
+                    last_timeout = exc.__class__.__name__.lower() == "timeouterror"
+                    if not last_timeout or attempt >= OFFLINE_LLM_MAX_RETRIES:
+                        break
+                    _sleep_ms(OFFLINE_LLM_RETRY_BACKOFF_MS)
 
-        latency_ms = int((time.time() - started_at) * 1000)
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            return LLMCallResult(success=False, error="invalid_json", latency_ms=latency_ms)
+            if raw is None:
+                latency_ms = int((time.time() - started_at) * 1000)
+                if last_http_error is not None:
+                    try:
+                        body = last_http_error.read().decode("utf-8", errors="replace")
+                    except Exception:
+                        body = ""
+                    error = f"http_{last_http_error.code}"
+                    if body:
+                        error = f"{error}:{body[:400]}"
+                    trace.record_error(error)
+                    return LLMCallResult(success=False, error=error, latency_ms=latency_ms)
+                if last_timeout:
+                    trace.record_error("timeout")
+                    return LLMCallResult(success=False, error="timeout", latency_ms=latency_ms, is_timeout=True)
+                error_name = str(last_error.__class__.__name__) if last_error is not None else "unknown_error"
+                trace.record_error(error_name)
+                return LLMCallResult(success=False, error=error_name, latency_ms=latency_ms, is_timeout=last_timeout)
 
-        output_text = _extract_output_text(parsed)
-        usage = parsed.get("usage") if isinstance(parsed, Mapping) else None
-        tokens_in = int(_mapping_get(usage, "prompt_tokens", default=0) or 0)
-        tokens_out = int(_mapping_get(usage, "completion_tokens", default=0) or 0)
-        return LLMCallResult(
-            success=output_text is not None,
-            output_text=output_text,
-            error=None if output_text is not None else "missing_output_text",
-            latency_ms=latency_ms,
-            tokens_in=tokens_in,
-            tokens_out=tokens_out,
-        )
+            latency_ms = int((time.time() - started_at) * 1000)
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                trace.record_error("invalid_json")
+                return LLMCallResult(success=False, error="invalid_json", latency_ms=latency_ms)
+
+            usage_metadata = _extract_usage_metadata(parsed)
+            if usage_metadata:
+                trace.record_usage_metadata(usage_metadata)
+            trace.record_output(parsed)
+
+            langsmith_link = trace.get_langsmith_link()
+
+            output_text = _extract_output_text(parsed)
+            tokens_in = int(usage_metadata.get("input_tokens", 0))
+            tokens_out = int(usage_metadata.get("output_tokens", 0))
+            if output_text is None:
+                trace.record_error("missing_output_text")
+            return LLMCallResult(
+                success=output_text is not None,
+                output_text=output_text,
+                error=None if output_text is not None else "missing_output_text",
+                latency_ms=latency_ms,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                langsmith_link=langsmith_link,
+            )
 
 
 class _OfflineLLMBudgetGate:
@@ -369,6 +434,7 @@ class EffectEvaluator:
         base_policy_version: str,
         base_policy: Optional[PolicySnapshot] = None,
         now_ms: Optional[int] = None,
+        metrics_snapshot_id: str | None = None,
     ) -> Optional[dict[str, Any]]:
         now = now_ms or _now_ms()
         if not self.should_trigger(metrics_snapshot, now):
@@ -449,11 +515,24 @@ class EffectEvaluator:
                 user_input=input_text,
                 max_output_tokens=OFFLINE_LLM_MAX_OUTPUT_TOKENS,
                 timeout_ms=OFFLINE_LLM_TIMEOUT_MS,
+                trace_name="policy_optimizer.evaluate_policy_effect",
+                trace_metadata={
+                    "thread_id": metrics_snapshot_id or _build_effect_evaluator_thread_id(metrics_snapshot, base_policy_version),
+                    "feature_name": "policy_optimizer",
+                    "agent_step_name": "evaluate_policy_effect",
+                    "environment": current_tm_ai_environment(),
+                    "policy_version": base_policy_version,
+                    "metrics_snapshot_id": metrics_snapshot_id,
+                    "owner_team": "TM_AI",
+                    "window_start_ms": metrics_snapshot.get("window_start_ms"),
+                    "window_end_ms": metrics_snapshot.get("window_end_ms"),
+                },
             )
         finally:
             release_offline_llm_budget()
 
         _record_circuit_breaker(self.circuit_breaker, result)
+        langsmith_link = result.langsmith_link or {}
         append_offline_llm_audit(
             "OFFLINE_LLM_RUN_FINISHED",
             {
@@ -465,7 +544,8 @@ class EffectEvaluator:
                     "input_truncated": input_truncated,
                     "base_policy_version": base_policy_version,
                     "skipped_reason": None if result.success else result.error,
-                }
+                },
+                "langsmith": langsmith_link if langsmith_link else None,
             },
         )
         if not result.success or not result.output_text:
@@ -507,6 +587,8 @@ class EffectEvaluator:
             return None
 
         sanitized = validated.sanitized_proposal
+        if langsmith_link:
+            sanitized["langsmith"] = langsmith_link
         append_offline_llm_audit(
             "OFFLINE_LLM_PATCH_PROPOSED",
             {
@@ -517,7 +599,8 @@ class EffectEvaluator:
                     "patches_count": len(sanitized.get("patches", [])),
                     "confidence": sanitized.get("confidence"),
                     "input_truncated": input_truncated,
-                }
+                },
+                "langsmith": langsmith_link if langsmith_link else None,
             },
         )
         return sanitized
@@ -670,6 +753,31 @@ def _build_llm_input(metrics_snapshot: Mapping[str, Any], base_policy_version: s
         payload["traffic"]["event_counts_by_type"] = {}
         encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return {"input_text": encoded, "input_truncated": truncated}
+
+
+def _build_effect_evaluator_thread_id(
+    metrics_snapshot: Mapping[str, Any],
+    base_policy_version: str,
+) -> str:
+    window_start_ms = metrics_snapshot.get("window_start_ms")
+    window_end_ms = metrics_snapshot.get("window_end_ms")
+    return f"effect-evaluator:{base_policy_version}:{window_start_ms}:{window_end_ms}"
+
+
+def _extract_usage_metadata(parsed_response: Mapping[str, Any]) -> dict[str, int]:
+    usage = parsed_response.get("usage")
+    if not isinstance(usage, Mapping):
+        return {}
+    input_tokens = int(_mapping_get(usage, "prompt_tokens", default=0) or 0)
+    output_tokens = int(_mapping_get(usage, "completion_tokens", default=0) or 0)
+    total_tokens = int(_mapping_get(usage, "total_tokens", default=input_tokens + output_tokens) or 0)
+    if input_tokens <= 0 and output_tokens <= 0 and total_tokens <= 0:
+        return {}
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+    }
 
 
 

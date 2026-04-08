@@ -191,10 +191,10 @@ TEST_MODE_ENABLED: bool = _env("TM_TEST_MODE_ENABLED", False)
 # ===================================================================
 # Offline LLM — L1/llm/defense_llm_ssot.yaml
 # ===================================================================
-OFFLINE_LLM_TIMEOUT_MS: int = _env("TM_OFFLINE_LLM_TIMEOUT_MS", 2500)
+OFFLINE_LLM_TIMEOUT_MS: int = _env("TM_OFFLINE_LLM_TIMEOUT_MS", 15000)
 OFFLINE_LLM_MAX_RETRIES: int = _env("TM_OFFLINE_LLM_MAX_RETRIES", 1)
 OFFLINE_LLM_RETRY_BACKOFF_MS: int = _env("TM_OFFLINE_LLM_RETRY_BACKOFF_MS", 100)
-OFFLINE_LLM_MAX_OUTPUT_TOKENS: int = _env("TM_OFFLINE_LLM_MAX_OUTPUT_TOKENS", 1200)
+OFFLINE_LLM_MAX_OUTPUT_TOKENS: int = _env("TM_OFFLINE_LLM_MAX_OUTPUT_TOKENS", 2400)
 OFFLINE_LLM_MODEL: str = _env("TM_OFFLINE_LLM_MODEL", "gpt-5-mini")
 OFFLINE_LLM_MAX_CALLS_PER_RUN: int = _env("TM_OFFLINE_LLM_MAX_CALLS_PER_RUN", 2)
 OFFLINE_LLM_INPUT_MAX_BYTES: int = _env("TM_OFFLINE_LLM_INPUT_MAX_BYTES", 8000)

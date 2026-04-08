@@ -44,11 +44,13 @@ class TestBackofficeCopilotOpenAiAdapter(unittest.TestCase):
             "suspicious_count": 2,
         }
 
-    def _mock_urlopen_response(self, content_dict: dict) -> MagicMock:
+    def _mock_urlopen_response(self, content_dict: dict, usage: dict | None = None) -> MagicMock:
         mock_response = MagicMock()
         payload = {
             "choices": [{"message": {"content": json.dumps(content_dict)}}]
         }
+        if usage is not None:
+            payload["usage"] = usage
         mock_response.read.return_value = json.dumps(payload).encode("utf-8")
         
         # We need mock_urlopen to return an object that can be used as a context manager
@@ -56,13 +58,49 @@ class TestBackofficeCopilotOpenAiAdapter(unittest.TestCase):
         mock_context_manager.__enter__.return_value = mock_response
         return mock_context_manager
 
+    class _FakeTrace:
+        def __init__(self) -> None:
+            self.recorded_usage: dict | None = None
+            self.recorded_output: dict | None = None
+            self.recorded_errors: list[str] = []
+
+        def __enter__(self) -> "TestBackofficeCopilotOpenAiAdapter._FakeTrace":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        def record_usage_metadata(self, usage_metadata: dict | None) -> None:
+            self.recorded_usage = usage_metadata
+
+        def record_output(self, output_payload: dict | None) -> None:
+            self.recorded_output = output_payload
+
+        def record_error(self, exc: Exception | str) -> None:
+            self.recorded_errors.append(str(exc))
+
+        def get_langsmith_link(self) -> dict[str, str]:
+            return {}
+
+    @patch("traffic_master_ai.defense.backoffice_copilot.adapters.openai.start_langsmith_llm_trace")
     @patch("urllib.request.urlopen")
-    def test_build_openai_review_adapter_success(self, mock_urlopen: MagicMock) -> None:
+    def test_build_openai_review_adapter_success(
+        self,
+        mock_urlopen: MagicMock,
+        mock_start_trace: MagicMock,
+    ) -> None:
         expected_output = {
             "review_result": "SUSPICIOUS",
             "evidence_summary": "Test evidence summary",
         }
-        mock_urlopen.return_value = self._mock_urlopen_response(expected_output)
+        expected_usage = {
+            "prompt_tokens": 11,
+            "completion_tokens": 7,
+            "total_tokens": 18,
+        }
+        mock_urlopen.return_value = self._mock_urlopen_response(expected_output, usage=expected_usage)
+        fake_trace = self._FakeTrace()
+        mock_start_trace.return_value = fake_trace
 
         adapter = build_openai_review_adapter(api_key=self.api_key, model=self.model)
         result = adapter(self.review_input)
@@ -85,13 +123,41 @@ class TestBackofficeCopilotOpenAiAdapter(unittest.TestCase):
         user_content = json.loads(messages[1]["content"])
         self.assertEqual(user_content["session_id"], "sess-1")
         self.assertEqual(user_content["signals"], ["fast_clicks"])
+        mock_start_trace.assert_called_once()
+        self.assertEqual(
+            mock_start_trace.call_args.kwargs["metadata"],
+            {
+                "session_id": "sess-1",
+                "thread_id": "match-1",
+                "feature_name": "backoffice_copilot",
+                "agent_step_name": "review_session",
+                "environment": "dev",
+                "match_id": "match-1",
+                "window_start_ms": 100,
+                "window_end_ms": 200,
+                "owner_team": "TM_AI",
+            },
+        )
+        self.assertEqual(
+            fake_trace.recorded_usage,
+            {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18},
+        )
+        self.assertIsNotNone(fake_trace.recorded_output)
+        self.assertEqual(fake_trace.recorded_errors, [])
 
+    @patch("traffic_master_ai.defense.backoffice_copilot.adapters.openai.start_langsmith_llm_trace")
     @patch("urllib.request.urlopen")
-    def test_build_openai_summary_adapter_success(self, mock_urlopen: MagicMock) -> None:
+    def test_build_openai_summary_adapter_success(
+        self,
+        mock_urlopen: MagicMock,
+        mock_start_trace: MagicMock,
+    ) -> None:
         expected_output = {
             "summary_text": ["Line 1", "Line 2", "Line 3"]
         }
         mock_urlopen.return_value = self._mock_urlopen_response(expected_output)
+        fake_trace = self._FakeTrace()
+        mock_start_trace.return_value = fake_trace
 
         adapter = build_openai_summary_adapter(api_key=self.api_key, model=self.model)
         result = adapter(self.summary_input)
@@ -101,6 +167,21 @@ class TestBackofficeCopilotOpenAiAdapter(unittest.TestCase):
         mock_urlopen.assert_called_once()
         request_obj = mock_urlopen.call_args[0][0]
         self.assertEqual(request_obj.get_header("Authorization"), f"Bearer {self.api_key}")
+        mock_start_trace.assert_called_once()
+        self.assertEqual(
+            mock_start_trace.call_args.kwargs["metadata"],
+            {
+                "thread_id": "match-1",
+                "feature_name": "backoffice_copilot",
+                "agent_step_name": "summarize_window",
+                "environment": "dev",
+                "match_id": "match-1",
+                "window_start_ms": None,
+                "window_end_ms": None,
+                "owner_team": "TM_AI",
+            },
+        )
+        self.assertEqual(fake_trace.recorded_errors, [])
 
     @patch("urllib.request.urlopen")
     def test_timeout_handled(self, mock_urlopen: MagicMock) -> None:
