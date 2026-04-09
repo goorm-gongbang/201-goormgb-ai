@@ -215,6 +215,29 @@ class BackofficeCopilotClickHouseStorageTests(unittest.TestCase):
                 }
             )
 
+    def test_canonical_audit_mapping_rejects_unknown_top_level_field(self) -> None:
+        with self.assertRaises(CanonicalAuditMappingError):
+            map_canonical_audit_payload_to_clickhouse_row(
+                {
+                    "ts_ms": 1710000000000,
+                    "session_id": "sess-unknown",
+                    "event_type": "EVALUATE",
+                    "raw_payload": {},
+                    "unexpected": "value",
+                }
+            )
+
+    def test_canonical_audit_mapping_rejects_non_object_raw_payload(self) -> None:
+        with self.assertRaises(CanonicalAuditMappingError):
+            map_canonical_audit_payload_to_clickhouse_row(
+                {
+                    "ts_ms": 1710000000000,
+                    "session_id": "sess-bad-raw-payload",
+                    "event_type": "EVALUATE",
+                    "raw_payload": "bad",
+                }
+            )
+
     def test_repository_write_batch_request_preserves_empty_batch_semantics(self) -> None:
         client = _FakeClickHouseClient()
         repository = ClickHouseAuditEventWriterRepository(

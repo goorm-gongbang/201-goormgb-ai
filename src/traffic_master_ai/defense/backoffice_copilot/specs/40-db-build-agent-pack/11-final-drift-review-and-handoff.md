@@ -183,7 +183,7 @@ Task 8~17 + Task A/B/C 기준으로 아래는 완료됐다.
 
 ### 5.4 observability 과도기 제거
 
-- JSONL MVP `AuditWarehouse` 제거 또는 축소
+- JSONL MVP `AuditWarehouse` 제거 또는 admin/debug compatibility 전용 축소
 - OfflineOptimizer 외 admin/debug surface의 ClickHouse direct read 전환
 - `TM_WAREHOUSE_FILENAME` current-code-only env 정리
 - ClickHouse ETL worker에 scheduler/replay orchestration 추가
@@ -238,6 +238,13 @@ Task 8~17 + Task A/B/C 기준으로 아래는 완료됐다.
    - inflight lock 또는 archive move/mark-processed
    - auth/pool/async insert
    - replay / scheduler orchestration
+
+### 7.1 과도기 역할 고정
+
+- ETL strict ingest path는 canonical flat `snake_case` row만 허용한다.
+- unknown top-level field, scalar `raw_payload`, legacy camelCase row는 ETL path에서 허용하지 않는다.
+- loader compatibility read는 admin/debug 및 과거 JSONL 분석 경로만 위해 유지한다.
+- `AuditWarehouse`는 admin/debug compatibility adapter일 뿐 production truth가 아니다.
 2. ClickHouse read-model hardening
    - VIEW -> MV/table 승격 여부 결정
    - match_id authority 강화

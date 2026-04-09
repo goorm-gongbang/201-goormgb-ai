@@ -11,6 +11,7 @@ from threading import Lock
 from typing import Any, Optional
 
 from ..audit_contract import build_canonical_audit_row
+from ..d0_mvp.observability.schemas import CANONICAL_AUDIT_EVENT_TYPES
 from ..storage_env import load_audit_log_config_from_env, load_s3_archive_config_from_env
 from .models import EvaluateRequest, EvaluateResponse, RuntimeStateSnapshot
 
@@ -63,9 +64,44 @@ class DefenseDecisionAuditLogger:
             reason_code=resp.reason,
             policy_version=resp.policy_version,
         )
-        line = json.dumps(payload, ensure_ascii=False)
-        with self._lock, self._path.open("a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        self._append_payload(payload)
+
+    def log_target_evaluate_event(
+        self,
+        *,
+        session_id: str,
+        trace_id: str,
+        request_path: str,
+        request_method: str,
+        target_event_type: str,
+        action: str,
+        flow_state: str,
+        runtime_state: RuntimeStateSnapshot,
+        reason_code: str | None = None,
+        policy_version: str | None = None,
+        raw_payload: dict[str, Any] | None = None,
+    ) -> None:
+        now_ms = int(datetime.now(UTC).timestamp() * 1000)
+        payload = build_canonical_audit_row(
+            ts_ms=now_ms,
+            session_id=session_id,
+            trace_id=trace_id,
+            event_type="EVALUATE",
+            flow_state=flow_state,
+            action=action,
+            reason_code=reason_code,
+            policy_version=policy_version or runtime_state.policy_version,
+            raw_payload={
+                "decision_source": "target_api_early_return",
+                "target_event_type": target_event_type,
+                "path": request_path,
+                "method": request_method.upper(),
+                "allow": action == "NONE",
+                "runtime_state": runtime_state.model_dump(by_alias=True),
+                **(raw_payload or {}),
+            },
+        )
+        self._append_payload(payload)
 
     def log_challenge_event(
         self,
@@ -76,22 +112,26 @@ class DefenseDecisionAuditLogger:
         payload: dict[str, Any],
     ) -> None:
         now_ms = int(datetime.now(UTC).timestamp() * 1000)
-        line = json.dumps(
-            build_canonical_audit_row(
-                ts_ms=now_ms,
-                session_id=session_id,
-                event_type=event_type,
-                raw_payload=payload,
-                challenge_id=challenge_id,
-            ),
-            ensure_ascii=False,
+        row = build_canonical_audit_row(
+            ts_ms=now_ms,
+            session_id=session_id,
+            event_type=event_type,
+            raw_payload=payload,
+            challenge_id=challenge_id,
         )
-        with self._lock, self._path.open("a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        self._append_payload(row)
 
     @property
     def file_path(self) -> Path:
         return self._path
+
+    def _append_payload(self, payload: dict[str, Any]) -> None:
+        event_type = str(payload.get("event_type", "")).strip()
+        if event_type not in CANONICAL_AUDIT_EVENT_TYPES:
+            raise ValueError(f"event_type not in canonical audit taxonomy: {event_type}")
+        line = json.dumps(payload, ensure_ascii=False)
+        with self._lock, self._path.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
 
 
 class S3Uploader:

@@ -8,6 +8,29 @@ from typing import Any, Mapping
 from ...audit_contract import build_canonical_audit_row, normalize_audit_row, validate_canonical_audit_row
 from ..events.catalog import AUDIT_EVENT_TYPES
 
+LEGACY_API_AUDIT_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "EVALUATE",
+        "CHALLENGE_ISSUED",
+        "CHALLENGE_VERIFIED",
+    }
+)
+
+RUNTIME_AUDIT_EVENT_TYPES: frozenset[str] = AUDIT_EVENT_TYPES
+CANONICAL_AUDIT_EVENT_TYPES: frozenset[str] = frozenset(
+    set(RUNTIME_AUDIT_EVENT_TYPES) | set(LEGACY_API_AUDIT_EVENT_TYPES)
+)
+OPTIMIZER_INCLUDED_AUDIT_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "DEF_ORCH_EXECUTED",
+        "DEF_THROTTLE_APPLIED",
+        "DEF_BLOCK_ENFORCED",
+        "S3_CHALLENGE_RESULT",
+        "S3_CHALLENGE_HALTED",
+        "DEF_GUARD_SCORED",
+    }
+)
+
 MANDATORY_AUDIT_EVENT_TYPES: frozenset[str] = frozenset(
     {
         "DEF_ORCH_EXECUTED",
@@ -59,7 +82,7 @@ class AuditEntry:
             return errors
 
         event_type = payload["event_type"]
-        if event_type not in AUDIT_EVENT_TYPES:
+        if event_type not in RUNTIME_AUDIT_EVENT_TYPES:
             errors.append(f"event_type not in audit catalog: {event_type}")
 
         pii_hits = _scan_pii_keys(payload)
@@ -122,4 +145,11 @@ def _scan_pii_keys(data: Any, prefix: str = "") -> set[str]:
     return hits
 
 
-__all__ = ["AuditEntry", "MANDATORY_AUDIT_EVENT_TYPES"]
+__all__ = [
+    "AuditEntry",
+    "CANONICAL_AUDIT_EVENT_TYPES",
+    "LEGACY_API_AUDIT_EVENT_TYPES",
+    "MANDATORY_AUDIT_EVENT_TYPES",
+    "OPTIMIZER_INCLUDED_AUDIT_EVENT_TYPES",
+    "RUNTIME_AUDIT_EVENT_TYPES",
+]

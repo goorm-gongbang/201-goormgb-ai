@@ -13,6 +13,7 @@ from .interpreter import (
 from .loader import (
     load_analysis_input,
     load_defense_audit_events,
+    parse_canonical_defense_audit_event_row,
     parse_defense_audit_event_row,
 )
 from .semantic_mapping import EventSemantics, map_event_semantics
@@ -30,5 +31,6 @@ __all__ = [
     "load_analysis_input",
     "load_defense_audit_events",
     "map_event_semantics",
+    "parse_canonical_defense_audit_event_row",
     "parse_defense_audit_event_row",
 ]

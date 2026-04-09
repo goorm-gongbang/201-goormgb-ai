@@ -2314,3 +2314,111 @@
 
 - 다음 우선순위는 early return canonical audit 누락을 막고, authoritative event taxonomy whitelist 테스트를 추가해 optimizer 집계 의미를 더 강하게 고정하는 것이다.
 - 그 다음 단계로 canonical contract strict regression과 `AuditWarehouse` 역할 축소를 테스트와 문서에서 같이 마감하는 것이 자연스럽다.
+
+## Task 28
+
+### 1. task 번호와 제목
+
+- Task 28. Early Return Canonical Audit 보강 및 Taxonomy Whitelist 잠금
+
+### 2. 작업 일시
+
+- 2026-04-09 12:48:14 KST
+
+### 3. 실제로 수정한 파일 목록
+
+- `src/traffic_master_ai/defense/api/main.py`
+- `src/traffic_master_ai/defense/api/audit.py`
+- `src/traffic_master_ai/defense/d0_mvp/observability/schemas.py`
+- `src/traffic_master_ai/defense/d0_mvp/observability/__init__.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_offline_metrics_repository.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/04-canonical-audit-minimum-contract.md`
+- `tests/defense/test_defense_api_evaluate_contract.py`
+- `tests/defense/test_canonical_audit_contract.py`
+- `tests/defense/test_audit_event_taxonomy.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/task-execution-log.md`
+
+### 4. early return / taxonomy 변경 요약
+
+- `ai/evaluate` early return 세 경로인 precheck block, `SEAT_ENTRY` immediate path, `soft_action` path에서 response 직전 canonical `EVALUATE` audit를 공용 helper로 남기도록 보강했다.
+- early return row도 top-level은 canonical typed field만 쓰고, 상세 사유는 `raw_payload`의 `decision_source`, `decision_reason`, `target_event_type`, `feature_summary`, `runtime_state`로만 남기게 정리했다.
+- legacy API event, runtime event, optimizer 포함 event를 각각 코드 상수로 고정했다.
+- legacy API logger는 canonical union whitelist만 허용하고, D0 `AuditEntry`는 runtime whitelist만 허용하도록 분리했다.
+- OfflineOptimizer raw fact repository는 local tuple 대신 authoritative optimizer event whitelist 상수를 재사용하도록 바꿨다.
+
+### 5. 검증에 사용한 명령과 결과 요약
+
+- 문법 확인
+  - 명령: `python3 -m py_compile src/traffic_master_ai/defense/api/main.py src/traffic_master_ai/defense/api/audit.py src/traffic_master_ai/defense/d0_mvp/observability/schemas.py src/traffic_master_ai/defense/d0_mvp/observability/__init__.py src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_offline_metrics_repository.py tests/defense/test_defense_api_evaluate_contract.py tests/defense/test_canonical_audit_contract.py tests/defense/test_audit_event_taxonomy.py`
+  - 결과: 문법 오류 없음
+- early return / taxonomy / optimizer 회귀
+  - 명령: `.venv/bin/pytest -q tests/defense/test_defense_api_evaluate_contract.py tests/defense/test_canonical_audit_contract.py tests/defense/test_audit_event_taxonomy.py tests/defense/test_offline_optimizer_clickhouse_metrics.py`
+  - 결과: `24 passed`
+- 포맷 확인
+  - 명령: `git diff --check -- src/traffic_master_ai/defense/api/main.py src/traffic_master_ai/defense/api/audit.py src/traffic_master_ai/defense/d0_mvp/observability/schemas.py src/traffic_master_ai/defense/d0_mvp/observability/__init__.py src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_offline_metrics_repository.py src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/04-canonical-audit-minimum-contract.md tests/defense/test_defense_api_evaluate_contract.py tests/defense/test_canonical_audit_contract.py tests/defense/test_audit_event_taxonomy.py`
+  - 결과: whitespace / conflict marker 문제 없음
+
+### 6. 남은 리스크
+
+- target API legacy audit taxonomy는 whitelist로 잠갔지만 `EVALUATE` 자체는 여전히 coarse-grained event라, optimizer가 이 계열을 직접 집계하는 구조로 다시 확장하면 semantic ambiguity가 생길 수 있다.
+- early return completeness는 `ai/evaluate` 주요 분기 기준으로 막았지만, challenge/VQA 계열 legacy endpoint taxonomy 정리는 아직 별도 단계가 남아 있다.
+- admin/debug surface는 여전히 `AuditWarehouse` compatibility row를 읽기 때문에, canonical raw log만 기준으로 보는 최종 상태는 아니다.
+
+### 7. 다음 task 입력
+
+- 다음 우선순위는 canonical contract strict regression과 loader/ETL/runtime mixed-shape 방지를 테스트로 더 강하게 잠그는 것이다.
+- 그 다음 단계로 `AuditWarehouse`를 admin/debug 전용으로만 남긴다는 점을 코드와 문서에서 더 분명히 정리하는 것이 자연스럽다.
+
+## Task 29
+
+### 1. task 번호와 제목
+
+- Task 29. Canonical Contract 회귀 강화 및 AuditWarehouse 역할 축소
+
+### 2. 작업 일시
+
+- 2026-04-09 12:54:06 KST
+
+### 3. 실제로 수정한 파일 목록
+
+- `src/traffic_master_ai/defense/backoffice_copilot/ingest/loader.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/ingest/__init__.py`
+- `src/traffic_master_ai/defense/d0_mvp/observability/warehouse.py`
+- `tests/defense/test_canonical_audit_contract.py`
+- `tests/defense/test_backoffice_copilot_ingest.py`
+- `tests/defense/test_backoffice_copilot_clickhouse_storage.py`
+- `tests/defense/test_offline_optimizer_clickhouse_metrics.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/11-final-drift-review-and-handoff.md`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/12-production-operations-runbook.md`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/task-execution-log.md`
+
+### 4. canonical contract / AuditWarehouse 역할 축소 요약
+
+- loader에 `parse_canonical_defense_audit_event_row()` strict helper를 추가해 canonical flat `snake_case` row만 받는 경계를 분리했다.
+- ETL strict path는 unknown top-level field, scalar `raw_payload`, legacy camelCase row를 계속 거부하고, compatibility loader read만 legacy row를 유지하도록 테스트를 보강했다.
+- `AuditEntry.to_dict()`가 canonical top-level shape만 내보내는지 회귀 테스트로 잠갔다.
+- ClickHouse optimizer metrics test에 authoritative optimizer event whitelist 파라미터 검증을 추가했다.
+- `AuditWarehouse`는 module/class docstring과 metadata에서 admin/debug compatibility adapter라는 역할만 더 분명히 남겼다.
+
+### 5. 검증에 사용한 명령과 결과 요약
+
+- 문법 확인
+  - 명령: `python3 -m py_compile src/traffic_master_ai/defense/backoffice_copilot/ingest/loader.py src/traffic_master_ai/defense/backoffice_copilot/ingest/__init__.py src/traffic_master_ai/defense/d0_mvp/observability/warehouse.py tests/defense/test_canonical_audit_contract.py tests/defense/test_backoffice_copilot_ingest.py tests/defense/test_backoffice_copilot_clickhouse_storage.py tests/defense/test_offline_optimizer_clickhouse_metrics.py`
+  - 결과: 문법 오류 없음
+- canonical / ingest / optimizer 회귀
+  - 명령: `.venv/bin/pytest -q tests/defense/test_canonical_audit_contract.py tests/defense/test_backoffice_copilot_ingest.py tests/defense/test_backoffice_copilot_clickhouse_storage.py tests/defense/test_offline_optimizer_clickhouse_metrics.py`
+  - 결과: `36 passed`
+- 포맷 확인
+  - 명령: `git diff --check -- src/traffic_master_ai/defense/backoffice_copilot/ingest/loader.py src/traffic_master_ai/defense/backoffice_copilot/ingest/__init__.py src/traffic_master_ai/defense/d0_mvp/observability/warehouse.py tests/defense/test_canonical_audit_contract.py tests/defense/test_backoffice_copilot_ingest.py tests/defense/test_backoffice_copilot_clickhouse_storage.py tests/defense/test_offline_optimizer_clickhouse_metrics.py src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/11-final-drift-review-and-handoff.md src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/12-production-operations-runbook.md`
+  - 결과: whitespace / conflict marker 문제 없음
+
+### 6. 남은 리스크
+
+- `AuditWarehouse`는 역할을 축소했지만 admin/debug compatibility surface 자체는 아직 남아 있다. admin console read source까지 ClickHouse로 완전히 통일한 상태는 아니다.
+- strict canonical helper를 추가했지만 loader 기본 API는 compatibility read를 유지하므로, 새 호출부를 만들 때 strict helper를 명시적으로 사용해야 한다.
+- 현재 워크트리에는 이번 task와 무관한 다른 수정도 함께 존재해 별도 정리 없이 바로 commit/push 하지는 않았다.
+
+### 7. 다음 task 입력
+
+- 다음 우선순위는 admin/debug surface도 ClickHouse direct read로 더 정리할지, 아니면 `AuditWarehouse`를 완전히 유지보수 모드로 고정할지 결정하는 것이다.
+- 동시에 legacy compatibility loader를 어떤 경로까지 유지할지 범위를 좁혀 두면 이후 mixed-shape 재유입 리스크를 더 줄일 수 있다.

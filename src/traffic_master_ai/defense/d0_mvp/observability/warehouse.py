@@ -1,4 +1,4 @@
-"""Legacy local warehouse for near-real-time defense audit queries."""
+"""Legacy local warehouse for admin/debug compatibility queries."""
 
 from __future__ import annotations
 
@@ -14,10 +14,10 @@ from .schemas import AuditEntry
 
 
 class AuditWarehouse:
-    """Append-only local warehouse of normalized audit events.
+    """Append-only local warehouse kept only for admin/debug compatibility.
 
     Legacy local-only implementation of the L2 warehouse contract using JSONL rows.
-    Production raw-fact ingest authority and optimizer read source now live in ClickHouse ETL,
+    Production raw-fact ingest authority and optimizer read source live in ClickHouse ETL,
     not this file.
     """
 
@@ -51,6 +51,7 @@ class AuditWarehouse:
             "table": "defense_audit_events",
             "filePath": str(self._path),
             "primaryOptions": ["ClickHouse"],
+            "usage": ["admin", "debug", "compatibility"],
             "indices": ["traceId", "sessionId", "eventType", "tsMs"],
             "partitioning": "by day(tsMs)",
             "retentionDays": self._retention_days,

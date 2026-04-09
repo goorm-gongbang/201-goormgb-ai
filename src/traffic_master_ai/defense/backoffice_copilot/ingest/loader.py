@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
+from ...audit_contract import normalize_audit_row
 from ..core.models import DefenseAuditEventRow
 from ..core.state import AnalysisInput, PostReviewRunInput
 
@@ -95,6 +96,20 @@ def parse_defense_audit_event_row(data: Mapping[str, Any]) -> DefenseAuditEventR
     )
 
 
+def parse_canonical_defense_audit_event_row(
+    data: Mapping[str, Any],
+) -> DefenseAuditEventRow:
+    row = normalize_audit_row(data, allow_legacy=False)
+    trace_id = row.get("trace_id") or row.get("request_id") or row["session_id"]
+    return DefenseAuditEventRow(
+        ts_ms=row["ts_ms"],
+        trace_id=trace_id,
+        session_id=row["session_id"],
+        event_type=row["event_type"],
+        payload=dict(row["raw_payload"]),
+    )
+
+
 def _extract_payload(data: Mapping[str, Any]) -> dict[str, object]:
     merged_payload: dict[str, object] = {}
 
@@ -149,5 +164,6 @@ def _optional_str(data: Mapping[str, Any], *keys: str) -> str | None:
 __all__ = [
     "load_analysis_input",
     "load_defense_audit_events",
+    "parse_canonical_defense_audit_event_row",
     "parse_defense_audit_event_row",
 ]

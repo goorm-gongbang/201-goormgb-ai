@@ -8,6 +8,7 @@ from traffic_master_ai.defense.backoffice_copilot.storage import (
     ClickHouseOfflineMetricsRepository,
     OfflineMetricsQuery,
 )
+from traffic_master_ai.defense.d0_mvp.observability.schemas import OPTIMIZER_INCLUDED_AUDIT_EVENT_TYPES
 from traffic_master_ai.defense.d0_mvp.api.runtime import DefenseRuntime
 from traffic_master_ai.defense.d0_mvp.optimizer.pipeline import OfflineOptimizer
 from traffic_master_ai.defense.d0_mvp.policy.loader import InMemoryPolicyStore, PolicyLoader
@@ -271,6 +272,13 @@ class OfflineOptimizerClickHouseMetricsTests(unittest.TestCase):
         self.assertEqual(len(client.calls), 3)
         self.assertTrue(all(call[1]["window_start_ms"] == 1000 for call in client.calls))
         self.assertTrue(all(call[1]["window_end_ms"] == 5000 for call in client.calls))
+        detail_call = next(
+            call for call in client.calls if "AND event_type IN :event_types " in call[0]
+        )
+        self.assertEqual(
+            tuple(detail_call[1]["event_types"]),
+            tuple(sorted(OPTIMIZER_INCLUDED_AUDIT_EVENT_TYPES)),
+        )
 
     def test_clickhouse_repository_samples_traces_by_priority_and_limit(self) -> None:
         repository = ClickHouseOfflineMetricsRepository(client=_FakeSelectClient())

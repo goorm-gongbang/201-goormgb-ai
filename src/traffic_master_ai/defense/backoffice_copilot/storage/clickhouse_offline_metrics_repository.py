@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol, Sequence
 
+from ...d0_mvp.observability.schemas import OPTIMIZER_INCLUDED_AUDIT_EVENT_TYPES
 from .clickhouse_connection import DEFAULT_CLICKHOUSE_AUDIT_TABLE, ClickHouseSelectClient
 from .clickhouse_read_models import (
     OfflineMetricsQuery,
@@ -14,14 +15,7 @@ from .clickhouse_read_models import (
     validate_offline_trace_sample,
 )
 
-_METRIC_EVENT_TYPES: tuple[str, ...] = (
-    "DEF_ORCH_EXECUTED",
-    "DEF_THROTTLE_APPLIED",
-    "DEF_BLOCK_ENFORCED",
-    "S3_CHALLENGE_RESULT",
-    "S3_CHALLENGE_HALTED",
-    "DEF_GUARD_SCORED",
-)
+_METRIC_EVENT_TYPES: tuple[str, ...] = tuple(sorted(OPTIMIZER_INCLUDED_AUDIT_EVENT_TYPES))
 
 
 class ClickHouseOfflineMetricsReadRepository(Protocol):

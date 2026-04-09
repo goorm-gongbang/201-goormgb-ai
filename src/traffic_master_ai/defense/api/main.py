@@ -570,6 +570,16 @@ async def ai_evaluate(
             session_id=state_key,
             trace_id=trace_id,
             block_trigger="ai_evaluate_precheck_block",
+            request_path=req.event.request_path,
+            request_method=req.event.request_method,
+            target_event_type=req.event.event_type,
+            flow_state=_target_event_to_flow_state(req.event.event_type),
+            runtime_state=snap,
+            reason_code="PRECHECK_REQUIRED",
+            audit_payload={
+                "precheck_valid": False,
+                "decision_reason": "precheck_block",
+            },
         )
 
     if req.event.event_type == "SEAT_ENTRY":
@@ -580,6 +590,16 @@ async def ai_evaluate(
                 user_id=user_id,
                 session_id=state_key,
                 trace_id=trace_id,
+                request_path=req.event.request_path,
+                request_method=req.event.request_method,
+                target_event_type=req.event.event_type,
+                flow_state=_target_event_to_flow_state(req.event.event_type),
+                runtime_state=snap,
+                reason_code="SEAT_ENTRY_VQA_REQUIRED",
+                audit_payload={
+                    "decision_reason": "seat_entry_immediate",
+                    "vqa_passed": False,
+                },
             )
         return _build_evaluate_response(
             background_tasks=background_tasks,
@@ -587,6 +607,16 @@ async def ai_evaluate(
             user_id=user_id,
             session_id=state_key,
             trace_id=trace_id,
+            request_path=req.event.request_path,
+            request_method=req.event.request_method,
+            target_event_type=req.event.event_type,
+            flow_state=_target_event_to_flow_state(req.event.event_type),
+            runtime_state=snap,
+            reason_code="SEAT_ENTRY_VQA_PASSED",
+            audit_payload={
+                "decision_reason": "seat_entry_immediate",
+                "vqa_passed": True,
+            },
         )
 
     soft_action = _feature_soft_action(event_type=req.event.event_type, snap=snap)
@@ -597,6 +627,20 @@ async def ai_evaluate(
             user_id=user_id,
             session_id=state_key,
             trace_id=trace_id,
+            request_path=req.event.request_path,
+            request_method=req.event.request_method,
+            target_event_type=req.event.event_type,
+            flow_state=_target_event_to_flow_state(req.event.event_type),
+            runtime_state=snap,
+            reason_code="TARGET_SOFT_ACTION",
+            audit_payload={
+                "decision_reason": "soft_action",
+                "feature_summary": (
+                    snap.latest_queue_enter_preclick_summary
+                    if req.event.event_type == "QUEUE_ENTER"
+                    else snap.latest_seat_stage_summary
+                ),
+            },
         )
 
     legacy_req = _build_legacy_request_from_target(
@@ -1276,8 +1320,35 @@ def _build_evaluate_response(
     session_id: str,
     trace_id: str,
     block_trigger: str = "ai_evaluate_block",
+    request_path: str | None = None,
+    request_method: str | None = None,
+    target_event_type: str | None = None,
+    flow_state: str | None = None,
+    runtime_state: RuntimeStateSnapshot | None = None,
+    reason_code: str | None = None,
+    audit_payload: dict[str, Any] | None = None,
 ) -> AiEvaluateResponse:
     EVALUATE_REQUESTS.labels(decision=action).inc()
+    if (
+        request_path is not None
+        and request_method is not None
+        and target_event_type is not None
+        and flow_state is not None
+        and runtime_state is not None
+    ):
+        _audit.log_target_evaluate_event(
+            session_id=session_id,
+            trace_id=trace_id,
+            request_path=request_path,
+            request_method=request_method,
+            target_event_type=target_event_type,
+            action=action,
+            flow_state=flow_state,
+            runtime_state=runtime_state,
+            reason_code=reason_code,
+            policy_version=runtime_state.policy_version,
+            raw_payload=audit_payload,
+        )
     if action == "BLOCK":
         background_tasks.add_task(
             _block_user_in_auth_guard,

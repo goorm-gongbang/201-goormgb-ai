@@ -7,8 +7,9 @@
 3. 필수 필드
 4. optional typed 필드
 5. `raw_payload` 보존 규칙
-6. ETL / Backoffice 적용 규칙
-7. 남은 gap
+6. event taxonomy 규칙
+7. ETL / Backoffice 적용 규칙
+8. 남은 gap
 
 ## 1. 목적
 
@@ -125,7 +126,47 @@
   - `reason_codes`
   - `vqa_attempt_score`
 
-## 6. ETL / Backoffice 적용 규칙
+## 6. event taxonomy 규칙
+
+event taxonomy whitelist:
+
+- legacy API canonical event
+  - `EVALUATE`
+  - `CHALLENGE_ISSUED`
+  - `CHALLENGE_VERIFIED`
+- D0 runtime canonical event
+  - `DEF_GUARD_SCORED`
+  - `DEF_ANALYZER_EVIDENCE_UPDATED`
+  - `DEF_PLAN_COMPUTED`
+  - `DEF_ORCH_EXECUTED`
+  - `DEF_INVALID_TRANSITION`
+  - `DEF_THROTTLE_APPLIED`
+  - `DEF_BLOCK_DECIDED`
+  - `DEF_BLOCK_ENFORCED`
+  - `DEFENSE_UNAVAILABLE`
+  - `S3_CHALLENGE_ISSUED`
+  - `S3_CHALLENGE_RESULT`
+  - `S3_CHALLENGE_HALTED`
+  - `TURNSTILE_TRIGGERED`
+  - `TURNSTILE_VERIFIED`
+
+optimizer 집계 포함 event:
+
+- `DEF_ORCH_EXECUTED`
+- `DEF_THROTTLE_APPLIED`
+- `DEF_BLOCK_ENFORCED`
+- `S3_CHALLENGE_RESULT`
+- `S3_CHALLENGE_HALTED`
+- `DEF_GUARD_SCORED`
+
+규칙:
+
+- whitelist 밖 event는 canonical audit로 허용하지 않는다.
+- `AuditEntry`는 runtime event whitelist만 허용한다.
+- legacy API logger는 canonical union whitelist만 허용한다.
+- `ai/evaluate` early return도 canonical `EVALUATE` row를 남겨야 한다.
+
+## 7. ETL / Backoffice 적용 규칙
 
 `clickhouse_ingest.py`
 
@@ -145,8 +186,8 @@
 - 현재 기본 join은 `session_id + 시간 구간`
 - `match_id`는 아직 canonical top-level 필드가 아니다
 
-## 7. 남은 gap
+## 8. 남은 gap
 
 - `match_id`, `http_status`, `dedup_is_duplicate`, rollout field는 아직 top-level typed field로 승격되지 않았다.
-- event taxonomy 자체는 아직 `EVALUATE` / `CHALLENGE_VERIFIED` / D0 runtime catalog가 공존한다.
+- legacy API event와 D0 runtime event는 함께 허용되지만 whitelist 밖 taxonomy drift는 테스트에서 막아야 한다.
 - `AuditWarehouse`는 local compatibility adapter라 canonical raw log와 별도의 과도기 계층이 남아 있다.

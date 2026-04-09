@@ -24,6 +24,7 @@ cutover, rollback, replay, resync 절차를 고정한다.
 4. ClickHouse `defense_audit_events`는 observability raw fact다.
 5. S3 archive는 ClickHouse raw fact replay source다.
 6. OfflineOptimizer는 local JSONL `AuditWarehouse`가 아니라 ClickHouse `defense_audit_events`를 직접 읽는다.
+7. `AuditWarehouse`는 admin/debug compatibility 용도만 남고, production 판단 source로 쓰지 않는다.
 
 authoritative source 우선순위:
 
@@ -121,6 +122,7 @@ prod 기준은 `TM_ENV=prod` 또는 `TM_ENV=production`이다.
 - `TM_CLICKHOUSE_INGEST_BATCH_SIZE=1000`은 짧은 archive cadence에서 flush 단위가 너무 커질 수 있어 기본 운영값으로 두지 않는다.
 - processed-key ledger TTL은 운영 dedup cache일 뿐 영구 ledger가 아니다.
 - ClickHouse write 실패 로그는 `object key`, `flush_index`, `retry_max_attempts`, `retry_backoff_ms`, `last_error`를 같이 확인한다.
+- ETL strict ingest는 canonical flat `snake_case` row만 허용한다. unknown top-level field, scalar `raw_payload`, legacy camelCase row는 replay 전 contract 보정 없이 투입하면 실패한다.
 
 ---
 
