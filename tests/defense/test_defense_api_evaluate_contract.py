@@ -1,10 +1,89 @@
 import os
+import json
+import sys
+import types
 
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("CI", "true")
 
+if "pythonjsonlogger" not in sys.modules:
+    class _JsonFormatter:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def add_fields(self, log_record, record, message_dict):
+            return None
+
+    sys.modules["pythonjsonlogger"] = types.SimpleNamespace(
+        jsonlogger=types.SimpleNamespace(JsonFormatter=_JsonFormatter)
+    )
+
+if "jwt" not in sys.modules:
+    sys.modules["jwt"] = types.SimpleNamespace(decode=lambda token, options=None: {})
+
+if "opentelemetry" not in sys.modules:
+    class _NoOp:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __call__(self, *args, **kwargs):
+            return None
+
+        def add_span_processor(self, *args, **kwargs):
+            return None
+
+    class _Resource:
+        @staticmethod
+        def create(payload):
+            return payload
+
+    class _FastAPIInstrumentor:
+        @staticmethod
+        def instrument_app(app):
+            return app
+
+    root = types.ModuleType("opentelemetry")
+    root.metrics = types.SimpleNamespace(set_meter_provider=lambda provider: None)
+    root.trace = types.SimpleNamespace(set_tracer_provider=lambda provider: None)
+    sys.modules["opentelemetry"] = root
+    sys.modules["opentelemetry.metrics"] = root.metrics
+    sys.modules["opentelemetry.trace"] = root.trace
+    sys.modules["opentelemetry.exporter"] = types.ModuleType("opentelemetry.exporter")
+    sys.modules["opentelemetry.exporter.otlp"] = types.ModuleType("opentelemetry.exporter.otlp")
+    sys.modules["opentelemetry.exporter.otlp.proto"] = types.ModuleType("opentelemetry.exporter.otlp.proto")
+    sys.modules["opentelemetry.exporter.otlp.proto.grpc"] = types.ModuleType("opentelemetry.exporter.otlp.proto.grpc")
+    sys.modules["opentelemetry.exporter.otlp.proto.grpc.metric_exporter"] = types.SimpleNamespace(
+        OTLPMetricExporter=_NoOp
+    )
+    sys.modules["opentelemetry.exporter.otlp.proto.grpc.trace_exporter"] = types.SimpleNamespace(
+        OTLPSpanExporter=_NoOp
+    )
+    sys.modules["opentelemetry.instrumentation"] = types.ModuleType("opentelemetry.instrumentation")
+    sys.modules["opentelemetry.instrumentation.fastapi"] = types.SimpleNamespace(
+        FastAPIInstrumentor=_FastAPIInstrumentor
+    )
+    sys.modules["opentelemetry.sdk"] = types.ModuleType("opentelemetry.sdk")
+    sys.modules["opentelemetry.sdk.metrics"] = types.SimpleNamespace(MeterProvider=_NoOp)
+    sys.modules["opentelemetry.sdk.metrics.export"] = types.SimpleNamespace(
+        PeriodicExportingMetricReader=_NoOp
+    )
+    sys.modules["opentelemetry.sdk.resources"] = types.SimpleNamespace(Resource=_Resource)
+    sys.modules["opentelemetry.sdk.trace"] = types.SimpleNamespace(TracerProvider=_NoOp)
+    sys.modules["opentelemetry.sdk.trace.export"] = types.SimpleNamespace(
+        BatchSpanProcessor=_NoOp
+    )
+    sys.modules["opentelemetry.semconv"] = types.ModuleType("opentelemetry.semconv")
+    sys.modules["opentelemetry.semconv.resource"] = types.SimpleNamespace(
+        ResourceAttributes=types.SimpleNamespace(
+            SERVICE_NAME="service.name",
+            SERVICE_NAMESPACE="service.namespace",
+            SERVICE_VERSION="service.version",
+        )
+    )
+
 import traffic_master_ai.defense.api.main as api_main
+from traffic_master_ai.defense.api.audit import DefenseDecisionAuditLogger
 from traffic_master_ai.defense.api.models import EvaluateResponse, RuntimeStateSnapshot
 
 client = TestClient(api_main.app)
@@ -29,6 +108,16 @@ def _headers(*, session_id: str | None = None, user_id: str | None = None) -> di
     if user_id is not None:
         headers["X-User-Id"] = user_id
     return headers
+
+
+def _read_audit_rows(log_path) -> list[dict]:
+    if not log_path.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 def test_queue_enter_blocks_without_precheck() -> None:
@@ -81,6 +170,119 @@ def test_queue_enter_block_invokes_auth_guard(monkeypatch) -> None:
     assert captured["user_id"] == "42"
     assert captured["session_id"] == f"{sid}:{MATCH_ID}"
     assert captured["trigger"] == "ai_evaluate_precheck_block"
+
+
+def test_queue_enter_precheck_block_emits_canonical_audit(tmp_path, monkeypatch) -> None:
+    sid = "sess-eval-precheck-audit-1"
+    log_path = tmp_path / "decision_audit.jsonl"
+    monkeypatch.setattr(api_main, "_audit", DefenseDecisionAuditLogger(str(log_path)))
+    monkeypatch.setattr(api_main, "_block_user_in_auth_guard", lambda **kwargs: None)
+
+    response = client.post(
+        "/ai/evaluate",
+        json=_evaluate_payload(
+            sid=sid,
+            event_type="QUEUE_ENTER",
+            path=f"/queue/matches/{MATCH_ID}/enter",
+            method="POST",
+        ),
+    )
+
+    assert response.status_code == 200
+    rows = _read_audit_rows(log_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["event_type"] == "EVALUATE"
+    assert row["session_id"] == f"{sid}:{MATCH_ID}"
+    assert row["flow_state"] == "S2"
+    assert row["action"] == "BLOCK"
+    assert row["reason_code"] == "PRECHECK_REQUIRED"
+    assert row["raw_payload"]["decision_source"] == "target_api_early_return"
+    assert row["raw_payload"]["decision_reason"] == "precheck_block"
+    assert row["raw_payload"]["target_event_type"] == "QUEUE_ENTER"
+    assert row["raw_payload"]["precheck_valid"] is False
+
+
+def test_seat_entry_immediate_return_emits_canonical_audit(tmp_path, monkeypatch) -> None:
+    sid = "sess-eval-seat-entry-audit-1"
+    state_key = f"{sid}:{MATCH_ID}"
+    log_path = tmp_path / "decision_audit.jsonl"
+    monkeypatch.setattr(api_main, "_audit", DefenseDecisionAuditLogger(str(log_path)))
+    api_main._state_store.upsert(
+        state_key,
+        RuntimeStateSnapshot(
+            flow_state="S2",
+            policy_version="policy-seat-entry",
+            vqa_passed=False,
+        ),
+    )
+
+    response = client.post(
+        "/ai/evaluate",
+        json=_evaluate_payload(
+            sid=sid,
+            event_type="SEAT_ENTRY",
+            path=f"/seat/matches/{MATCH_ID}/entry",
+            method="POST",
+        ),
+    )
+
+    assert response.status_code == 200
+    rows = _read_audit_rows(log_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["event_type"] == "EVALUATE"
+    assert row["action"] == "REQUIRE_S3"
+    assert row["flow_state"] == "S3"
+    assert row["reason_code"] == "SEAT_ENTRY_VQA_REQUIRED"
+    assert row["policy_version"] == "policy-seat-entry"
+    assert row["raw_payload"]["decision_reason"] == "seat_entry_immediate"
+    assert row["raw_payload"]["target_event_type"] == "SEAT_ENTRY"
+    assert row["raw_payload"]["vqa_passed"] is False
+
+
+def test_soft_action_early_return_emits_canonical_audit(tmp_path, monkeypatch) -> None:
+    sid = "sess-eval-soft-action-audit-1"
+    state_key = f"{sid}:{MATCH_ID}"
+    log_path = tmp_path / "decision_audit.jsonl"
+    monkeypatch.setattr(api_main, "_audit", DefenseDecisionAuditLogger(str(log_path)))
+    api_main._state_store.upsert(
+        state_key,
+        RuntimeStateSnapshot(
+            flow_state="S4",
+            policy_version="policy-soft-action",
+            latest_seat_stage_summary={
+                "mousePointCount": 4,
+                "botRisk": 0.61,
+            },
+        ),
+    )
+
+    response = client.post(
+        "/ai/evaluate",
+        json=_evaluate_payload(
+            sid=sid,
+            event_type="SEAT_HOLDS",
+            path=f"/seat/matches/{MATCH_ID}/seat-holds",
+            method="POST",
+        ),
+    )
+
+    assert response.status_code == 200
+    rows = _read_audit_rows(log_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["event_type"] == "EVALUATE"
+    assert row["action"] == "THROTTLE"
+    assert row["flow_state"] == "S5"
+    assert row["reason_code"] == "TARGET_SOFT_ACTION"
+    assert row["policy_version"] == "policy-soft-action"
+    assert row["raw_payload"]["decision_reason"] == "soft_action"
+    assert row["raw_payload"]["target_event_type"] == "SEAT_HOLDS"
+    assert row["raw_payload"]["feature_summary"] == {
+        "mouse_point_count": 4,
+        "bot_risk": 0.61,
+    }
 
 
 def test_post_vqa_events_require_s3_when_vqa_not_passed(monkeypatch) -> None:

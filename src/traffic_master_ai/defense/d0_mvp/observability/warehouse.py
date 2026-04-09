@@ -1,4 +1,4 @@
-"""Legacy local warehouse for near-real-time defense audit queries."""
+"""Legacy local warehouse for admin/debug compatibility queries."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
+from ...audit_contract import build_warehouse_audit_row, normalize_audit_row
 from ...storage_env import load_warehouse_file_config_from_env
 from ..core.constants import AUDIT_RETENTION_DAYS, WAREHOUSE_FILENAME
 from .jsonl_retention import is_within_retention, load_rows, persist_rows
@@ -13,10 +14,11 @@ from .schemas import AuditEntry
 
 
 class AuditWarehouse:
-    """Append-only local warehouse of normalized audit events.
+    """Append-only local warehouse kept only for admin/debug compatibility.
 
     Legacy local-only implementation of the L2 warehouse contract using JSONL rows.
-    Production raw-fact ingest authority now lives in ClickHouse ETL, not this file.
+    Production raw-fact ingest authority and optimizer read source live in ClickHouse ETL,
+    not this file.
     """
 
     def __init__(
@@ -49,6 +51,7 @@ class AuditWarehouse:
             "table": "defense_audit_events",
             "filePath": str(self._path),
             "primaryOptions": ["ClickHouse"],
+            "usage": ["admin", "debug", "compatibility"],
             "indices": ["traceId", "sessionId", "eventType", "tsMs"],
             "partitioning": "by day(tsMs)",
             "retentionDays": self._retention_days,
@@ -60,7 +63,7 @@ class AuditWarehouse:
         if errors:
             raise ValueError("invalid warehouse entry: " + "; ".join(errors))
 
-        row = _normalize_row(item.to_dict())
+        row = build_warehouse_audit_row(item.to_dict())
         self._prune_expired()
         if not is_within_retention(row, retention_days=self._retention_days):
             return False
@@ -96,14 +99,15 @@ class AuditWarehouse:
         rows = self.read_all()
         out: list[dict[str, Any]] = []
         for row in rows:
-            if session_id is not None and row.get("sessionId") != session_id:
+            normalized = normalize_audit_row(row)
+            if session_id is not None and normalized.get("session_id") != session_id:
                 continue
-            if trace_id is not None and row.get("traceId") != trace_id:
+            if trace_id is not None and normalized.get("trace_id") != trace_id:
                 continue
-            if event_type is not None and row.get("eventType") != event_type:
+            if event_type is not None and normalized.get("event_type") != event_type:
                 continue
             out.append(row)
-        out.sort(key=lambda row: int(row.get("tsMs", 0)), reverse=True)
+        out.sort(key=lambda row: int(normalize_audit_row(row).get("ts_ms", 0)), reverse=True)
         if limit is not None and limit >= 0:
             return out[:limit]
         return out
@@ -112,27 +116,5 @@ class AuditWarehouse:
         rows, pruned = load_rows(self._path, retention_days=self._retention_days)
         if pruned:
             persist_rows(self._path, rows)
-
-
-def _normalize_row(entry: Mapping[str, Any]) -> dict[str, Any]:
-    row = dict(entry)
-    row["dedup_isDuplicate"] = bool(_nested_get(entry, "dedup", "isDuplicate", default=False))
-    row["result_httpStatus"] = _nested_get(entry, "result", "httpStatus")
-    row["result_reasonCode"] = _nested_get(entry, "result", "reasonCode")
-    row["turnstile_verifyStatus"] = _nested_get(entry, "turnstile", "verifyStatus")
-    row["challenge_result"] = _nested_get(entry, "challenge", "result")
-    row["throttle_delayMs"] = _nested_get(entry, "throttle", "delayMs")
-    row["throttle_endpointPath"] = _nested_get(entry, "throttle", "endpointPath")
-    return row
-
-
-def _nested_get(data: Mapping[str, Any], *path: str, default: Any = None) -> Any:
-    cur: Any = data
-    for key in path:
-        if not isinstance(cur, Mapping) or key not in cur:
-            return default
-        cur = cur[key]
-    return cur
-
 
 __all__ = ["AuditWarehouse"]

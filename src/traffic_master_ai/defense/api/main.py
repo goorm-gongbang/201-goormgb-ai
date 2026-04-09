@@ -85,10 +85,10 @@ from ..d0_mvp.core.models import CheckRequest as D0CheckRequest
 from ..d0_mvp.events.common import RuntimeEvent as D0RuntimeEvent
 from ..d0_mvp.state.redis_client import build_runtime_redis_from_env
 from ..auth_guard import AuthGuardBlockService
+from .archive_runtime import run_s3_archive_loop
 from .audit import (
     DefenseDecisionAuditLogger,
     S3Uploader,
-    rotate_and_upload_audit_log,
 )
 from .challenge_runtime import ChallengeConfig, ChallengeRuntime
 from .models import (
@@ -207,10 +207,6 @@ logger = logging.getLogger(__name__)
 _MATCH_ID_PATH_RE = re.compile(r"/matches/(?P<match_id>\d+)(?:/|$)")
 
 # S3 Archiver Config
-_S3_BUCKET = os.getenv("TM_S3_BUCKET")
-_S3_PREFIX = os.getenv("TM_S3_PREFIX", "ai-defense/audit/")
-_S3_REGION = os.getenv("TM_S3_REGION")
-_S3_INTERVAL = int(os.getenv("TM_S3_ARCHIVE_INTERVAL_SECONDS", "3600"))
 _TURNSTILE_SECRET_KEY = os.getenv("TM_TURNSTILE_SECRET_KEY", "").strip()
 _TURNSTILE_SITEVERIFY_URL = os.getenv(
     "TM_TURNSTILE_SITEVERIFY_URL",
@@ -228,7 +224,7 @@ _VQA_LOW_DWELL_THRESHOLD = float(os.getenv("TM_VQA_LOW_DWELL_THRESHOLD", "80"))
 _VQA_MIN_POINTS_FOR_ABNORMAL_TERMINAL = int(os.getenv("TM_VQA_MIN_POINTS_FOR_ABNORMAL_TERMINAL", "6"))
 _VQA_MIN_STRONG_SIGNALS_FOR_TERMINAL = int(os.getenv("TM_VQA_MIN_STRONG_SIGNALS_FOR_TERMINAL", "3"))
 
-_S3_UPLOADER = S3Uploader(bucket=_S3_BUCKET, prefix=_S3_PREFIX, region=_S3_REGION) if _S3_BUCKET else None
+_S3_UPLOADER = S3Uploader.from_env()
 
 _DEFAULT_CORS_ALLOW_ORIGINS = (
     "http://localhost:3000",
@@ -246,20 +242,7 @@ def _cors_allow_origins_from_env() -> list[str]:
 
 
 async def _s3_archive_loop():
-    """Background loop to periodically upload logs to S3."""
-    if not _S3_UPLOADER:
-        logger.info("S3 Archiving is disabled (TM_S3_BUCKET not set).")
-        return
-
-    logger.info("Starting S3 Archiving Loop (Interval: %ds)", _S3_INTERVAL)
-    while True:
-        try:
-            await asyncio.sleep(_S3_INTERVAL)
-            rotate_and_upload_audit_log(_audit, _S3_UPLOADER)
-        except asyncio.CancelledError:
-            break
-        except Exception as exc:
-            logger.error("Error in S3 archiving loop: %s", exc)
+    await run_s3_archive_loop(audit_logger=_audit, uploader=_S3_UPLOADER)
 
 
 @asynccontextmanager
@@ -590,6 +573,16 @@ async def ai_evaluate(
             trace_id=trace_id,
             block_trigger="ai_evaluate_precheck_block",
             stage=event_type,
+            request_path=req.event.request_path,
+            request_method=req.event.request_method,
+            target_event_type=req.event.event_type,
+            flow_state=_target_event_to_flow_state(req.event.event_type),
+            runtime_state=snap,
+            reason_code="PRECHECK_REQUIRED",
+            audit_payload={
+                "precheck_valid": False,
+                "decision_reason": "precheck_block",
+            },
         )
 
     if event_type == "SEAT_ENTRY":
@@ -601,6 +594,16 @@ async def ai_evaluate(
                 session_id=state_key,
                 trace_id=trace_id,
                 stage=event_type,
+                request_path=req.event.request_path,
+                request_method=req.event.request_method,
+                target_event_type=req.event.event_type,
+                flow_state=_target_event_to_flow_state(req.event.event_type),
+                runtime_state=snap,
+                reason_code="SEAT_ENTRY_VQA_REQUIRED",
+                audit_payload={
+                    "decision_reason": "seat_entry_immediate",
+                    "vqa_passed": False,
+                },
             )
         return _build_evaluate_response(
             background_tasks=background_tasks,
@@ -609,6 +612,16 @@ async def ai_evaluate(
             session_id=state_key,
             trace_id=trace_id,
             stage=event_type,
+            request_path=req.event.request_path,
+            request_method=req.event.request_method,
+            target_event_type=req.event.event_type,
+            flow_state=_target_event_to_flow_state(req.event.event_type),
+            runtime_state=snap,
+            reason_code="SEAT_ENTRY_VQA_PASSED",
+            audit_payload={
+                "decision_reason": "seat_entry_immediate",
+                "vqa_passed": True,
+            },
         )
 
     soft_action = _feature_soft_action(event_type=event_type, snap=snap)
@@ -620,6 +633,20 @@ async def ai_evaluate(
             session_id=state_key,
             trace_id=trace_id,
             stage=event_type,
+            request_path=req.event.request_path,
+            request_method=req.event.request_method,
+            target_event_type=req.event.event_type,
+            flow_state=_target_event_to_flow_state(req.event.event_type),
+            runtime_state=snap,
+            reason_code="TARGET_SOFT_ACTION",
+            audit_payload={
+                "decision_reason": "soft_action",
+                "feature_summary": (
+                    snap.latest_queue_enter_preclick_summary
+                    if req.event.event_type == "QUEUE_ENTER"
+                    else snap.latest_seat_stage_summary
+                ),
+            },
         )
 
     legacy_req = _build_legacy_request_from_target(
@@ -1301,8 +1328,35 @@ def _build_evaluate_response(
     trace_id: str,
     block_trigger: str = "ai_evaluate_block",
     stage: str = "unknown",
+    request_path: str | None = None,
+    request_method: str | None = None,
+    target_event_type: str | None = None,
+    flow_state: str | None = None,
+    runtime_state: RuntimeStateSnapshot | None = None,
+    reason_code: str | None = None,
+    audit_payload: dict[str, Any] | None = None,
 ) -> AiEvaluateResponse:
     EVALUATE_REQUESTS.labels(decision=action, stage=stage).inc()
+    if (
+        request_path is not None
+        and request_method is not None
+        and target_event_type is not None
+        and flow_state is not None
+        and runtime_state is not None
+    ):
+        _audit.log_target_evaluate_event(
+            session_id=session_id,
+            trace_id=trace_id,
+            request_path=request_path,
+            request_method=request_method,
+            target_event_type=target_event_type,
+            action=action,
+            flow_state=flow_state,
+            runtime_state=runtime_state,
+            reason_code=reason_code,
+            policy_version=runtime_state.policy_version,
+            raw_payload=audit_payload,
+        )
     if action == "BLOCK":
         background_tasks.add_task(
             _block_user_in_auth_guard,
