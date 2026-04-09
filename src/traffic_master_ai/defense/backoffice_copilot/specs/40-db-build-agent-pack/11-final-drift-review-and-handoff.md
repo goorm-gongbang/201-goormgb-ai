@@ -28,10 +28,11 @@ Task 8~17 + Task A/B/C 기준으로 아래는 완료됐다.
 4. runtime read adapter는 PostgreSQL direct read 없이 Redis projection만 읽고, prod에서는 local/file/in-memory fallback과 implicit bootstrap이 차단된다.
 5. env/config, failure handling, unit/contract/smoke test가 최소 범위로 반영됐다.
 6. prod required env validator, retry/replay/resync 운영 surface, migration/cutover/rollback runbook이 생겼다.
+7. canonical audit row는 flat `snake_case` + `raw_payload` 계약으로 통일됐고, ETL은 그 계약만 받는다.
 
 하지만 아래는 아직 목표 아키텍처까지 도달하지 않았다.
 
-1. `etl_worker.py`는 ClickHouse ingest로 전환됐지만 processed-key ledger, async insert, scheduler 같은 운영 hardening은 아직 없다.
+1. `etl_worker.py`는 ClickHouse ingest로 전환됐고 Redis processed-key ledger까지 들어갔지만 inflight lock, async insert, scheduler 같은 운영 hardening은 아직 없다.
 2. `AuditWarehouse`는 여전히 JSONL local adapter다.
 3. managed PostgreSQL / Redis / ClickHouse auth/TLS/network policy와 actual object store replay smoke는 아직 없다.
 
@@ -46,7 +47,7 @@ Task 8~17 + Task A/B/C 기준으로 아래는 완료됐다.
 | 축 | 상태 | 현재 완료 범위 | 아직 미구현 범위 |
 | --- | --- | --- | --- |
 | SQL / schema | partial complete | `001_post_review_tables.sql`, `002_postgresql_policy_control_plane_tables.sql`, `003_clickhouse_defense_audit_events.sql`, `004_clickhouse_read_models.sql` 존재 | richer typed field / stricter apply orchestration 없음 |
-| ClickHouse raw fact write | minimal complete | writer repository, canonical audit mapping, HTTP batch client, S3 archive -> ClickHouse ETL worker, env/config, failure handling, local container ClickHouse integration smoke 존재 | auth/pool/async insert hardening, persistent processed-key ledger, managed/service-level integration smoke 없음 |
+| ClickHouse raw fact write | minimal complete | writer repository, canonical audit mapping, HTTP batch client, S3 archive -> ClickHouse ETL worker, env/config, retry/failure log, Redis processed-key ledger, local container ClickHouse integration smoke 존재 | auth/pool/async insert hardening, inflight lock/exactly-once, managed/service-level integration smoke 없음 |
 | session / match / candidate read models | minimal complete | actual ClickHouse view objects, query DTO, row DTO, HTTP select client, reader repository, Backoffice input bundle, tests/smoke 존재 | stronger match_id authority, MV/backfill hardening, workflow-level full adoption 없음 |
 | PostgreSQL control-plane repository | minimal complete | 4개 authoritative repository, DTO, conflict policy, failure handling, strict authority service, optimizer/admin official write path, local container PostgreSQL write/read smoke 존재 | managed/service-level integration smoke 부족 |
 | PostgreSQL -> Redis projection | minimal complete | projection payload model, Redis projection repository, sync/resync helper, strict overwrite flow, local container Redis projection/runtime smoke 존재 | background projection worker / scheduler / managed Redis integration 없음 |
@@ -82,6 +83,7 @@ Task 8~17 + Task A/B/C 기준으로 아래는 완료됐다.
 
 - raw fact insert DTO
 - raw fact writer repository skeleton
+- canonical audit flat `snake_case` contract
 - canonical audit -> raw fact mapping helper
 - HTTP batch client
 - S3 archive -> ClickHouse ETL worker
@@ -129,6 +131,10 @@ Task 8~17 + Task A/B/C 기준으로 아래는 완료됐다.
 
 - shared env loader
 - runtime/loader/warehouse/etl wiring
+- archive loop 기본 interval `300s` 정리와 운영 권장값(`staging 60s`, `prod 300s`) 확정
+- ClickHouse ETL 기본값을 short cadence 기준으로 정리
+- key/flush/retry 기준 ingest log surface 강화
+- Redis processed-key ledger와 explicit force replay bypass 추가
 - explicit fail-fast/no-op rules
 - typed failure surface
 - production operations runbook
@@ -154,7 +160,7 @@ Task 8~17 + Task A/B/C 기준으로 아래는 완료됐다.
 ### 5.1 ClickHouse 실제 운영 계층
 
 - ClickHouse auth/pool/async insert wiring hardening
-- processed archive key ledger 또는 move/mark-processed orchestration
+- inflight lock 또는 archive move/mark-processed orchestration
 - stronger match_id authority before reliable match-centric analytics
 - raw fact -> session/match rollup MV hardening
 - candidate view backfill/recompute orchestration
@@ -188,7 +194,7 @@ Task 8~17 + Task A/B/C 기준으로 아래는 완료됐다.
 1. `32`는 ClickHouse를 observability main warehouse로 고정하지만,
    현재 코드는 [warehouse.py](/Users/shadowmoon/201-goormgb-ai-1/src/traffic_master_ai/defense/d0_mvp/observability/warehouse.py)에 JSONL MVP를 여전히 유지한다.
 2. `32`는 S3 -> ClickHouse ingest와 replay-aware 운영 흐름을 전제하지만,
-   현재 [etl_worker.py](/Users/shadowmoon/201-goormgb-ai-1/src/traffic_master_ai/defense/api/etl_worker.py#L1)은 prefix scan + per-run local dedupe 기반의 최소 ETL만 구현한다.
+   현재 [etl_worker.py](/Users/shadowmoon/201-goormgb-ai-1/src/traffic_master_ai/defense/api/etl_worker.py#L1)은 Redis processed-key ledger를 포함한 최소 ETL까지만 구현하고, inflight lock / distributed lease / scheduler는 구현하지 않았다.
 3. `32`는 `match_id`, `http_status`, dedup flag, rollout stage 등 richer typed field를 raw fact에 기대하지만,
    현재 Task 2/8 구현은 [003_clickhouse_defense_audit_events.sql](/Users/shadowmoon/201-goormgb-ai-1/src/traffic_master_ai/defense/backoffice_copilot/storage/sql/003_clickhouse_defense_audit_events.sql)에 최소 field만 잠갔다.
 4. `32`는 session rollup / match rollup / candidate view를 실제 ClickHouse object로 기대하는데,
@@ -217,6 +223,7 @@ Task 8~17 + Task A/B/C 기준으로 아래는 완료됐다.
 - retry는 synchronous entrypoint만 있고 background worker가 없다.
 - `TM_ROLLOUT_SALT`는 local 호환을 위해 weak default를 아직 허용한다.
 - engine별 SQL이 `storage/sql` 아래 한 디렉터리에 공존하므로 apply orchestration이 필요하다.
+- processed-key ledger는 cross-run object repeat risk는 줄이지만 inflight lock이나 exactly-once는 보장하지 않는다.
 
 ---
 
@@ -225,7 +232,7 @@ Task 8~17 + Task A/B/C 기준으로 아래는 완료됐다.
 다음 phase는 아래 순서가 가장 자연스럽다.
 
 1. ClickHouse ingest hardening
-   - processed-key ledger 또는 archive move/mark-processed
+   - inflight lock 또는 archive move/mark-processed
    - auth/pool/async insert
    - replay / scheduler orchestration
 2. ClickHouse read-model hardening
@@ -260,7 +267,7 @@ Task 8~17 + Task A/B/C 기준으로 아래는 완료됐다.
 1. 현재 구현을 `ClickHouse production ready`로 읽으면 안 된다.
    raw fact ingest minimum path와 read-model VIEW는 생겼지만, 운영 hardening과 stricter authority까지 끝난 상태는 아니다.
 2. `etl_worker.py`를 target architecture의 최종 구현으로 읽으면 안 된다.
-   현재는 ClickHouse raw-fact ETL까지 구현됐지만, scheduler/processed-key ledger/infra-backed retry는 아직 없다.
+   현재는 ClickHouse raw-fact ETL과 최소 processed-key ledger까지 구현됐지만, scheduler/inflight lock/infra-backed retry는 아직 없다.
 3. `AuditWarehouse` JSONL MVP를 production source로 고정하면 안 된다.
    과도기 adapter로만 취급해야 한다.
 4. Task 2/8 최소 raw fact contract 밖의 field를 임의 확장하면 안 된다.

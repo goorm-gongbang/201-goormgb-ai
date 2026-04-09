@@ -155,7 +155,7 @@ class BackofficeCopilotClickHouseStorageTests(unittest.TestCase):
         self.assertEqual(rows[1]["challenge_id"], "challenge-1")
         self.assertIsNone(rows[1]["trace_id"])
 
-    def test_canonical_audit_mapping_normalizes_defense_tier_into_risk_tier(self) -> None:
+    def test_canonical_audit_mapping_uses_flat_snake_case_contract(self) -> None:
         row = map_canonical_audit_payload_to_clickhouse_row(
             {
                 "ts_ms": 1710000000000,
@@ -163,18 +163,20 @@ class BackofficeCopilotClickHouseStorageTests(unittest.TestCase):
                 "trace_id": "trace-1",
                 "event_type": "EVALUATE",
                 "flow_state": "F4M",
-                "defense_tier": "T2",
+                "risk_tier": "T2",
                 "action": "THROTTLE",
                 "reason_code": "RULE_HIT",
                 "policy_version": "policy-v2",
-                "extra_field": {"kept": True},
+                "raw_payload": {
+                    "request_id": "req-1",
+                    "extra_field": {"kept": True},
+                },
             }
         )
 
         self.assertEqual(row.risk_tier, "T2")
         self.assertEqual(row.trace_id, "trace-1")
-        self.assertIn('"defense_tier":"T2"', row.raw_payload_json)
-        self.assertIn('"extra_field":{"kept":true}', row.raw_payload_json)
+        self.assertEqual(row.raw_payload_json, '{"extra_field":{"kept":true},"request_id":"req-1"}')
 
     def test_canonical_audit_mapping_rejects_missing_required_fields(self) -> None:
         with self.assertRaises(CanonicalAuditMappingError):
@@ -192,7 +194,7 @@ class BackofficeCopilotClickHouseStorageTests(unittest.TestCase):
                 "session_id": "sess-1",
                 "event_type": "CHALLENGE_VERIFIED",
                 "challenge_id": "challenge-1",
-                "payload": {"result": "PASS"},
+                "raw_payload": {"result": "PASS"},
             }
         )
 
@@ -200,6 +202,18 @@ class BackofficeCopilotClickHouseStorageTests(unittest.TestCase):
             compute_clickhouse_raw_fact_dedup_key(row),
             compute_clickhouse_raw_fact_dedup_key(row),
         )
+
+    def test_canonical_audit_mapping_rejects_legacy_shape_guessing(self) -> None:
+        with self.assertRaises(CanonicalAuditMappingError):
+            map_canonical_audit_payload_to_clickhouse_row(
+                {
+                    "ts_ms": 1710000000000,
+                    "session_id": "sess-1",
+                    "event_type": "EVALUATE",
+                    "defense_tier": "T2",
+                    "payload": {"result": "PASS"},
+                }
+            )
 
     def test_repository_write_batch_request_preserves_empty_batch_semantics(self) -> None:
         client = _FakeClickHouseClient()
@@ -244,7 +258,14 @@ class BackofficeCopilotClickHouseStorageTests(unittest.TestCase):
 
         self.assertEqual(exc_info.exception.table_name, "defense_audit_events")
         self.assertEqual(exc_info.exception.attempted_row_count, 1)
+        self.assertEqual(exc_info.exception.max_attempts, 2)
+        self.assertEqual(exc_info.exception.backoff_ms, 0)
+        self.assertEqual(
+            exc_info.exception.last_error_message,
+            "RuntimeError: clickhouse unavailable",
+        )
         self.assertIn("replay", exc_info.exception.replay_hint.lower())
+        self.assertIn("last_error=RuntimeError: clickhouse unavailable", str(exc_info.exception))
 
     def test_http_clickhouse_client_posts_jsoneachrow_insert_request(self) -> None:
         _RecordingClickHouseHandler.requests = []

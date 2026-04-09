@@ -10,6 +10,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Optional
 
+from ..audit_contract import build_canonical_audit_row
 from ..storage_env import load_audit_log_config_from_env, load_s3_archive_config_from_env
 from .models import EvaluateRequest, EvaluateResponse, RuntimeStateSnapshot
 
@@ -35,31 +36,33 @@ class DefenseDecisionAuditLogger:
         runtime_state: RuntimeStateSnapshot,
     ) -> None:
         now_ms = int(datetime.now(UTC).timestamp() * 1000)
-        payload: dict[str, Any] = {
-            "ts_ms": now_ms,
-            "session_id": req.session_id,
-            "trace_id": req.trace_id,
-            "request_id": req.request_id,
-            "correlation_id": req.correlation_id,
-            "flow_state": resp.flow_state,
-            "event_type": "EVALUATE",
-            "defense_tier": resp.defense_tier,
-            "action": resp.action,
-            "reason_code": resp.reason,
-            "policy_version": resp.policy_version,
-            "decision_id": resp.decision_id,
-            "risk_score": resp.risk_score,
-            "rule_hits": resp.rule_hits,
-            "path": req.path,
-            "method": req.method.upper(),
-            "allow": resp.allow,
-            "runtime_state": runtime_state.model_dump(),
-            "telemetry_features": (
-                req.telemetry_features.model_dump(by_alias=True)
-                if req.telemetry_features is not None
-                else None
-            ),
-        }
+        payload = build_canonical_audit_row(
+            ts_ms=now_ms,
+            session_id=req.session_id,
+            event_type="EVALUATE",
+            raw_payload={
+                "decision_id": resp.decision_id,
+                "risk_score": resp.risk_score,
+                "rule_hits": resp.rule_hits,
+                "path": req.path,
+                "method": req.method.upper(),
+                "allow": resp.allow,
+                "runtime_state": runtime_state.model_dump(),
+                "telemetry_features": (
+                    req.telemetry_features.model_dump(by_alias=True)
+                    if req.telemetry_features is not None
+                    else None
+                ),
+            },
+            trace_id=req.trace_id,
+            request_id=req.request_id,
+            correlation_id=req.correlation_id,
+            flow_state=resp.flow_state,
+            risk_tier=resp.defense_tier,
+            action=resp.action,
+            reason_code=resp.reason,
+            policy_version=resp.policy_version,
+        )
         line = json.dumps(payload, ensure_ascii=False)
         with self._lock, self._path.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
@@ -74,13 +77,13 @@ class DefenseDecisionAuditLogger:
     ) -> None:
         now_ms = int(datetime.now(UTC).timestamp() * 1000)
         line = json.dumps(
-            {
-                "ts_ms": now_ms,
-                "session_id": session_id,
-                "challenge_id": challenge_id,
-                "event_type": event_type,
-                "payload": payload,
-            },
+            build_canonical_audit_row(
+                ts_ms=now_ms,
+                session_id=session_id,
+                event_type=event_type,
+                raw_payload=payload,
+                challenge_id=challenge_id,
+            ),
             ensure_ascii=False,
         )
         with self._lock, self._path.open("a", encoding="utf-8") as f:

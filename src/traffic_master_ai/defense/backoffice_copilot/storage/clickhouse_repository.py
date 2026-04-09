@@ -43,17 +43,26 @@ class ClickHouseBatchWriteError(RuntimeError):
         table_name: str,
         attempted_row_count: int,
         max_attempts: int,
+        backoff_ms: int,
+        last_error_message: str | None,
     ) -> None:
         self.table_name = table_name
         self.attempted_row_count = attempted_row_count
         self.max_attempts = max_attempts
+        self.backoff_ms = backoff_ms
+        self.last_error_message = last_error_message
         self.replay_hint = (
             "Keep the source batch as replay input and retry raw-fact ingest from the "
             "serialized batch or upstream S3 archive."
         )
+        failure_suffix = (
+            f" last_error={last_error_message}." if last_error_message else ""
+        )
         super().__init__(
             "ClickHouse raw-fact write failed "
-            f"(table={table_name}, attempted_row_count={attempted_row_count}, max_attempts={max_attempts}). "
+            f"(table={table_name}, attempted_row_count={attempted_row_count}, "
+            f"max_attempts={max_attempts}, backoff_ms={backoff_ms})."
+            f"{failure_suffix} "
             f"{self.replay_hint}"
         )
 
@@ -148,6 +157,7 @@ class ClickHouseAuditEventWriterRepository:
             )
 
         payload = serialize_clickhouse_audit_event_insert_rows(request.rows)
+        last_error_message: str | None = None
         for attempt in range(1, retry_policy.max_attempts + 1):
             try:
                 self.client.execute(self.insert_sql, payload)
@@ -156,13 +166,16 @@ class ClickHouseAuditEventWriterRepository:
                     attempted_row_count=len(request.rows),
                     accepted_row_count=len(payload),
                 )
-            except Exception:
+            except Exception as exc:
+                last_error_message = f"{type(exc).__name__}: {exc}"
                 logger.exception(
-                    "ClickHouse raw-fact write failed for table=%s attempt=%s/%s row_count=%s",
+                    "ClickHouse raw-fact write failed for table=%s attempt=%s/%s row_count=%s backoff_ms=%s last_error=%s",
                     self.config.table_name,
                     attempt,
                     retry_policy.max_attempts,
                     len(payload),
+                    retry_policy.backoff_ms,
+                    last_error_message,
                 )
                 if attempt < retry_policy.max_attempts and retry_policy.backoff_ms > 0:
                     time.sleep(retry_policy.backoff_ms / 1000.0)
@@ -171,6 +184,8 @@ class ClickHouseAuditEventWriterRepository:
             table_name=self.config.table_name,
             attempted_row_count=len(request.rows),
             max_attempts=retry_policy.max_attempts,
+            backoff_ms=retry_policy.backoff_ms,
+            last_error_message=last_error_message,
         )
 
     @property
