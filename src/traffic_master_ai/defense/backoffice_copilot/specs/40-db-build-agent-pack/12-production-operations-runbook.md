@@ -23,6 +23,7 @@ cutover, rollback, replay, resync 절차를 고정한다.
 3. runtime request path는 PostgreSQL을 직접 읽지 않는다.
 4. ClickHouse `defense_audit_events`는 observability raw fact다.
 5. S3 archive는 ClickHouse raw fact replay source다.
+6. OfflineOptimizer는 local JSONL `AuditWarehouse`가 아니라 ClickHouse `defense_audit_events`를 직접 읽는다.
 
 authoritative source 우선순위:
 
@@ -97,6 +98,7 @@ prod 기준은 `TM_ENV=prod` 또는 `TM_ENV=production`이다.
 - ClickHouse write 실패는 `ClickHouseBatchWriteError`로 surfaced 된다.
 - source-of-replay는 S3 object다. write 성공 전 processed 처리하면 안 된다.
 - processed-key ledger는 성공 완료 object만 기록한다. parse/write 실패 object는 다음 run에서 다시 시도될 수 있어야 한다.
+- `OfflineOptimizer` service는 `TM_CLICKHOUSE_URL`이 없으면 시작하지 않는다.
 
 운영 권장값:
 

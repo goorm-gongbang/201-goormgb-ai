@@ -83,6 +83,7 @@ Task 8~17 + Task A/B/C 기준으로 아래는 완료됐다.
 
 - raw fact insert DTO
 - raw fact writer repository skeleton
+- OfflineOptimizer ClickHouse raw-fact read repository
 - canonical audit flat `snake_case` contract
 - canonical audit -> raw fact mapping helper
 - HTTP batch client
@@ -98,6 +99,7 @@ Task 8~17 + Task A/B/C 기준으로 아래는 완료됐다.
 - [clickhouse_validators.py](/Users/shadowmoon/201-goormgb-ai-1/src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_validators.py)
 - [clickhouse_repository.py](/Users/shadowmoon/201-goormgb-ai-1/src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_repository.py)
 - [clickhouse_ingest.py](/Users/shadowmoon/201-goormgb-ai-1/src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_ingest.py)
+- [clickhouse_offline_metrics_repository.py](/Users/shadowmoon/201-goormgb-ai-1/src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_offline_metrics_repository.py)
 - [clickhouse_read_models.py](/Users/shadowmoon/201-goormgb-ai-1/src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_read_models.py)
 - [clickhouse_read_repository.py](/Users/shadowmoon/201-goormgb-ai-1/src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_read_repository.py)
 - [clickhouse_connection.py](/Users/shadowmoon/201-goormgb-ai-1/src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_connection.py)
@@ -182,6 +184,7 @@ Task 8~17 + Task A/B/C 기준으로 아래는 완료됐다.
 ### 5.4 observability 과도기 제거
 
 - JSONL MVP `AuditWarehouse` 제거 또는 축소
+- OfflineOptimizer 외 admin/debug surface의 ClickHouse direct read 전환
 - `TM_WAREHOUSE_FILENAME` current-code-only env 정리
 - ClickHouse ETL worker에 scheduler/replay orchestration 추가
 
@@ -269,7 +272,7 @@ Task 8~17 + Task A/B/C 기준으로 아래는 완료됐다.
 2. `etl_worker.py`를 target architecture의 최종 구현으로 읽으면 안 된다.
    현재는 ClickHouse raw-fact ETL과 최소 processed-key ledger까지 구현됐지만, scheduler/inflight lock/infra-backed retry는 아직 없다.
 3. `AuditWarehouse` JSONL MVP를 production source로 고정하면 안 된다.
-   과도기 adapter로만 취급해야 한다.
+   OfflineOptimizer는 이제 `defense_audit_events`를 직접 읽고, `AuditWarehouse`는 admin/debug 과도기 adapter로만 취급해야 한다.
 4. Task 2/8 최소 raw fact contract 밖의 field를 임의 확장하면 안 된다.
    `match_id`, `http_status`, rollout metadata 등은 후속 phase에서 문서 갱신 후 넣어야 한다.
 5. next phase는 `task-execution-log.md`를 우선 읽고 이어야 한다.

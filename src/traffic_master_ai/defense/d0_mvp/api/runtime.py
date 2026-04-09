@@ -295,10 +295,26 @@ class DefenseRuntime:
         Offline optimization is not required for online request handling.
         """
         if self._offline_optimizer is None:
+            from ...backoffice_copilot.storage import (
+                build_clickhouse_offline_metrics_repository,
+                build_clickhouse_read_model_config_from_env,
+                build_clickhouse_select_client,
+                get_clickhouse_audit_table_from_env,
+            )
+
             if self._audit_summarizer is None:
                 self._audit_summarizer = AuditSummarizer()
+            read_config = build_clickhouse_read_model_config_from_env()
+            if not read_config.url:
+                raise RuntimeError(
+                    "OfflineOptimizer requires TM_CLICKHOUSE_URL because production truth is defense_audit_events."
+                )
+            metrics_repository = build_clickhouse_offline_metrics_repository(
+                build_clickhouse_select_client(read_config),
+                table_name=get_clickhouse_audit_table_from_env(),
+            )
             self._offline_optimizer = OfflineOptimizer(
-                warehouse=self.audit_warehouse,
+                metrics_repository=metrics_repository,
                 policy_loader=self.policy_loader,
                 audit_summarizer=self._audit_summarizer,
                 authority_service=self._get_policy_authority_service(),

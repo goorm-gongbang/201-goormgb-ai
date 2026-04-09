@@ -2258,3 +2258,59 @@
 
 - 다음 우선순위는 inflight lock 또는 archive move/mark-processed 규칙을 추가해 concurrent duplicate ingest risk를 더 줄이는 것이다.
 - 그 다음 단계로 scheduler/lag metric/alerting을 붙여 processed-key ledger hit율과 ETL freshness를 운영 지표로 관측 가능하게 만드는 것이 자연스럽다.
+
+## Task 27
+
+### 1. task 번호와 제목
+
+- Task 27. OfflineOptimizer ClickHouse Read Source 전환
+
+### 2. 작업 일시
+
+- 2026-04-09 12:38:26 KST
+
+### 3. 실제로 수정한 파일 목록
+
+- `src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_read_models.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_offline_metrics_repository.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/storage/__init__.py`
+- `src/traffic_master_ai/defense/d0_mvp/optimizer/pipeline.py`
+- `src/traffic_master_ai/defense/d0_mvp/api/runtime.py`
+- `src/traffic_master_ai/defense/d0_mvp/observability/warehouse.py`
+- `tests/defense/test_offline_optimizer_strict_authority.py`
+- `tests/defense/test_offline_optimizer_clickhouse_metrics.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/11-final-drift-review-and-handoff.md`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/12-production-operations-runbook.md`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/task-execution-log.md`
+
+### 4. ClickHouse optimizer read 전환 요약
+
+- `OfflineOptimizer`가 더 이상 `AuditWarehouse`나 `AdminDashboardService`를 읽지 않도록 `OfflineMetricsRepository` 경계를 추가했다.
+- optimizer 전용 DTO로 `OfflineMetricsQuery`, `OfflineMetricsSnapshot`, `OfflineTraceSample`를 추가했다.
+- 새 `ClickHouseOfflineMetricsRepository`는 기존 `TM_CLICKHOUSE_URL`, `ClickHouseSelectClient`, `defense_audit_events`만 재사용해서 raw fact를 직접 읽는다.
+- repository는 4개 raw fact query로 total/event-count/detail/sample-trace를 읽고, tier/action/block/require_s3/throttle/s3/integrity/latest policy를 Python aggregation으로 계산한다.
+- runtime은 `offline_optimizer_service()`에서 ClickHouse repository를 주입하고, `TM_CLICKHOUSE_URL`이 없으면 optimizer를 명시적으로 fail-fast 시킨다.
+- `AuditWarehouse`는 제거하지 않고 admin/debug 과도기 adapter라는 역할만 더 분명하게 문서화했다.
+
+### 5. 검증에 사용한 명령과 결과 요약
+
+- 문법 확인
+  - 명령: `python3 -m py_compile src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_read_models.py src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_offline_metrics_repository.py src/traffic_master_ai/defense/backoffice_copilot/storage/__init__.py src/traffic_master_ai/defense/d0_mvp/optimizer/pipeline.py src/traffic_master_ai/defense/d0_mvp/api/runtime.py src/traffic_master_ai/defense/d0_mvp/observability/warehouse.py tests/defense/test_offline_optimizer_strict_authority.py tests/defense/test_offline_optimizer_clickhouse_metrics.py`
+  - 결과: 문법 오류 없음
+- optimizer / repository 회귀
+  - 명령: `.venv/bin/pytest -q tests/defense/test_offline_optimizer_strict_authority.py tests/defense/test_offline_optimizer_clickhouse_metrics.py`
+  - 결과: `8 passed`
+- 기존 ClickHouse read-model 회귀
+  - 명령: `.venv/bin/pytest -q tests/defense/test_backoffice_copilot_clickhouse_read_models.py`
+  - 결과: `7 passed`
+
+### 6. 남은 리스크
+
+- 새 DB object 없이 raw fact를 직접 읽기 때문에 optimizer 집계 일부는 SQL pre-aggregation 대신 Python aggregation에 의존한다. window가 커지면 read cost가 커질 수 있다.
+- `raw_payload_json` nested field는 최소 parse만 하므로, taxonomy drift가 생기면 후속 Task에서 whitelist/contract test로 더 강하게 잠가야 한다.
+- admin/debug surface는 아직 `AuditWarehouse`를 유지한다. production truth는 ClickHouse로 정리됐지만, admin console까지 완전히 같은 read source로 합쳐진 상태는 아니다.
+
+### 7. 다음 task 입력
+
+- 다음 우선순위는 early return canonical audit 누락을 막고, authoritative event taxonomy whitelist 테스트를 추가해 optimizer 집계 의미를 더 강하게 고정하는 것이다.
+- 그 다음 단계로 canonical contract strict regression과 `AuditWarehouse` 역할 축소를 테스트와 문서에서 같이 마감하는 것이 자연스럽다.
