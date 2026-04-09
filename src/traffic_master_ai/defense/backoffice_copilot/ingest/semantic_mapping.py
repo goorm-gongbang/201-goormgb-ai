@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Iterator, Mapping, Sequence
 
 from ..core.models import DefenseAuditEventRow
+from ..legacy_normalization import normalize_action, normalize_flow_state
 
 
 @dataclass(slots=True, frozen=True)
@@ -24,11 +25,13 @@ class EventSemantics:
 def map_event_semantics(row: DefenseAuditEventRow) -> EventSemantics:
     """Interpret semantic fields from raw payload without mutating the raw DTO."""
 
-    flow_state = _find_string(
+    flow_state = normalize_flow_state(
+        _find_string(
         row.payload,
         "flow_state",
         "flowState",
         preferred_paths=(("flow_state",), ("flowState",)),
+        )
     )
     terminal_reason = _find_string(
         row.payload,
@@ -52,13 +55,16 @@ def map_event_semantics(row: DefenseAuditEventRow) -> EventSemantics:
             ("result", "reasonCode"),
         ),
     )
-    latest_flow_state = _find_string(
+    latest_flow_state = normalize_flow_state(
+        _find_string(
         row.payload,
         "latest_flow_state",
         "latestFlowState",
         preferred_paths=(("latest_flow_state",), ("latestFlowState",)),
+        )
     ) or flow_state
-    latest_action = _find_string(
+    latest_action = normalize_action(
+        _find_string(
         row.payload,
         "latest_action",
         "latestAction",
@@ -69,6 +75,7 @@ def map_event_semantics(row: DefenseAuditEventRow) -> EventSemantics:
             ("serverDecision", "action"),
             ("action",),
         ),
+        )
     )
     latest_tier = _find_string(
         row.payload,

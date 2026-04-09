@@ -1,3 +1,5 @@
+import base64
+import json
 import os
 import uuid
 
@@ -6,9 +8,10 @@ from fastapi.testclient import TestClient
 
 os.environ.setdefault("CI", "true")
 
-from traffic_master_ai.defense.api.main import _decision_engine, _state_store, app
+import traffic_master_ai.defense.api.main as api_main
+from traffic_master_ai.defense.api.main import _decision_engine, _state_store
 
-client = TestClient(app)
+client = TestClient(api_main.app)
 MATCH_ID = 687
 
 
@@ -16,8 +19,30 @@ def _headers(session_id: str) -> dict[str, str]:
     return {"X-Session-Id": session_id}
 
 
+def _encode_test_jwt(payload: dict[str, str]) -> str:
+    def _b64url(data: dict[str, str]) -> str:
+        raw = json.dumps(data, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
+
+    return f"{_b64url({'alg': 'none', 'typ': 'JWT'})}.{_b64url(payload)}."
+
+
+def _decode_test_jwt(token: str, options=None) -> dict[str, str]:
+    del options
+    parts = token.split(".")
+    if len(parts) < 2:
+        return {}
+    padded = parts[1] + "=" * (-len(parts[1]) % 4)
+    return json.loads(base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8"))
+
+
 def _headers_with_authorization(session_id: str, auth_sid: str) -> dict[str, str]:
-    token = jwt.encode({"sid": auth_sid}, "test-secret-that-is-long-enough-32b", algorithm="HS256")
+    encode = getattr(jwt, "encode", None)
+    if callable(encode):
+        token = encode({"sid": auth_sid}, "test-secret-that-is-long-enough-32b", algorithm="HS256")
+    else:
+        token = _encode_test_jwt({"sid": auth_sid})
+        api_main.jwt = type("JWTStub", (), {"decode": staticmethod(_decode_test_jwt)})()
     return {
         "X-Session-Id": session_id,
         "Authorization": f"Bearer {token}",
@@ -769,7 +794,7 @@ def test_ai_precheck_clears_sid_level_vqa_pass_marker_for_new_booking_attempt() 
     session_id = _session_id("sess-ai-precheck-sid-reset")
     marked = client.post(
         "/runtime/vqa/mark",
-        json={"session_id": session_id, "vqa_passed": True, "flow_state": "S4"},
+        json={"session_id": session_id, "vqa_passed": True, "flow_state": "F3"},
     )
     assert marked.status_code == 200
     assert marked.json()["vqa_passed"] is True

@@ -117,6 +117,11 @@ from .models import (
     RuntimeVqaMarkRequest,
     RuntimeVqaMarkResponse,
 )
+from .runtime_flow_state import (
+    d0_flow_state_to_runtime,
+    runtime_flow_state_to_d0,
+    target_event_to_runtime_flow_state,
+)
 from .state import build_runtime_store_from_env
 
 # Custom Prometheus Metrics
@@ -699,7 +704,7 @@ async def ai_challenge_start(
     _remember_runtime_user_id(session_id=sid, user_id=user_id, now_ms=now_ms)
     start_req = ChallengeStartRequest(
         session_id=state_key,
-        flow_state="S3",
+        flow_state="F2",
         challenge_type="catch_ball",
     )
     resp = await _start_challenge_internal(start_req)
@@ -861,7 +866,7 @@ async def ai_challenge_verify(
 
     if passed:
         remaining = max(snap.vqa_retry_limit - snap.vqa_attempt_count, 0)
-        next_flow = "S4" if snap.flow_state == "S3" else snap.flow_state
+        next_flow = snap.flow_state
         pass_update = {
             "flow_state": next_flow,
             "vqa_required": False,
@@ -1000,7 +1005,7 @@ async def runtime_mark_vqa(req: RuntimeVqaMarkRequest) -> RuntimeVqaMarkResponse
     snap = _state_store.get(req.session_id) or RuntimeStateSnapshot(updated_ts_ms=now_ms)
 
     if req.vqa_passed:
-        next_flow = req.flow_state or ("S4" if snap.flow_state == "S3" else snap.flow_state)
+        next_flow = req.flow_state or snap.flow_state
         next_snap = snap.model_copy(
             update={
                 "flow_state": next_flow,
@@ -1049,7 +1054,7 @@ def _reset_match_state_for_new_booking_attempt(
 ) -> RuntimeStateSnapshot:
     return snap.model_copy(
         update={
-            "flow_state": "S0",
+            "flow_state": "F0",
             "defense_tier": "T0",
             "risk_score": 0.0,
             "challenge_fail_count": 0,
@@ -1089,7 +1094,7 @@ def _reset_sid_level_vqa_state(
         sid,
         snap.model_copy(
             update={
-                "flow_state": "S0",
+                "flow_state": "F0",
                 "updated_ts_ms": now_ms,
                 "user_id": user_id or snap.user_id,
                 "vqa_required": True,
@@ -1127,7 +1132,7 @@ def _hydrate_match_state_from_sid_vqa_mark(
     if sid_snap is None or not sid_snap.vqa_passed:
         return snap
 
-    next_flow = sid_snap.flow_state if sid_snap.flow_state != "S0" else snap.flow_state
+    next_flow = sid_snap.flow_state if sid_snap.flow_state != "F0" else snap.flow_state
     promoted = snap.model_copy(
         update={
             "flow_state": next_flow,
@@ -1519,15 +1524,7 @@ def _summary_to_legacy_features(summary: dict[str, float]) -> Optional[EvaluateT
 
 
 def _target_event_to_flow_state(event_type: str) -> str:
-    mapping = {
-        "QUEUE_ENTER": "S2",
-        "SEAT_ENTRY": "S3",
-        "RECOMMENDATION_BLOCKS": "S4",
-        "SECTION_BLOCKS": "S4",
-        "ASSIGN_HOLD": "S5",
-        "SEAT_HOLDS": "S5",
-    }
-    return mapping.get(event_type, "S0")
+    return target_event_to_runtime_flow_state(event_type)
 
 
 def _normalize(value: float, lower: float, upper: float) -> float:
@@ -1688,7 +1685,7 @@ def _decision_engine_runtime_overlay(
         return {}
 
     return {
-        "flow_state": d0_state.flow_state.value,
+        "flow_state": d0_flow_state_to_runtime(d0_state.flow_state),
         "defense_tier": d0_state.defense_tier.value,
         "risk_score": float(d0_state.risk_score),
         "challenge_fail_count": int(d0_state.challenge_fail_count),
@@ -1847,7 +1844,7 @@ def _legacy_response_from_d0(
     return EvaluateResponse(
         allow=bool(orchestrated.allow),
         session_id=req.session_id,
-        flow_state=flow_state_value,  # type: ignore[arg-type]
+        flow_state=d0_flow_state_to_runtime(flow_state_value),  # type: ignore[arg-type]
         defense_tier=decision.tier.value,  # type: ignore[arg-type]
         action=action,  # type: ignore[arg-type]
         actions=[action],  # type: ignore[list-item]
@@ -1886,7 +1883,7 @@ def _legacy_snapshot_from_d0_state(
         last_result = "FAILED"
 
     return RuntimeStateSnapshot(
-        flow_state=d0_state.flow_state.value,  # type: ignore[arg-type]
+        flow_state=d0_flow_state_to_runtime(d0_state.flow_state),  # type: ignore[arg-type]
         defense_tier=d0_state.defense_tier.value,  # type: ignore[arg-type]
         risk_score=float(d0_state.risk_score),
         challenge_fail_count=int(d0_state.challenge_fail_count),
@@ -1978,13 +1975,7 @@ def _legacy_headers_from_d0(
 
 
 def _to_d0_flow_state(value: Optional[str]) -> D0FlowState:
-    if value is None:
-        return D0FlowState.S0
-    normalized = {"S4R": "S4", "S5R": "S5"}.get(value, value)
-    try:
-        return D0FlowState(normalized)
-    except ValueError:
-        return D0FlowState.S0
+    return runtime_flow_state_to_d0(value)
 
 
 def _to_api_category(method: str) -> str:

@@ -194,7 +194,7 @@ def test_queue_enter_precheck_block_emits_canonical_audit(tmp_path, monkeypatch)
     row = rows[0]
     assert row["event_type"] == "EVALUATE"
     assert row["session_id"] == f"{sid}:{MATCH_ID}"
-    assert row["flow_state"] == "S2"
+    assert row["flow_state"] == "F1"
     assert row["action"] == "BLOCK"
     assert row["reason_code"] == "PRECHECK_REQUIRED"
     assert row["raw_payload"]["decision_source"] == "target_api_early_return"
@@ -211,7 +211,7 @@ def test_seat_entry_immediate_return_emits_canonical_audit(tmp_path, monkeypatch
     api_main._state_store.upsert(
         state_key,
         RuntimeStateSnapshot(
-            flow_state="S2",
+            flow_state="F1",
             policy_version="policy-seat-entry",
             vqa_passed=False,
         ),
@@ -233,7 +233,7 @@ def test_seat_entry_immediate_return_emits_canonical_audit(tmp_path, monkeypatch
     row = rows[0]
     assert row["event_type"] == "EVALUATE"
     assert row["action"] == "REQUIRE_S3"
-    assert row["flow_state"] == "S3"
+    assert row["flow_state"] == "F2"
     assert row["reason_code"] == "SEAT_ENTRY_VQA_REQUIRED"
     assert row["policy_version"] == "policy-seat-entry"
     assert row["raw_payload"]["decision_reason"] == "seat_entry_immediate"
@@ -249,7 +249,7 @@ def test_soft_action_early_return_emits_canonical_audit(tmp_path, monkeypatch) -
     api_main._state_store.upsert(
         state_key,
         RuntimeStateSnapshot(
-            flow_state="S4",
+            flow_state="F3",
             policy_version="policy-soft-action",
             latest_seat_stage_summary={
                 "mousePointCount": 4,
@@ -274,7 +274,7 @@ def test_soft_action_early_return_emits_canonical_audit(tmp_path, monkeypatch) -
     row = rows[0]
     assert row["event_type"] == "EVALUATE"
     assert row["action"] == "THROTTLE"
-    assert row["flow_state"] == "S5"
+    assert row["flow_state"] == "F4M"
     assert row["reason_code"] == "TARGET_SOFT_ACTION"
     assert row["policy_version"] == "policy-soft-action"
     assert row["raw_payload"]["decision_reason"] == "soft_action"
@@ -326,7 +326,7 @@ def test_legacy_challenge_action_does_not_emit_require_s3(monkeypatch) -> None:
             EvaluateResponse(
                 allow=False,
                 session_id=f"{sid}:{MATCH_ID}",
-                flow_state="S2",
+                flow_state="F1",
                 defense_tier="T1",
                 action="CHALLENGE",
                 actions=["CHALLENGE"],
@@ -365,7 +365,7 @@ def test_post_vqa_guard_is_bypassed_after_vqa_pass(monkeypatch) -> None:
     captured: list[dict[str, str | None]] = []
     marked = client.post(
         "/runtime/vqa/mark",
-        json={"session_id": state_key, "vqa_passed": True, "flow_state": "S4"},
+        json={"session_id": state_key, "vqa_passed": True, "flow_state": "F3"},
     )
     assert marked.status_code == 200
     assert marked.json()["vqa_passed"] is True
@@ -378,7 +378,7 @@ def test_post_vqa_guard_is_bypassed_after_vqa_pass(monkeypatch) -> None:
             EvaluateResponse(
                 allow=True,
                 session_id=state_key,
-                flow_state="S4",
+                flow_state="F3",
                 defense_tier="T0",
                 action="NONE",
                 actions=["NONE"],
@@ -416,7 +416,7 @@ def test_post_vqa_guard_uses_sid_level_vqa_mark(monkeypatch) -> None:
     state_key = f"{sid}:{MATCH_ID}"
     marked = client.post(
         "/runtime/vqa/mark",
-        json={"session_id": sid, "vqa_passed": True, "flow_state": "S4"},
+        json={"session_id": sid, "vqa_passed": True, "flow_state": "F3"},
     )
     assert marked.status_code == 200
     assert marked.json()["vqa_passed"] is True
@@ -426,7 +426,7 @@ def test_post_vqa_guard_uses_sid_level_vqa_mark(monkeypatch) -> None:
             EvaluateResponse(
                 allow=True,
                 session_id=state_key,
-                flow_state="S4",
+                flow_state="F3",
                 defense_tier="T0",
                 action="NONE",
                 actions=["NONE"],
@@ -479,7 +479,7 @@ def test_legacy_block_forwards_user_id_to_decision_engine(monkeypatch) -> None:
             EvaluateResponse(
                 allow=False,
                 session_id=state_key,
-                flow_state="S2",
+                flow_state="F1",
                 defense_tier="T3",
                 action="BLOCK",
                 actions=["BLOCK"],
