@@ -61,6 +61,17 @@ def _state_key(session_id: str) -> str:
     return f"{session_id}:{MATCH_ID}"
 
 
+def _vqa_events() -> list[dict[str, float | int | str]]:
+    return [
+        {"type": "mousemove", "tsMs": 0, "xNorm": 0.10, "yNorm": 0.50},
+        {"type": "mousemove", "tsMs": 80, "xNorm": 0.18, "yNorm": 0.53},
+        {"type": "mousemove", "tsMs": 170, "xNorm": 0.27, "yNorm": 0.47},
+        {"type": "mousemove", "tsMs": 280, "xNorm": 0.35, "yNorm": 0.55},
+        {"type": "mousemove", "tsMs": 410, "xNorm": 0.44, "yNorm": 0.48},
+        {"type": "mousemove", "tsMs": 560, "xNorm": 0.52, "yNorm": 0.52},
+    ]
+
+
 def test_ai_challenge_start_returns_target_contract() -> None:
     session_id = _session_id("sess-ai-start")
     response = client.post(
@@ -106,7 +117,7 @@ def test_ai_challenge_verify_retries_then_blocks() -> None:
     body_1 = verify_1.json()
     assert body_1["success"] is False
     assert body_1["remainingAttempts"] == 2
-    assert body_1["reason"] == "challenge_fail"
+    assert body_1["reason"] == "missing_vqa_telemetry"
 
     verify_2 = client.post(
         "/ai/challenge/verify",
@@ -124,7 +135,7 @@ def test_ai_challenge_verify_retries_then_blocks() -> None:
     body_2 = verify_2.json()
     assert body_2["success"] is False
     assert body_2["remainingAttempts"] == 1
-    assert body_2["reason"] == "challenge_fail"
+    assert body_2["reason"] == "missing_vqa_telemetry"
 
     verify_3 = client.post(
         "/ai/challenge/verify",
@@ -142,7 +153,7 @@ def test_ai_challenge_verify_retries_then_blocks() -> None:
     body_3 = verify_3.json()
     assert body_3["success"] is False
     assert body_3["remainingAttempts"] == 0
-    assert body_3["reason"] == "max_attempts"
+    assert body_3["reason"] == "missing_vqa_telemetry"
 
     runtime = client.get(f"/runtime/{_state_key(session_id)}")
     assert runtime.status_code == 200
@@ -150,6 +161,42 @@ def test_ai_challenge_verify_retries_then_blocks() -> None:
     assert runtime_body["vqa_last_result"] == "BLOCKED"
     assert runtime_body["vqa_passed"] is False
     assert runtime_body["active_challenge_id"] is None
+
+
+def test_ai_challenge_verify_missing_vqa_telemetry_fails_and_records_risk() -> None:
+    session_id = _session_id("sess-ai-verify-missing-telemetry")
+    state_key = _state_key(session_id)
+    start = client.post(
+        "/ai/challenge/start",
+        json={"matchId": MATCH_ID},
+        headers=_headers(session_id),
+    )
+    assert start.status_code == 200
+    challenge_id = start.json()["challengeId"]
+
+    verify = client.post(
+        "/ai/challenge/verify",
+        json={
+            "matchId": MATCH_ID,
+            "challengeId": challenge_id,
+            "caught": True,
+            "catchTsMs": 1,
+            "catchXNorm": 0.45,
+            "catchYNorm": 0.55,
+        },
+        headers=_headers(session_id),
+    )
+    assert verify.status_code == 200
+    body = verify.json()
+    assert body["success"] is False
+    assert body["reason"] == "missing_vqa_telemetry"
+
+    runtime = client.get(f"/runtime/{state_key}")
+    assert runtime.status_code == 200
+    runtime_body = runtime.json()
+    assert runtime_body["vqa_passed"] is False
+    assert runtime_body["risk_score"] > 0.0
+    assert runtime_body["last_step_risk"] is not None
 
 
 def test_ai_challenge_verify_success_marks_runtime_passed() -> None:
@@ -161,6 +208,17 @@ def test_ai_challenge_verify_success_marks_runtime_passed() -> None:
     )
     assert start.status_code == 200
     challenge_id = start.json()["challengeId"]
+
+    ingest = client.post(
+        "/ai/telemetry/ingest",
+        json={
+            "matchId": MATCH_ID,
+            "stage": "VQA_CHALLENGE",
+            "events": _vqa_events(),
+        },
+        headers=_headers(session_id),
+    )
+    assert ingest.status_code == 200
 
     verify = client.post(
         "/ai/challenge/verify",
@@ -215,6 +273,17 @@ def test_ai_challenge_verify_success_on_last_remaining_attempt_does_not_block() 
         assert verify_fail.status_code == 200
         assert verify_fail.json()["success"] is False
 
+    ingest = client.post(
+        "/ai/telemetry/ingest",
+        json={
+            "matchId": MATCH_ID,
+            "stage": "VQA_CHALLENGE",
+            "events": _vqa_events(),
+        },
+        headers=_headers(session_id),
+    )
+    assert ingest.status_code == 200
+
     verify_pass = client.post(
         "/ai/challenge/verify",
         json={
@@ -256,14 +325,7 @@ def test_ai_challenge_verify_pass_applies_vqa_risk_and_seat_entry_does_not_recom
         json={
             "matchId": MATCH_ID,
             "stage": "VQA_CHALLENGE",
-            "events": [
-                {"type": "mousemove", "tsMs": 0, "xNorm": 0.10, "yNorm": 0.50},
-                {"type": "mousemove", "tsMs": 80, "xNorm": 0.18, "yNorm": 0.53},
-                {"type": "mousemove", "tsMs": 170, "xNorm": 0.27, "yNorm": 0.47},
-                {"type": "mousemove", "tsMs": 280, "xNorm": 0.35, "yNorm": 0.55},
-                {"type": "mousemove", "tsMs": 410, "xNorm": 0.44, "yNorm": 0.48},
-                {"type": "mousemove", "tsMs": 560, "xNorm": 0.52, "yNorm": 0.52},
-            ],
+            "events": _vqa_events(),
         },
         headers=_headers(session_id),
     )
@@ -288,6 +350,7 @@ def test_ai_challenge_verify_pass_applies_vqa_risk_and_seat_entry_does_not_recom
     assert runtime_before.status_code == 200
     risk_before = runtime_before.json()["risk_score"]
     assert risk_before > 0.0
+    assert runtime_before.json()["last_step_risk"] is not None
 
     seat_entry = client.post(
         "/ai/evaluate",
@@ -324,14 +387,7 @@ def test_ai_challenge_verify_pass_with_user_header_does_not_500() -> None:
         json={
             "matchId": MATCH_ID,
             "stage": "VQA_CHALLENGE",
-            "events": [
-                {"type": "mousemove", "tsMs": 0, "xNorm": 0.10, "yNorm": 0.50},
-                {"type": "mousemove", "tsMs": 80, "xNorm": 0.18, "yNorm": 0.53},
-                {"type": "mousemove", "tsMs": 170, "xNorm": 0.27, "yNorm": 0.47},
-                {"type": "mousemove", "tsMs": 280, "xNorm": 0.35, "yNorm": 0.55},
-                {"type": "mousemove", "tsMs": 410, "xNorm": 0.44, "yNorm": 0.48},
-                {"type": "mousemove", "tsMs": 560, "xNorm": 0.52, "yNorm": 0.52},
-            ],
+            "events": _vqa_events(),
         },
         headers=headers,
     )
@@ -368,14 +424,7 @@ def test_ai_challenge_verify_pass_survives_runtime_policy_sync_failure(monkeypat
         json={
             "matchId": MATCH_ID,
             "stage": "VQA_CHALLENGE",
-            "events": [
-                {"type": "mousemove", "tsMs": 0, "xNorm": 0.10, "yNorm": 0.50},
-                {"type": "mousemove", "tsMs": 80, "xNorm": 0.18, "yNorm": 0.53},
-                {"type": "mousemove", "tsMs": 170, "xNorm": 0.27, "yNorm": 0.47},
-                {"type": "mousemove", "tsMs": 280, "xNorm": 0.35, "yNorm": 0.55},
-                {"type": "mousemove", "tsMs": 410, "xNorm": 0.44, "yNorm": 0.48},
-                {"type": "mousemove", "tsMs": 560, "xNorm": 0.52, "yNorm": 0.52},
-            ],
+            "events": _vqa_events(),
         },
         headers=_headers(session_id),
     )
@@ -433,14 +482,7 @@ def test_ai_challenge_verify_pass_refreshes_anonymous_session_ttl() -> None:
         json={
             "matchId": MATCH_ID,
             "stage": "VQA_CHALLENGE",
-            "events": [
-                {"type": "mousemove", "tsMs": 0, "xNorm": 0.10, "yNorm": 0.50},
-                {"type": "mousemove", "tsMs": 80, "xNorm": 0.18, "yNorm": 0.53},
-                {"type": "mousemove", "tsMs": 170, "xNorm": 0.27, "yNorm": 0.47},
-                {"type": "mousemove", "tsMs": 280, "xNorm": 0.35, "yNorm": 0.55},
-                {"type": "mousemove", "tsMs": 410, "xNorm": 0.44, "yNorm": 0.48},
-                {"type": "mousemove", "tsMs": 560, "xNorm": 0.52, "yNorm": 0.52},
-            ],
+            "events": _vqa_events(),
         },
         headers=_headers(session_id),
     )
@@ -545,15 +587,26 @@ def test_ai_challenge_verify_pass_survives_sid_source_drift() -> None:
     verify_headers = {
         "Authorization": start_headers["Authorization"],
     }
+    ingest = client.post(
+        "/ai/telemetry/ingest",
+        json={
+            "matchId": MATCH_ID,
+            "stage": "VQA_CHALLENGE",
+            "events": _vqa_events(),
+        },
+        headers=verify_headers,
+    )
+    assert ingest.status_code == 200
+
     verify = client.post(
         "/ai/challenge/verify",
         json={
             "matchId": MATCH_ID,
             "challengeId": challenge_id,
             "caught": True,
-            "catchTsMs": 1,
-            "catchXNorm": 0.45,
-            "catchYNorm": 0.55,
+            "catchTsMs": 560,
+            "catchXNorm": 0.52,
+            "catchYNorm": 0.52,
         },
         headers=verify_headers,
     )

@@ -133,6 +133,8 @@ class RuntimeStateSnapshot(BaseModel):
     flow_state: FlowStateStr = "F0"
     defense_tier: DefenseTierStr = "T0"
     risk_score: float = 0.0
+    last_step_risk: float | None = None
+    last_guard_ts_ms: int | None = None
     challenge_fail_count: int = 0
     seat_taken_streak: int = 0
     hold_fail_streak: int = 0
