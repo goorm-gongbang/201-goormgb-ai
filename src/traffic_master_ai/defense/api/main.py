@@ -122,8 +122,8 @@ from .state import build_runtime_store_from_env
 # Custom Prometheus Metrics
 EVALUATE_REQUESTS = Counter(
     "ai_defense_evaluate_total",
-    "Total evaluate requests by decision",
-    ["decision"],
+    "Total evaluate requests by decision and stage",
+    ["decision", "stage"],
 )
 
 PRECHECK_REQUESTS = Counter(
@@ -562,7 +562,9 @@ async def ai_evaluate(
         now_ms=now_ms,
     )
 
-    if req.event.event_type == "QUEUE_ENTER" and not _precheck_is_valid(snap, now_ms):
+    event_type = req.event.event_type
+
+    if event_type == "QUEUE_ENTER" and not _precheck_is_valid(snap, now_ms):
         return _build_evaluate_response(
             background_tasks=background_tasks,
             action="BLOCK",
@@ -580,9 +582,10 @@ async def ai_evaluate(
                 "precheck_valid": False,
                 "decision_reason": "precheck_block",
             },
+            stage=event_type,
         )
 
-    if req.event.event_type == "SEAT_ENTRY":
+    if event_type == "SEAT_ENTRY":
         if not snap.vqa_passed:
             return _build_evaluate_response(
                 background_tasks=background_tasks,
@@ -600,6 +603,7 @@ async def ai_evaluate(
                     "decision_reason": "seat_entry_immediate",
                     "vqa_passed": False,
                 },
+                stage=event_type,
             )
         return _build_evaluate_response(
             background_tasks=background_tasks,
@@ -617,9 +621,10 @@ async def ai_evaluate(
                 "decision_reason": "seat_entry_immediate",
                 "vqa_passed": True,
             },
+            stage=event_type,
         )
 
-    soft_action = _feature_soft_action(event_type=req.event.event_type, snap=snap)
+    soft_action = _feature_soft_action(event_type=event_type, snap=snap)
     if soft_action is not None:
         return _build_evaluate_response(
             background_tasks=background_tasks,
@@ -641,22 +646,23 @@ async def ai_evaluate(
                     else snap.latest_seat_stage_summary
                 ),
             },
+            stage=event_type,
         )
 
     legacy_req = _build_legacy_request_from_target(
         state_key=state_key,
         trace_id=trace_id,
         user_id=user_id,
-        event_type=req.event.event_type,
+        event_type=event_type,
         request_path=req.event.request_path,
         request_method=req.event.request_method,
         now_ms=now_ms,
         snap=snap,
     )
- 
+
     legacy_resp, _ = await run_in_threadpool(_execute_legacy_evaluate, legacy_req)
     action = _target_action_from_legacy(legacy_resp.action)
-    if req.event.event_type == "QUEUE_ENTER" and action == "REQUIRE_S3":
+    if event_type == "QUEUE_ENTER" and action == "REQUIRE_S3":
         action = "THROTTLE"
     return _build_evaluate_response(
         background_tasks=background_tasks,
@@ -665,6 +671,7 @@ async def ai_evaluate(
         session_id=state_key,
         trace_id=trace_id,
         block_trigger="ai_evaluate_decision_block",
+        stage=event_type,
     )
 
 
@@ -1349,6 +1356,9 @@ def _build_evaluate_response(
             policy_version=runtime_state.policy_version,
             raw_payload=audit_payload,
         )
+    stage: str = "unknown",
+) -> AiEvaluateResponse:
+    EVALUATE_REQUESTS.labels(decision=action, stage=stage).inc()
     if action == "BLOCK":
         background_tasks.add_task(
             _block_user_in_auth_guard,
