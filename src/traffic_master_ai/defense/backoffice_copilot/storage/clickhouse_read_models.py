@@ -42,6 +42,13 @@ class ClickHouseMatchRollupQuery:
 
 
 @dataclass(slots=True, frozen=True)
+class OfflineMetricsQuery:
+    window_start_ms: int
+    window_end_ms: int
+    limit: int | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class ClickHouseSessionRollupRow:
     """Task 3 minimum row contract for `defense_session_rollups`."""
 
@@ -106,6 +113,38 @@ class BackofficeClickHouseReadModelInput:
     candidate_rows: tuple[ClickHousePostReviewCandidateRow, ...] = field(default_factory=tuple)
 
 
+@dataclass(slots=True, frozen=True)
+class OfflineMetricsSnapshot:
+    window_start_ms: int
+    window_end_ms: int
+    events_total: int
+    unique_sessions: int
+    unique_traces: int
+    event_counts_by_type: Mapping[str, int] = field(default_factory=dict)
+    tier_distribution: Mapping[str, int] = field(default_factory=dict)
+    action_distribution: Mapping[str, int] = field(default_factory=dict)
+    block_rate: float = 0.0
+    require_s3_rate: float = 0.0
+    throttle_applied_rate: float = 0.0
+    avg_throttle_delay_ms: float = 0.0
+    s3_pass_rate: float = 0.0
+    s3_fail_rate: float = 0.0
+    s3_temp_lock_rate: float = 0.0
+    dedup_duplicate_rate: float = 0.0
+    missing_feature_rate: float = 0.0
+    latest_policy_version: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class OfflineTraceSample:
+    ts_ms: int
+    trace_id: str
+    session_id: str | None = None
+    event_type: str | None = None
+    reason_code: str | None = None
+    policy_version: str | None = None
+
+
 def validate_clickhouse_session_rollup_query(
     query: ClickHouseSessionRollupQuery,
 ) -> ClickHouseSessionRollupQuery:
@@ -135,6 +174,14 @@ def validate_clickhouse_match_rollup_query(
 
     _ensure_window(query.window_start_ms, query.window_end_ms)
     _ensure_match_ids(query.match_ids)
+    _ensure_limit(query.limit)
+    return query
+
+
+def validate_offline_metrics_query(
+    query: OfflineMetricsQuery,
+) -> OfflineMetricsQuery:
+    _ensure_window(query.window_start_ms, query.window_end_ms)
     _ensure_limit(query.limit)
     return query
 
@@ -268,6 +315,44 @@ def parse_clickhouse_post_review_candidate_row(
     return parsed
 
 
+def validate_offline_metrics_snapshot(
+    snapshot: OfflineMetricsSnapshot,
+) -> OfflineMetricsSnapshot:
+    _ensure_window(snapshot.window_start_ms, snapshot.window_end_ms)
+    _ensure_non_negative_int(snapshot.events_total, "events_total")
+    _ensure_non_negative_int(snapshot.unique_sessions, "unique_sessions")
+    _ensure_non_negative_int(snapshot.unique_traces, "unique_traces")
+    _ensure_count_mapping(snapshot.event_counts_by_type, "event_counts_by_type")
+    _ensure_count_mapping(snapshot.tier_distribution, "tier_distribution")
+    _ensure_count_mapping(snapshot.action_distribution, "action_distribution")
+    for field_name in (
+        "block_rate",
+        "require_s3_rate",
+        "throttle_applied_rate",
+        "avg_throttle_delay_ms",
+        "s3_pass_rate",
+        "s3_fail_rate",
+        "s3_temp_lock_rate",
+        "dedup_duplicate_rate",
+        "missing_feature_rate",
+    ):
+        _ensure_non_negative_float(getattr(snapshot, field_name), field_name)
+    _ensure_nullable_text(snapshot.latest_policy_version, "latest_policy_version")
+    return snapshot
+
+
+def validate_offline_trace_sample(
+    sample: OfflineTraceSample,
+) -> OfflineTraceSample:
+    _ensure_non_negative_int(sample.ts_ms, "ts_ms")
+    _ensure_required_text(sample.trace_id, "trace_id")
+    _ensure_nullable_text(sample.session_id, "session_id")
+    _ensure_nullable_text(sample.event_type, "event_type")
+    _ensure_nullable_text(sample.reason_code, "reason_code")
+    _ensure_nullable_text(sample.policy_version, "policy_version")
+    return sample
+
+
 def serialize_clickhouse_session_rollup_query(
     query: ClickHouseSessionRollupQuery,
 ) -> dict[str, object]:
@@ -306,6 +391,17 @@ def serialize_clickhouse_post_review_candidate_query(
         "window_start_ms": validated.window_start_ms,
         "window_end_ms": validated.window_end_ms,
         "session_ids": validated.session_ids,
+        "limit": validated.limit,
+    }
+
+
+def serialize_offline_metrics_query(
+    query: OfflineMetricsQuery,
+) -> dict[str, object]:
+    validated = validate_offline_metrics_query(query)
+    return {
+        "window_start_ms": validated.window_start_ms,
+        "window_end_ms": validated.window_end_ms,
         "limit": validated.limit,
     }
 
@@ -363,6 +459,16 @@ def _ensure_limit(value: object) -> int | None:
     return value
 
 
+def _ensure_count_mapping(value: Mapping[str, int], field_name: str) -> dict[str, int]:
+    validated: dict[str, int] = {}
+    if not isinstance(value, Mapping):
+        raise StorageValidationError(f"{field_name} must be a mapping.")
+    for raw_key, raw_count in value.items():
+        key = _ensure_required_text(raw_key, f"{field_name}.key")
+        validated[key] = _ensure_non_negative_int(raw_count, f"{field_name}[{key}]")
+    return validated
+
+
 def _ensure_int(value: object, field_name: str) -> int:
     if isinstance(value, str):
         stripped = value.strip()
@@ -379,6 +485,15 @@ def _ensure_int(value: object, field_name: str) -> int:
 
 def _ensure_non_negative_int(value: object, field_name: str) -> int:
     validated = _ensure_int(value, field_name)
+    if validated < 0:
+        raise StorageValidationError(f"{field_name} must be non-negative.")
+    return validated
+
+
+def _ensure_non_negative_float(value: object, field_name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise StorageValidationError(f"{field_name} must be a non-negative float.")
+    validated = float(value)
     if validated < 0:
         raise StorageValidationError(f"{field_name} must be non-negative.")
     return validated

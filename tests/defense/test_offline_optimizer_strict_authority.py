@@ -5,6 +5,11 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
+from traffic_master_ai.defense.backoffice_copilot.storage.clickhouse_read_models import (
+    OfflineMetricsQuery,
+    OfflineMetricsSnapshot,
+    OfflineTraceSample,
+)
 from traffic_master_ai.defense.backoffice_copilot.storage.policy_control_plane_models import (
     PolicyOptimizationRunRecord,
     PolicyRolloutEventRecord,
@@ -83,19 +88,20 @@ class _FakePolicyOptimizationRunRepository:
         self.records[record.run_id] = record
 
 
-class _FakeWarehouse:
-    def __init__(self, rows: list[dict[str, object]] | None = None) -> None:
-        self._rows = list(rows or [])
+class _FakeOfflineMetricsRepository:
+    def read_metrics(self, query: OfflineMetricsQuery) -> OfflineMetricsSnapshot:
+        return OfflineMetricsSnapshot(
+            window_start_ms=query.window_start_ms,
+            window_end_ms=query.window_end_ms,
+            events_total=0,
+            unique_sessions=0,
+            unique_traces=0,
+            latest_policy_version=None,
+        )
 
-    def read_all(self) -> list[dict[str, object]]:
-        return list(self._rows)
-
-    def query(self, **kwargs: object) -> list[dict[str, object]]:
-        limit = kwargs.get("limit")
-        rows = list(self._rows)
-        if isinstance(limit, int) and limit >= 0:
-            return rows[:limit]
-        return rows
+    def read_trace_samples(self, query: OfflineMetricsQuery) -> tuple[OfflineTraceSample, ...]:
+        del query
+        return ()
 
 
 class _NoProposalEffectEvaluator:
@@ -164,7 +170,7 @@ class OfflineOptimizerStrictAuthorityTests(unittest.TestCase):
             strict_authority=True,
         )
         optimizer = OfflineOptimizer(
-            warehouse=_FakeWarehouse(),
+            metrics_repository=_FakeOfflineMetricsRepository(),
             policy_loader=loader,
             authority_service=authority,
             audit_summarizer=_NoSummaryAuditSummarizer(),
@@ -219,7 +225,7 @@ class OfflineOptimizerStrictAuthorityTests(unittest.TestCase):
         )
         loader = PolicyLoader(store=InMemoryPolicyStore(), cache_seconds=0)
         optimizer = OfflineOptimizer(
-            warehouse=_FakeWarehouse(),
+            metrics_repository=_FakeOfflineMetricsRepository(),
             policy_loader=loader,
             effect_evaluator=_NoProposalEffectEvaluator(),
             audit_summarizer=_NoSummaryAuditSummarizer(),

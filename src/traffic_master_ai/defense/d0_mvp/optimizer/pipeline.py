@@ -10,6 +10,11 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Protocol
 from uuid import uuid4
 
+from ...backoffice_copilot.storage.clickhouse_read_models import (
+    OfflineMetricsQuery,
+    OfflineMetricsSnapshot,
+    OfflineTraceSample,
+)
 from ...backoffice_copilot.storage.policy_control_plane_models import (
     PolicyOptimizationRunRecord,
     PolicyRolloutEventRecord,
@@ -17,8 +22,6 @@ from ...backoffice_copilot.storage.policy_control_plane_models import (
     PolicyVersionRecord,
 )
 from ..core.constants import OFFLINE_LLM_MAX_SAMPLE_TRACES, OFFLINE_OPT_AUDIT_FILENAME
-from ..observability.dashboard import AdminDashboardService
-from ..observability.warehouse import AuditWarehouse
 from ..policy.loader import PolicyLoader, PolicyStore, snapshot_to_document
 from ..policy.snapshot import PolicySnapshot
 from .audit_summarizer import AuditSummarizer
@@ -57,13 +60,27 @@ class PolicyAuthorityService(Protocol):
         ...
 
 
+class OfflineMetricsRepository(Protocol):
+    def read_metrics(
+        self,
+        query: OfflineMetricsQuery,
+    ) -> OfflineMetricsSnapshot:
+        ...
+
+    def read_trace_samples(
+        self,
+        query: OfflineMetricsQuery,
+    ) -> tuple[OfflineTraceSample, ...]:
+        ...
+
+
 class OfflineOptimizer:
     """Collect -> propose -> validate -> rollout helper."""
 
     def __init__(
         self,
         *,
-        warehouse: AuditWarehouse,
+        metrics_repository: OfflineMetricsRepository,
         policy_loader: PolicyLoader,
         validator: Optional[ProposalValidator] = None,
         effect_evaluator: Optional[EffectEvaluator] = None,
@@ -73,8 +90,7 @@ class OfflineOptimizer:
         rollout_id: str = _OFFLINE_OPTIMIZER_ROLLOUT_ID,
         audit_file: str = OFFLINE_OPT_AUDIT_FILENAME,
     ) -> None:
-        self._warehouse = warehouse
-        self._dashboard = AdminDashboardService(warehouse)
+        self._metrics_repository = metrics_repository
         self._policy_loader = policy_loader
         self._validator = validator or ProposalValidator()
         self._effect_evaluator = effect_evaluator or EffectEvaluator(validator=self._validator)
@@ -90,55 +106,16 @@ class OfflineOptimizer:
         return self._policy_loader.store
 
     def collect_metrics(self, *, window_seconds: int = 600, now_ms: Optional[int] = None) -> dict[str, Any]:
-        rows = self._warehouse.read_all()
         if now_ms is None:
             now_ms = int(time.time() * 1000)
-        cutoff = now_ms - (window_seconds * 1000)
-        window_rows = [row for row in rows if int(row.get("tsMs", 0)) >= cutoff]
-
-        overview = self._dashboard.overview(window_seconds=window_seconds, now_ms=now_ms)
-        integrity = self._dashboard.integrity(window_seconds=window_seconds, now_ms=now_ms)
-        event_counts: dict[str, int] = {}
-        unique_sessions: set[str] = set()
-        unique_traces: set[str] = set()
-        for row in window_rows:
-            event_type = str(row.get("eventType", "UNKNOWN"))
-            event_counts[event_type] = event_counts.get(event_type, 0) + 1
-            session_id = row.get("sessionId")
-            trace_id = row.get("traceId")
-            if session_id:
-                unique_sessions.add(str(session_id))
-            if trace_id:
-                unique_traces.add(str(trace_id))
-
-        s3_total = sum(overview["s3PassFail"].values())
-        s3_pass_rate = _safe_rate(overview["s3PassFail"].get("PASS", 0), s3_total)
-        s3_fail_rate = _safe_rate(overview["s3PassFail"].get("FAIL", 0), s3_total)
-
-        return {
-            "window_start_ms": cutoff,
-            "window_end_ms": now_ms,
-            "policy_version": self._dashboard.policy_status().get("latestPolicyVersion") or PolicySnapshot().policy_version,
-            "events_total": len(window_rows),
-            "unique_sessions": len(unique_sessions),
-            "unique_traces": len(unique_traces),
-            "event_counts_by_type": event_counts,
-            "tier_distribution": overview["tierDistribution"],
-            "action_distribution": overview["actionDistribution"],
-            "block_rate": overview["blockRate"],
-            "require_s3_rate": overview["requireS3Rate"],
-            "throttle_applied_rate": overview["throttleAppliedRate"],
-            "avg_throttle_delay_ms": overview["throttleDelayMs"]["avg"],
-            "s3_pass_rate": s3_pass_rate,
-            "s3_fail_rate": s3_fail_rate,
-            "s3_temp_lock_rate": self._dashboard.s3_view(window_seconds=window_seconds, now_ms=now_ms)["temporaryLockRate"],
-            "dedup_duplicate_rate": integrity["dedupDuplicateRate"],
-            "missing_feature_rate": integrity["missingFeatureRate"],
-        }
+        query = self._build_metrics_query(window_seconds=window_seconds, now_ms=now_ms)
+        snapshot = self._metrics_repository.read_metrics(query)
+        return _metrics_snapshot_to_dict(snapshot)
 
     def run_once(self, *, session_id: str = "offline-optimizer", window_seconds: int = 600) -> dict[str, Any]:
         run_started_at = datetime.now(UTC)
-        metrics = self.collect_metrics(window_seconds=window_seconds)
+        now_ms = int(time.time() * 1000)
+        metrics = self.collect_metrics(window_seconds=window_seconds, now_ms=now_ms)
         base_policy = self._policy_loader.load(session_id=session_id)
         metrics_snapshot_id = _metrics_snapshot_id(metrics)
         self._append_audit_event(
@@ -166,7 +143,11 @@ class OfflineOptimizer:
             if proposal_raw is not None and isinstance(proposal_raw, dict)
             else None
         )
-        sampled_traces = self._sample_traces(limit=OFFLINE_LLM_MAX_SAMPLE_TRACES)
+        sampled_traces = self._sample_traces(
+            limit=OFFLINE_LLM_MAX_SAMPLE_TRACES,
+            window_seconds=window_seconds,
+            now_ms=now_ms,
+        )
         summary = self._summarizer.summarize(
             metrics_snapshot=metrics,
             sampled_traces=sampled_traces,
@@ -398,39 +379,34 @@ class OfflineOptimizer:
     def latest_summary(self) -> Optional[dict[str, Any]]:
         return self._summarizer.latest()
 
-    def _sample_traces(self, *, limit: int) -> list[dict[str, Any]]:
-        rows = self._warehouse.query(limit=500)
-        blocked = [row for row in rows if row.get("eventType") == "DEF_BLOCK_ENFORCED"]
-        s3_fail = [
-            row for row in rows
-            if row.get("eventType") == "S3_CHALLENGE_RESULT"
-            and _nested(row, "challenge", "result") == "FAIL"
-        ]
-        slow_throttle = sorted(
-            [row for row in rows if row.get("eventType") == "DEF_THROTTLE_APPLIED"],
-            key=lambda row: int(_nested(row, "throttle", "delayMs") or 0),
-            reverse=True,
+    def _sample_traces(
+        self,
+        *,
+        limit: int,
+        window_seconds: int,
+        now_ms: Optional[int] = None,
+    ) -> list[dict[str, Any]]:
+        if now_ms is None:
+            now_ms = int(time.time() * 1000)
+        query = self._build_metrics_query(
+            window_seconds=window_seconds,
+            now_ms=now_ms,
+            limit=limit,
         )
-        sampled: list[dict[str, Any]] = []
-        for group in (blocked, s3_fail, slow_throttle, rows):
-            for row in group:
-                trace_id = row.get("traceId")
-                if not trace_id:
-                    continue
-                if any(existing.get("traceId") == trace_id for existing in sampled):
-                    continue
-                sampled.append(
-                    {
-                        "traceId": trace_id,
-                        "sessionId": row.get("sessionId"),
-                        "eventType": row.get("eventType"),
-                        "reasonCode": _nested(row, "result", "reasonCode"),
-                        "policyVersion": _nested(row, "serverDecision", "policyVersion"),
-                    }
-                )
-                if len(sampled) >= limit:
-                    return sampled
-        return sampled
+        return [_trace_sample_to_dict(sample) for sample in self._metrics_repository.read_trace_samples(query)]
+
+    def _build_metrics_query(
+        self,
+        *,
+        window_seconds: int,
+        now_ms: int,
+        limit: int | None = None,
+    ) -> OfflineMetricsQuery:
+        return OfflineMetricsQuery(
+            window_start_ms=now_ms - (window_seconds * 1000),
+            window_end_ms=now_ms,
+            limit=limit,
+        )
 
     def _candidate_document(
         self,
@@ -812,20 +788,37 @@ def _resolve_path(document: dict[str, Any], path: str) -> Optional[tuple[dict[st
 
 
 
-def _nested(data: Mapping[str, Any], *path: str) -> Any:
-    cur: Any = data
-    for key in path:
-        if not isinstance(cur, Mapping) or key not in cur:
-            return None
-        cur = cur[key]
-    return cur
+def _metrics_snapshot_to_dict(snapshot: OfflineMetricsSnapshot) -> dict[str, Any]:
+    return {
+        "window_start_ms": snapshot.window_start_ms,
+        "window_end_ms": snapshot.window_end_ms,
+        "policy_version": snapshot.latest_policy_version or PolicySnapshot().policy_version,
+        "events_total": snapshot.events_total,
+        "unique_sessions": snapshot.unique_sessions,
+        "unique_traces": snapshot.unique_traces,
+        "event_counts_by_type": dict(snapshot.event_counts_by_type),
+        "tier_distribution": dict(snapshot.tier_distribution),
+        "action_distribution": dict(snapshot.action_distribution),
+        "block_rate": snapshot.block_rate,
+        "require_s3_rate": snapshot.require_s3_rate,
+        "throttle_applied_rate": snapshot.throttle_applied_rate,
+        "avg_throttle_delay_ms": snapshot.avg_throttle_delay_ms,
+        "s3_pass_rate": snapshot.s3_pass_rate,
+        "s3_fail_rate": snapshot.s3_fail_rate,
+        "s3_temp_lock_rate": snapshot.s3_temp_lock_rate,
+        "dedup_duplicate_rate": snapshot.dedup_duplicate_rate,
+        "missing_feature_rate": snapshot.missing_feature_rate,
+    }
 
 
-
-def _safe_rate(numerator: int, denominator: int) -> float:
-    if denominator <= 0:
-        return 0.0
-    return round(float(numerator) / float(denominator), 4)
+def _trace_sample_to_dict(sample: OfflineTraceSample) -> dict[str, Any]:
+    return {
+        "traceId": sample.trace_id,
+        "sessionId": sample.session_id,
+        "eventType": sample.event_type,
+        "reasonCode": sample.reason_code,
+        "policyVersion": sample.policy_version,
+    }
 
 
 
@@ -853,4 +846,4 @@ def _metrics_snapshot_id(metrics: Mapping[str, Any]) -> str:
     )
 
 
-__all__ = ["OfflineOptimizer"]
+__all__ = ["OfflineMetricsRepository", "OfflineOptimizer"]

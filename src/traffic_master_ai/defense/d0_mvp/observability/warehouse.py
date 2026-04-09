@@ -17,7 +17,8 @@ class AuditWarehouse:
     """Append-only local warehouse of normalized audit events.
 
     Legacy local-only implementation of the L2 warehouse contract using JSONL rows.
-    Production raw-fact ingest authority now lives in ClickHouse ETL, not this file.
+    Production raw-fact ingest authority and optimizer read source now live in ClickHouse ETL,
+    not this file.
     """
 
     def __init__(
