@@ -26,6 +26,7 @@ from .effect_evaluator import (
     try_acquire_offline_llm_budget,
 )
 from .offline_llm_audit import append_offline_llm_audit
+from ...langsmith_support import current_tm_ai_environment
 
 _SUMMARIZER_PROMPT = (
     "Summarize the given aggregated defense audit metrics for engineers. "
@@ -110,6 +111,16 @@ class AuditSummarizer:
                     user_input=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
                     max_output_tokens=OFFLINE_LLM_MAX_OUTPUT_TOKENS,
                     timeout_ms=OFFLINE_LLM_TIMEOUT_MS,
+                    trace_name="policy_optimizer.audit_summary",
+                    trace_metadata={
+                        "feature_name": "policy_optimizer",
+                        "agent_step_name": "audit_summary",
+                        "environment": current_tm_ai_environment(),
+                        "window_start_ms": metrics_snapshot.get("window_start_ms"),
+                        "window_end_ms": metrics_snapshot.get("window_end_ms"),
+                        "policy_version": metrics_snapshot.get("policy_version"),
+                        "owner_team": "TM_AI",
+                    },
                 )
             finally:
                 release_offline_llm_budget()

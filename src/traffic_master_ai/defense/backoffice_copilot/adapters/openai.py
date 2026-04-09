@@ -11,6 +11,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Mapping
 
+from ...langsmith_support import current_tm_ai_environment, start_langsmith_llm_trace
 from ..core.models import LlmReviewInput
 from ..review.executor import LlmReviewAdapter
 from ..summary.window_summary import WindowSummaryAdapter
@@ -24,10 +25,16 @@ def _call_openai_chat_completions(
     model: str,
     system_prompt: str,
     user_input: str,
+    trace_name: str,
+    trace_metadata: Mapping[str, object],
     endpoint: str | None = None,
     timeout_ms: int = 15000,
-) -> Any:
-    """Internal helper to make the POST request and parse the JSON completion."""
+) -> tuple[Any, dict[str, str]]:
+    """Internal helper to make the POST request and parse the JSON completion.
+
+    Returns (structured_output, langsmith_link) where langsmith_link is a dict
+    with optional 'runId' and 'traceUrl' keys for observability payload injection.
+    """
     url = endpoint or os.environ.get("OPENAI_BASE_URL", _DEFAULT_OPENAI_URL).rstrip("/")
     if url.endswith(".com/v1"):
         url += "/chat/completions"
@@ -55,33 +62,74 @@ def _call_openai_chat_completions(
         method="POST",
     )
 
-    try:
-        with urllib.request.urlopen(request, timeout=max(1.0, timeout_ms / 1000.0)) as response:
-            raw = response.read().decode("utf-8")
-    except urllib.error.URLError as exc:
-        raise ConnectionError(f"HTTP request failed: {exc}") from exc
-    except TimeoutError as exc:
-        raise TimeoutError(f"HTTP request timed out: {exc}") from exc
+    trace_inputs = {
+        "model": model,
+        "messages": payload["messages"],
+    }
+    with start_langsmith_llm_trace(
+        name=trace_name,
+        model_name=model,
+        inputs=trace_inputs,
+        metadata=trace_metadata,
+        tags=("backoffice_copilot", str(trace_metadata.get("agent_step_name", trace_name))),
+    ) as trace:
+        try:
+            with urllib.request.urlopen(request, timeout=max(1.0, timeout_ms / 1000.0)) as response:
+                raw = response.read().decode("utf-8")
+        except urllib.error.URLError as exc:
+            trace.record_error(exc)
+            raise ConnectionError(f"HTTP request failed: {exc}") from exc
+        except TimeoutError as exc:
+            trace.record_error(exc)
+            raise TimeoutError(f"HTTP request timed out: {exc}") from exc
 
-    try:
-        parsed_response = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ValueError("Invalid JSON received from OpenAI API.") from exc
+        try:
+            parsed_response = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            trace.record_error(exc)
+            raise ValueError("Invalid JSON received from OpenAI API.") from exc
 
-    choices = parsed_response.get("choices", [])
-    if not choices:
-        raise ValueError("No choices returned in OpenAI response.")
+        usage_metadata = _extract_usage_metadata(parsed_response)
+        trace.record_usage_metadata(usage_metadata)
+        trace.record_output(parsed_response)
 
-    message = choices[0].get("message", {})
-    content = message.get("content")
-    if not isinstance(content, str):
-        raise ValueError("Content text missing or invalid in OpenAI response.")
+        langsmith_link = trace.get_langsmith_link()
 
-    try:
-        structured_output = json.loads(content)
-        return structured_output
-    except json.JSONDecodeError as exc:
-        raise ValueError("LLM response content is not valid JSON.") from exc
+        choices = parsed_response.get("choices", [])
+        if not choices:
+            error = ValueError("No choices returned in OpenAI response.")
+            trace.record_error(error)
+            raise error
+
+        message = choices[0].get("message", {})
+        content = message.get("content")
+        if not isinstance(content, str):
+            error = ValueError("Content text missing or invalid in OpenAI response.")
+            trace.record_error(error)
+            raise error
+
+        try:
+            structured_output = json.loads(content)
+            return structured_output, langsmith_link
+        except json.JSONDecodeError as exc:
+            trace.record_error(exc)
+            raise ValueError("LLM response content is not valid JSON.") from exc
+
+
+def _extract_usage_metadata(parsed_response: Mapping[str, Any]) -> dict[str, int]:
+    usage = parsed_response.get("usage")
+    if not isinstance(usage, Mapping):
+        return {}
+    input_tokens = int(usage.get("prompt_tokens") or 0)
+    output_tokens = int(usage.get("completion_tokens") or 0)
+    total_tokens = int(usage.get("total_tokens") or input_tokens + output_tokens)
+    if input_tokens <= 0 and output_tokens <= 0 and total_tokens <= 0:
+        return {}
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+    }
 
 
 def build_openai_review_adapter(
@@ -109,15 +157,31 @@ def build_openai_review_adapter(
             "action": llm_input.session_analysis.latest_action,
         }
         user_input_str = json.dumps(user_input_dict, ensure_ascii=False)
+        trace_metadata = {
+            "session_id": llm_input.session_analysis.session_id,
+            "thread_id": llm_input.match_id,
+            "feature_name": "backoffice_copilot",
+            "agent_step_name": "review_session",
+            "environment": current_tm_ai_environment(),
+            "match_id": llm_input.match_id,
+            "window_start_ms": llm_input.window_start_ms,
+            "window_end_ms": llm_input.window_end_ms,
+            "owner_team": "TM_AI",
+        }
 
-        return _call_openai_chat_completions(
+        result, langsmith_link = _call_openai_chat_completions(
             api_key=api_key,
             model=model,
             system_prompt=system_prompt,
             user_input=user_input_str,
+            trace_name="backoffice_copilot.review_session",
+            trace_metadata=trace_metadata,
             endpoint=endpoint,
             timeout_ms=timeout_ms,
         )
+        if langsmith_link and isinstance(result, dict):
+            result["langsmith"] = langsmith_link
+        return result
 
     return _adapter
 
@@ -141,15 +205,31 @@ def build_openai_summary_adapter(
         )
 
         user_input_str = json.dumps(summary_input, ensure_ascii=False)
+        match_id = str(summary_input.get("match_id") or "")
+        trace_metadata = {
+            "thread_id": match_id,
+            "feature_name": "backoffice_copilot",
+            "agent_step_name": "summarize_window",
+            "environment": current_tm_ai_environment(),
+            "match_id": match_id,
+            "window_start_ms": summary_input.get("window_start_ms"),
+            "window_end_ms": summary_input.get("window_end_ms"),
+            "owner_team": "TM_AI",
+        }
 
-        return _call_openai_chat_completions(
+        result, langsmith_link = _call_openai_chat_completions(
             api_key=api_key,
             model=model,
             system_prompt=system_prompt,
             user_input=user_input_str,
+            trace_name="backoffice_copilot.summarize_window",
+            trace_metadata=trace_metadata,
             endpoint=endpoint,
             timeout_ms=timeout_ms,
         )
+        if langsmith_link and isinstance(result, dict):
+            result["langsmith"] = langsmith_link
+        return result
 
     return _adapter
 
