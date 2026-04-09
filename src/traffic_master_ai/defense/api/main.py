@@ -572,6 +572,7 @@ async def ai_evaluate(
             session_id=state_key,
             trace_id=trace_id,
             block_trigger="ai_evaluate_precheck_block",
+            stage=event_type,
             request_path=req.event.request_path,
             request_method=req.event.request_method,
             target_event_type=req.event.event_type,
@@ -582,7 +583,6 @@ async def ai_evaluate(
                 "precheck_valid": False,
                 "decision_reason": "precheck_block",
             },
-            stage=event_type,
         )
 
     if event_type == "SEAT_ENTRY":
@@ -593,6 +593,7 @@ async def ai_evaluate(
                 user_id=user_id,
                 session_id=state_key,
                 trace_id=trace_id,
+                stage=event_type,
                 request_path=req.event.request_path,
                 request_method=req.event.request_method,
                 target_event_type=req.event.event_type,
@@ -603,7 +604,6 @@ async def ai_evaluate(
                     "decision_reason": "seat_entry_immediate",
                     "vqa_passed": False,
                 },
-                stage=event_type,
             )
         return _build_evaluate_response(
             background_tasks=background_tasks,
@@ -611,6 +611,7 @@ async def ai_evaluate(
             user_id=user_id,
             session_id=state_key,
             trace_id=trace_id,
+            stage=event_type,
             request_path=req.event.request_path,
             request_method=req.event.request_method,
             target_event_type=req.event.event_type,
@@ -621,7 +622,6 @@ async def ai_evaluate(
                 "decision_reason": "seat_entry_immediate",
                 "vqa_passed": True,
             },
-            stage=event_type,
         )
 
     soft_action = _feature_soft_action(event_type=event_type, snap=snap)
@@ -632,6 +632,7 @@ async def ai_evaluate(
             user_id=user_id,
             session_id=state_key,
             trace_id=trace_id,
+            stage=event_type,
             request_path=req.event.request_path,
             request_method=req.event.request_method,
             target_event_type=req.event.event_type,
@@ -646,7 +647,6 @@ async def ai_evaluate(
                     else snap.latest_seat_stage_summary
                 ),
             },
-            stage=event_type,
         )
 
     legacy_req = _build_legacy_request_from_target(
@@ -1327,6 +1327,7 @@ def _build_evaluate_response(
     session_id: str,
     trace_id: str,
     block_trigger: str = "ai_evaluate_block",
+    stage: str = "unknown",
     request_path: str | None = None,
     request_method: str | None = None,
     target_event_type: str | None = None,
@@ -1335,7 +1336,7 @@ def _build_evaluate_response(
     reason_code: str | None = None,
     audit_payload: dict[str, Any] | None = None,
 ) -> AiEvaluateResponse:
-    EVALUATE_REQUESTS.labels(decision=action).inc()
+    EVALUATE_REQUESTS.labels(decision=action, stage=stage).inc()
     if (
         request_path is not None
         and request_method is not None
@@ -1356,9 +1357,6 @@ def _build_evaluate_response(
             policy_version=runtime_state.policy_version,
             raw_payload=audit_payload,
         )
-    stage: str = "unknown",
-) -> AiEvaluateResponse:
-    EVALUATE_REQUESTS.labels(decision=action, stage=stage).inc()
     if action == "BLOCK":
         background_tasks.add_task(
             _block_user_in_auth_guard,
