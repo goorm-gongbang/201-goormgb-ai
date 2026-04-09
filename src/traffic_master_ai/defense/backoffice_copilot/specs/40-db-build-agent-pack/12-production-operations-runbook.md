@@ -89,12 +89,36 @@ prod 기준은 `TM_ENV=prod` 또는 `TM_ENV=production`이다.
 - `TM_CLICKHOUSE_INGEST_TIMEOUT_MS`
 - `TM_CLICKHOUSE_WRITE_RETRY_MAX_ATTEMPTS`
 - `TM_CLICKHOUSE_WRITE_RETRY_BACKOFF_MS`
+- `TM_ETL_PROCESSED_LEDGER_TTL_SECONDS`
 
 실패 규칙:
 
 - `validate_clickhouse_ingest_env_for_prod()`가 prod ETL 시작 전에 fail-fast 한다.
 - ClickHouse write 실패는 `ClickHouseBatchWriteError`로 surfaced 된다.
 - source-of-replay는 S3 object다. write 성공 전 processed 처리하면 안 된다.
+- processed-key ledger는 성공 완료 object만 기록한다. parse/write 실패 object는 다음 run에서 다시 시도될 수 있어야 한다.
+
+운영 권장값:
+
+- staging: `TM_S3_ARCHIVE_INTERVAL_SECONDS=60`
+- staging: `TM_CLICKHOUSE_INGEST_BATCH_SIZE=128`
+- staging: `TM_CLICKHOUSE_WRITE_RETRY_MAX_ATTEMPTS=3`
+- staging: `TM_CLICKHOUSE_WRITE_RETRY_BACKOFF_MS=200`
+- staging: `TM_ETL_PROCESSED_LEDGER_TTL_SECONDS=2592000`
+- prod: `TM_S3_ARCHIVE_INTERVAL_SECONDS=300`
+- prod: `TM_CLICKHOUSE_INGEST_BATCH_SIZE=256`
+- prod: `TM_CLICKHOUSE_WRITE_RETRY_MAX_ATTEMPTS=3`
+- prod: `TM_CLICKHOUSE_WRITE_RETRY_BACKOFF_MS=200`
+- prod: `TM_ETL_PROCESSED_LEDGER_TTL_SECONDS=2592000`
+
+운영 메모:
+
+- `3600`은 즉시성 요구가 있는 staging/prod 기본값으로 쓰지 않는다.
+- `30` 미만은 incident 대응이나 단기 실험 외에는 상시 운영값으로 권장하지 않는다.
+- interval을 줄여도 현재 loop는 empty file skip + atomic rename 기반이라 구조적으로는 안전하다.
+- `TM_CLICKHOUSE_INGEST_BATCH_SIZE=1000`은 짧은 archive cadence에서 flush 단위가 너무 커질 수 있어 기본 운영값으로 두지 않는다.
+- processed-key ledger TTL은 운영 dedup cache일 뿐 영구 ledger가 아니다.
+- ClickHouse write 실패 로그는 `object key`, `flush_index`, `retry_max_attempts`, `retry_backoff_ms`, `last_error`를 같이 확인한다.
 
 ---
 
@@ -112,7 +136,8 @@ prod 기준은 `TM_ENV=prod` 또는 `TM_ENV=production`이다.
 
 - `CanonicalAuditMappingError`: schema/contract drift 가능성. raw line sample과 canonical contract를 먼저 확인한다.
 - `ClickHouseBatchWriteError`: network/auth/table/timeout 가능성. S3 archive는 그대로 replay source로 남는다.
-- `ETLIngestError`: object-level ingest 실패. key 단위 replay를 수행한다.
+- `ETLIngestError`: object-level ingest 실패. `key`, `flush_count`, `retry_max_attempts`, `last_error`를 보고 key 단위 replay를 수행한다.
+- `skip`: processed-key ledger hit로 normal ingest가 object를 건너뛴 상태다. 실제 재적재가 필요하면 explicit force replay를 사용한다.
 
 ### 4.2 PostgreSQL control-plane write
 
@@ -171,10 +196,10 @@ source-of-truth:
 코드 surface:
 
 - `ETLWorker.run_once()`
-- `ETLWorker.replay_key(key)`
-- `ETLWorker.replay_keys(keys)`
+- `ETLWorker.replay_key(key, force=False)`
+- `ETLWorker.replay_keys(keys, force=False)`
 - `run_etl()`
-- `run_etl_replay_keys(keys)`
+- `run_etl_replay_keys(keys, force=False)`
 
 예시:
 
@@ -185,7 +210,7 @@ from traffic_master_ai.defense.api.etl_worker import run_etl_replay_keys
 run_etl_replay_keys([
     "ai-defense/audit/2026/04/06/audit_001.jsonl",
     "ai-defense/audit/2026/04/06/audit_002.jsonl",
-])
+], force=True)
 PY
 ```
 

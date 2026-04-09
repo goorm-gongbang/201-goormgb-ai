@@ -10,7 +10,16 @@ from ..core.models import DefenseAuditEventRow
 from ..core.state import AnalysisInput, PostReviewRunInput
 
 _ROW_ID_KEYS: frozenset[str] = frozenset(
-    {"ts_ms", "tsMs", "trace_id", "traceId", "session_id", "sessionId", "event_type", "eventType"}
+    {
+        "ts_ms",
+        "tsMs",
+        "trace_id",
+        "traceId",
+        "session_id",
+        "sessionId",
+        "event_type",
+        "eventType",
+    }
 )
 
 
@@ -75,7 +84,11 @@ def parse_defense_audit_event_row(data: Mapping[str, Any]) -> DefenseAuditEventR
     payload = _extract_payload(data)
     return DefenseAuditEventRow(
         ts_ms=_require_int(data, "ts_ms", "tsMs"),
-        trace_id=_require_str(data, "trace_id", "traceId"),
+        trace_id=(
+            _optional_str(data, "trace_id", "traceId")
+            or _optional_str(data, "request_id", "requestId")
+            or _require_str(data, "session_id", "sessionId")
+        ),
         session_id=_require_str(data, "session_id", "sessionId"),
         event_type=_require_str(data, "event_type", "eventType"),
         payload=payload,
@@ -85,6 +98,12 @@ def parse_defense_audit_event_row(data: Mapping[str, Any]) -> DefenseAuditEventR
 def _extract_payload(data: Mapping[str, Any]) -> dict[str, object]:
     merged_payload: dict[str, object] = {}
 
+    embedded_raw_payload = data.get("raw_payload")
+    if embedded_raw_payload is not None:
+        if not isinstance(embedded_raw_payload, Mapping):
+            raise TypeError("raw_payload must be an object when present")
+        merged_payload.update({str(key): value for key, value in embedded_raw_payload.items()})
+
     embedded_payload = data.get("payload")
     if embedded_payload is not None:
         if not isinstance(embedded_payload, Mapping):
@@ -92,7 +111,7 @@ def _extract_payload(data: Mapping[str, Any]) -> dict[str, object]:
         merged_payload.update({str(key): value for key, value in embedded_payload.items()})
 
     for key, value in data.items():
-        if key in _ROW_ID_KEYS or key == "payload":
+        if key in _ROW_ID_KEYS or key in {"payload", "raw_payload"}:
             continue
         merged_payload[str(key)] = value
     return merged_payload
@@ -110,6 +129,13 @@ def _require_int(data: Mapping[str, Any], *keys: str) -> int:
 
 
 def _require_str(data: Mapping[str, Any], *keys: str) -> str:
+    value = _optional_str(data, *keys)
+    if value is not None:
+        return value
+    raise TypeError(f"expected non-empty string field, checked keys={keys!r}")
+
+
+def _optional_str(data: Mapping[str, Any], *keys: str) -> str | None:
     for key in keys:
         value = data.get(key)
         if value is None:
@@ -117,7 +143,7 @@ def _require_str(data: Mapping[str, Any], *keys: str) -> str:
         if not isinstance(value, str) or not value:
             break
         return value
-    raise TypeError(f"expected non-empty string field, checked keys={keys!r}")
+    return None
 
 
 __all__ = [

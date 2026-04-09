@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import unittest
 from datetime import UTC, datetime
@@ -8,7 +9,7 @@ from pathlib import Path
 from io import BytesIO
 from unittest.mock import patch
 
-from traffic_master_ai.defense.api.etl_worker import ETLWorker
+from traffic_master_ai.defense.api.etl_worker import ETLIngestError, ETLWorker
 from traffic_master_ai.defense.backoffice_copilot.storage import (
     ClickHouseAuditEventInsertRow,
     ClickHouseAuditEventWriterRepository,
@@ -85,10 +86,14 @@ def _rollout_state_record() -> PolicyRolloutStateRecord:
 
 
 class _FakeClickHouseBatchClient:
-    def __init__(self) -> None:
+    def __init__(self, *, failures_before_success: int = 0) -> None:
         self.calls: list[tuple[str, list[dict[str, object]]]] = []
+        self.failures_before_success = failures_before_success
 
     def execute(self, sql_text: str, rows: list[dict[str, object]]) -> None:
+        if self.failures_before_success > 0:
+            self.failures_before_success -= 1
+            raise RuntimeError("clickhouse unavailable")
         self.calls.append((sql_text, rows))
 
 
@@ -97,17 +102,24 @@ class _FakeS3Client:
         self.objects = objects
         self.list_calls: list[dict[str, object]] = []
         self.get_calls: list[tuple[str, str]] = []
+        self.head_calls: list[tuple[str, str]] = []
 
     def list_objects_v2(self, **kwargs: object) -> dict[str, object]:
         self.list_calls.append(dict(kwargs))
         prefix = str(kwargs.get("Prefix", ""))
         return {
             "Contents": [
-                {"Key": key}
+                {"Key": key, "ETag": self._etag_for_key(key)}
                 for key in sorted(self.objects)
                 if key.startswith(prefix)
             ],
             "IsTruncated": False,
+        }
+
+    def head_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
+        self.head_calls.append((Bucket, Key))
+        return {
+            "ETag": self._etag_for_key(Key),
         }
 
     def get_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
@@ -115,6 +127,9 @@ class _FakeS3Client:
         return {
             "Body": BytesIO(self.objects[Key]),
         }
+
+    def _etag_for_key(self, key: str) -> str:
+        return f'"{hashlib.md5(self.objects[key]).hexdigest()}"'
 
 
 class _FakeClickHouseSelectClient:
@@ -221,9 +236,9 @@ class BackofficeCopilotDBSmokeTests(unittest.TestCase):
         s3 = _FakeS3Client(
             objects={
                 "ai-defense/audit/2026/04/06/audit_1.jsonl": (
-                    b'{"ts_ms":1710000000000,"session_id":"sess-1","trace_id":"trace-1","event_type":"EVALUATE","flow_state":"F4M","defense_tier":"T2","action":"THROTTLE","reason_code":"RULE_HIT","policy_version":"policy-v1"}\n'
-                    b'{"ts_ms":1710000000000,"session_id":"sess-1","trace_id":"trace-1","event_type":"EVALUATE","flow_state":"F4M","defense_tier":"T2","action":"THROTTLE","reason_code":"RULE_HIT","policy_version":"policy-v1"}\n'
-                    b'{"ts_ms":1710000000100,"session_id":"sess-1","challenge_id":"challenge-1","event_type":"CHALLENGE_VERIFIED","payload":{"result":"PASS"}}\n'
+                    b'{"ts_ms":1710000000000,"session_id":"sess-1","trace_id":"trace-1","event_type":"EVALUATE","flow_state":"F4M","risk_tier":"T2","action":"THROTTLE","reason_code":"RULE_HIT","policy_version":"policy-v1","raw_payload":{"path":"/matches/1"}}\n'
+                    b'{"ts_ms":1710000000000,"session_id":"sess-1","trace_id":"trace-1","event_type":"EVALUATE","flow_state":"F4M","risk_tier":"T2","action":"THROTTLE","reason_code":"RULE_HIT","policy_version":"policy-v1","raw_payload":{"path":"/matches/1"}}\n'
+                    b'{"ts_ms":1710000000100,"session_id":"sess-1","challenge_id":"challenge-1","event_type":"CHALLENGE_VERIFIED","raw_payload":{"result":"PASS"}}\n'
                 ),
             }
         )
@@ -248,6 +263,7 @@ class BackofficeCopilotDBSmokeTests(unittest.TestCase):
                     timeout_ms=4000,
                 ),
             ),
+            processed_key_redis=InMemoryRedis(),
         )
 
         accepted_row_count = worker.run_once()
@@ -265,7 +281,7 @@ class BackofficeCopilotDBSmokeTests(unittest.TestCase):
         s3 = _FakeS3Client(
             objects={
                 key: (
-                    b'{"ts_ms":1710000000200,"session_id":"sess-replay","event_type":"EVALUATE","action":"BLOCK","reason_code":"RULE_HIT","policy_version":"policy-v1"}\n'
+                    b'{"ts_ms":1710000000200,"session_id":"sess-replay","event_type":"EVALUATE","action":"BLOCK","reason_code":"RULE_HIT","policy_version":"policy-v1","raw_payload":{}}\n'
                 ),
             }
         )
@@ -288,6 +304,7 @@ class BackofficeCopilotDBSmokeTests(unittest.TestCase):
                     timeout_ms=5000,
                 ),
             ),
+            processed_key_redis=InMemoryRedis(),
         )
 
         result = worker.replay_key(key)
@@ -295,6 +312,250 @@ class BackofficeCopilotDBSmokeTests(unittest.TestCase):
         self.assertEqual(result.accepted_row_count, 1)
         self.assertEqual(result.duplicate_row_count, 0)
         self.assertEqual(len(client.calls), 1)
+
+    def test_archive_replay_key_smoke_tracks_multi_flush_result_for_short_batch_size(self) -> None:
+        client = _FakeClickHouseBatchClient()
+        key = "ai-defense/audit/2026/04/06/short_interval_audit.jsonl"
+        s3 = _FakeS3Client(
+            objects={
+                key: (
+                    b'{"ts_ms":1710000000200,"session_id":"sess-1","event_type":"EVALUATE","action":"THROTTLE","reason_code":"RULE_HIT","policy_version":"policy-v1","raw_payload":{"rank":1}}\n'
+                    b'{"ts_ms":1710000000201,"session_id":"sess-2","event_type":"EVALUATE","action":"THROTTLE","reason_code":"RULE_HIT","policy_version":"policy-v1","raw_payload":{"rank":2}}\n'
+                    b'{"ts_ms":1710000000202,"session_id":"sess-3","event_type":"EVALUATE","action":"THROTTLE","reason_code":"RULE_HIT","policy_version":"policy-v1","raw_payload":{"rank":3}}\n'
+                    b'{"ts_ms":1710000000203,"session_id":"sess-4","event_type":"EVALUATE","action":"THROTTLE","reason_code":"RULE_HIT","policy_version":"policy-v1","raw_payload":{"rank":4}}\n'
+                    b'{"ts_ms":1710000000204,"session_id":"sess-5","event_type":"EVALUATE","action":"THROTTLE","reason_code":"RULE_HIT","policy_version":"policy-v1","raw_payload":{"rank":5}}\n'
+                ),
+            }
+        )
+        worker = ETLWorker(
+            config=ETLWorkerConfig(
+                s3=S3ArchiveConfig(bucket="audit-bucket", prefix="ai-defense/audit/"),
+                postgres=PostgresStorageConfig(url=None),
+                clickhouse=ClickHouseStorageConfig(
+                    url="clickhouse://localhost:8123/default",
+                    audit_table="defense_audit_events_smoke",
+                    ingest_batch_size=2,
+                    ingest_timeout_ms=4000,
+                    write_retry_max_attempts=3,
+                    write_retry_backoff_ms=200,
+                ),
+            ),
+            s3_client=s3,
+            clickhouse_writer=ClickHouseAuditEventWriterRepository(
+                client=client,
+                config=ClickHouseWriteConfig(
+                    url="clickhouse://localhost:8123/default",
+                    table_name="defense_audit_events_smoke",
+                    batch_size=2,
+                    timeout_ms=4000,
+                ),
+            ),
+            processed_key_redis=InMemoryRedis(),
+        )
+
+        result = worker.replay_key(key)
+
+        self.assertEqual(result.source_row_count, 5)
+        self.assertEqual(result.attempted_row_count, 5)
+        self.assertEqual(result.accepted_row_count, 5)
+        self.assertEqual(result.duplicate_row_count, 0)
+        self.assertEqual(result.flush_count, 3)
+        self.assertEqual(result.batch_size, 2)
+        self.assertEqual(result.retry_max_attempts, 3)
+        self.assertEqual(result.retry_backoff_ms, 200)
+        self.assertEqual(len(client.calls), 3)
+
+    def test_archive_replay_key_smoke_surfaces_key_and_retry_context_on_failure(self) -> None:
+        client = _FakeClickHouseBatchClient(failures_before_success=3)
+        key = "ai-defense/audit/2026/04/06/failing_audit.jsonl"
+        s3 = _FakeS3Client(
+            objects={
+                key: (
+                    b'{"ts_ms":1710000000200,"session_id":"sess-fail","event_type":"EVALUATE","action":"BLOCK","reason_code":"RULE_HIT","policy_version":"policy-v1","raw_payload":{}}\n'
+                ),
+            }
+        )
+        worker = ETLWorker(
+            config=ETLWorkerConfig(
+                s3=S3ArchiveConfig(bucket="audit-bucket", prefix="ai-defense/audit/"),
+                postgres=PostgresStorageConfig(url=None),
+                clickhouse=ClickHouseStorageConfig(
+                    url="clickhouse://localhost:8123/default",
+                    audit_table="defense_audit_events_smoke",
+                    ingest_batch_size=1,
+                    ingest_timeout_ms=4000,
+                    write_retry_max_attempts=3,
+                    write_retry_backoff_ms=0,
+                ),
+            ),
+            s3_client=s3,
+            clickhouse_writer=ClickHouseAuditEventWriterRepository(
+                client=client,
+                config=ClickHouseWriteConfig(
+                    url="clickhouse://localhost:8123/default",
+                    table_name="defense_audit_events_smoke",
+                    batch_size=1,
+                    timeout_ms=4000,
+                ),
+            ),
+            processed_key_redis=InMemoryRedis(),
+        )
+
+        with self.assertRaises(ETLIngestError) as exc_info:
+            worker.replay_key(key)
+
+        self.assertIn(key, str(exc_info.exception))
+        self.assertIn("retry_max_attempts=3", str(exc_info.exception))
+        self.assertIn("flush_count=1", str(exc_info.exception))
+        self.assertIn("last_error=ClickHouseBatchWriteError", str(exc_info.exception))
+
+    def test_normal_ingest_skips_already_processed_object_across_runs(self) -> None:
+        redis = InMemoryRedis()
+        client = _FakeClickHouseBatchClient()
+        key = "ai-defense/audit/2026/04/06/processed_audit.jsonl"
+        s3 = _FakeS3Client(
+            objects={
+                key: (
+                    b'{"ts_ms":1710000000300,"session_id":"sess-processed","event_type":"EVALUATE","action":"THROTTLE","reason_code":"RULE_HIT","policy_version":"policy-v1","raw_payload":{}}\n'
+                ),
+            }
+        )
+        worker = ETLWorker(
+            config=ETLWorkerConfig(
+                s3=S3ArchiveConfig(bucket="audit-bucket", prefix="ai-defense/audit/"),
+                postgres=PostgresStorageConfig(url=None),
+                clickhouse=ClickHouseStorageConfig(
+                    url="clickhouse://localhost:8123/default",
+                    audit_table="defense_audit_events_smoke",
+                ),
+            ),
+            s3_client=s3,
+            clickhouse_writer=ClickHouseAuditEventWriterRepository(
+                client=client,
+                config=ClickHouseWriteConfig(
+                    url="clickhouse://localhost:8123/default",
+                    table_name="defense_audit_events_smoke",
+                    batch_size=1000,
+                    timeout_ms=5000,
+                ),
+            ),
+            processed_key_redis=redis,
+        )
+
+        first_total = worker.run_once()
+        second_total = worker.run_once()
+
+        self.assertEqual(first_total, 1)
+        self.assertEqual(second_total, 0)
+        self.assertEqual(len(client.calls), 1)
+        replay_result = worker.replay_key(key)
+        self.assertTrue(replay_result.skipped_by_processed_ledger)
+        self.assertEqual(replay_result.object_etag, s3._etag_for_key(key))
+
+    def test_force_replay_bypasses_processed_key_ledger(self) -> None:
+        redis = InMemoryRedis()
+        client = _FakeClickHouseBatchClient()
+        key = "ai-defense/audit/2026/04/06/force_replay_audit.jsonl"
+        s3 = _FakeS3Client(
+            objects={
+                key: (
+                    b'{"ts_ms":1710000000400,"session_id":"sess-force","event_type":"EVALUATE","action":"BLOCK","reason_code":"RULE_HIT","policy_version":"policy-v1","raw_payload":{}}\n'
+                ),
+            }
+        )
+        worker = ETLWorker(
+            config=ETLWorkerConfig(
+                s3=S3ArchiveConfig(bucket="audit-bucket", prefix="ai-defense/audit/"),
+                postgres=PostgresStorageConfig(url=None),
+                clickhouse=ClickHouseStorageConfig(
+                    url="clickhouse://localhost:8123/default",
+                    audit_table="defense_audit_events_smoke",
+                ),
+            ),
+            s3_client=s3,
+            clickhouse_writer=ClickHouseAuditEventWriterRepository(
+                client=client,
+                config=ClickHouseWriteConfig(
+                    url="clickhouse://localhost:8123/default",
+                    table_name="defense_audit_events_smoke",
+                    batch_size=1000,
+                    timeout_ms=5000,
+                ),
+            ),
+            processed_key_redis=redis,
+        )
+
+        first_result = worker.replay_key(key)
+        forced_result = worker.replay_key(key, force=True)
+
+        self.assertFalse(first_result.skipped_by_processed_ledger)
+        self.assertFalse(forced_result.skipped_by_processed_ledger)
+        self.assertEqual(forced_result.accepted_row_count, 1)
+        self.assertEqual(len(client.calls), 2)
+
+    def test_failed_ingest_does_not_mark_processed_key_ledger(self) -> None:
+        redis = InMemoryRedis()
+        key = "ai-defense/audit/2026/04/06/retry_after_failure.jsonl"
+        s3 = _FakeS3Client(
+            objects={
+                key: (
+                    b'{"ts_ms":1710000000500,"session_id":"sess-retry","event_type":"EVALUATE","action":"THROTTLE","reason_code":"RULE_HIT","policy_version":"policy-v1","raw_payload":{}}\n'
+                ),
+            }
+        )
+        failing_worker = ETLWorker(
+            config=ETLWorkerConfig(
+                s3=S3ArchiveConfig(bucket="audit-bucket", prefix="ai-defense/audit/"),
+                postgres=PostgresStorageConfig(url=None),
+                clickhouse=ClickHouseStorageConfig(
+                    url="clickhouse://localhost:8123/default",
+                    audit_table="defense_audit_events_smoke",
+                    write_retry_max_attempts=1,
+                ),
+            ),
+            s3_client=s3,
+            clickhouse_writer=ClickHouseAuditEventWriterRepository(
+                client=_FakeClickHouseBatchClient(failures_before_success=1),
+                config=ClickHouseWriteConfig(
+                    url="clickhouse://localhost:8123/default",
+                    table_name="defense_audit_events_smoke",
+                    batch_size=1000,
+                    timeout_ms=5000,
+                ),
+            ),
+            processed_key_redis=redis,
+        )
+        recovered_client = _FakeClickHouseBatchClient()
+        recovered_worker = ETLWorker(
+            config=ETLWorkerConfig(
+                s3=S3ArchiveConfig(bucket="audit-bucket", prefix="ai-defense/audit/"),
+                postgres=PostgresStorageConfig(url=None),
+                clickhouse=ClickHouseStorageConfig(
+                    url="clickhouse://localhost:8123/default",
+                    audit_table="defense_audit_events_smoke",
+                    write_retry_max_attempts=1,
+                ),
+            ),
+            s3_client=s3,
+            clickhouse_writer=ClickHouseAuditEventWriterRepository(
+                client=recovered_client,
+                config=ClickHouseWriteConfig(
+                    url="clickhouse://localhost:8123/default",
+                    table_name="defense_audit_events_smoke",
+                    batch_size=1000,
+                    timeout_ms=5000,
+                ),
+            ),
+            processed_key_redis=redis,
+        )
+
+        with self.assertRaises(ETLIngestError):
+            failing_worker.run_once()
+
+        recovered_total = recovered_worker.run_once()
+
+        self.assertEqual(recovered_total, 1)
+        self.assertEqual(len(recovered_client.calls), 1)
 
     def test_clickhouse_raw_fact_write_smoke_uses_env_config_and_writer_surface(self) -> None:
         client = _FakeClickHouseBatchClient()

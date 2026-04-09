@@ -5,6 +5,7 @@ import os
 import time
 import unittest
 import base64
+import hashlib
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -80,16 +81,24 @@ class _FakeS3Client:
     def list_objects_v2(self, **kwargs: object) -> dict[str, object]:
         prefix = str(kwargs.get("Prefix", ""))
         keys = [
-            {"Key": key}
+            {"Key": key, "ETag": self._etag_for_key(key)}
             for key in sorted(self._objects)
             if key.startswith(prefix)
         ]
         return {"Contents": keys, "IsTruncated": False}
 
+    def head_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
+        del Bucket
+        return {"ETag": self._etag_for_key(Key)}
+
     def get_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
         del Bucket
         payload = self._objects[Key].encode("utf-8")
         return {"Body": _FakeStreamingBody(payload)}
+
+    def _etag_for_key(self, key: str) -> str:
+        payload = self._objects[key].encode("utf-8")
+        return f'"{hashlib.md5(payload).hexdigest()}"'
 
 
 @unittest.skipUnless(
@@ -240,11 +249,13 @@ class RealStorageIntegrationSmokeTest(unittest.TestCase):
             "trace_id": "trace-real-1",
             "challenge_id": "challenge-real-1",
             "flow_state": "S3",
-            "defense_tier": "T2",
+            "risk_tier": "T2",
             "action": "BLOCK",
             "reason_code": "BOT_SIGNAL",
             "policy_version": "policy-real-v1",
-            "path": "/matches/42/action",
+            "raw_payload": {
+                "path": "/matches/42/action",
+            },
         }
         s3_client = _FakeS3Client(
             {

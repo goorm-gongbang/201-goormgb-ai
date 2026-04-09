@@ -64,7 +64,7 @@ env 요구사항, failure handling 규칙, test plan을 고정한다.
 | `TM_S3_BUCKET` | S3 archive / ETL source | optional for local, required for archive/ETL | partial yes | rotated audit JSONL archive source bucket | 누락 시 S3 archiving 비활성, ETL worker 실행 불가 |
 | `TM_S3_REGION` | S3 archive / ETL source | optional | partial yes | S3 client region 지정 | 누락 시 boto 기본 region resolution 사용 |
 | `TM_S3_PREFIX` | S3 archive / ETL source | optional | yes | audit archive prefix | 누락 시 `ai-defense/audit/` 사용 |
-| `TM_S3_ARCHIVE_INTERVAL_SECONDS` | audit rotate/upload | optional | yes | archive loop 주기 | 누락 시 `3600` 사용 |
+| `TM_S3_ARCHIVE_INTERVAL_SECONDS` | audit rotate/upload | optional | yes | archive loop 주기 | 누락 시 `300` 사용 |
 | `TM_PG_URL` | PostgreSQL result plane / control-plane / current ETL prototype | required for PG-backed workers | partial yes | PostgreSQL connection string | 누락 시 current ETL prototype skip, future PG control-plane/projection worker fail-fast |
 | `TM_REDIS_URL` | runtime state / policy projection target | required in non-CI | yes | runtime Redis and projection target Redis connection | non-CI에서 누락 시 fail-fast, CI에서만 memory fallback 허용 |
 | `TM_ROLLOUT_SALT` | policy selection | required for prod | partial yes | deterministic session assignment salt | 현재 코드는 빈 문자열 fallback, prod 계약상 명시 설정 권장 |

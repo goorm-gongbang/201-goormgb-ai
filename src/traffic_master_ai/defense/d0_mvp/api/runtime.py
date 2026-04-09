@@ -1197,10 +1197,7 @@ class DefenseRuntime:
         planner: Optional[dict[str, Any]] = None,
         orchestrator: Optional[dict[str, Any]] = None,
     ) -> None:
-        """Build and append one AuditEntry to the JSONL log.
-
-        Ref: L2/obs_opt/defense_observability_ssot.yaml#decision_audit.required_min_schema
-        """
+        """Build and append one canonical audit row to the JSONL log."""
         result: dict[str, Any] = {"status": result_status}
         if result_http_status is not None:
             result["httpStatus"] = result_http_status
@@ -1227,26 +1224,37 @@ class DefenseRuntime:
                 server_decision["policyVersionMismatch"] = True
 
         request_meta = _extract_request_meta(request)
+        challenge_id = None
+        if isinstance(challenge, Mapping):
+            challenge_id = challenge.get("challengeId") or challenge.get("challenge_id")
 
         entry = AuditEntry(
             ts_ms=event.ts_ms,
-            event_type=event_type,
-            trace_id=request.trace_id,
             session_id=request.session_id,
-            flow_state=event.flow_state.value,
+            event_type=event_type,
+            raw_payload={
+                "request_meta": request_meta,
+                "server_decision": server_decision,
+                "result": result,
+                "dedup": dedup or {},
+                "throttle": throttle or {},
+                "block": block or {},
+                "challenge": challenge or {},
+                "turnstile": turnstile or {},
+                "guard": guard or {},
+                "analyzer": analyzer or {},
+                "planner": planner or {},
+                "orchestrator": orchestrator or {},
+            },
+            trace_id=request.trace_id,
             request_id=request.trace_id,
-            server_decision=server_decision,
-            result=result,
-            request_meta=request_meta,
-            dedup=dedup or {},
-            throttle=throttle or {},
-            block=block or {},
-            challenge=challenge or {},
-            turnstile=turnstile or {},
-            guard=guard or {},
-            analyzer=analyzer or {},
-            planner=planner or {},
-            orchestrator=orchestrator or {},
+            correlation_id=request_meta.get("correlationId") if isinstance(request_meta.get("correlationId"), str) else None,
+            challenge_id=challenge_id if isinstance(challenge_id, str) and challenge_id else None,
+            flow_state=event.flow_state.value,
+            risk_tier=decision_tier,
+            action=decision_action,
+            reason_code=result_reason_code,
+            policy_version=policy.policy_version,
         )
         try:
             self.audit_logger.append(entry)

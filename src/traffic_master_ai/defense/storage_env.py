@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 DEFAULT_DEFENSE_AUDIT_LOG_PATH = "/tmp/logs/defense_decision_audit.jsonl"
 DEFAULT_WAREHOUSE_FILENAME = "/tmp/logs/defense_audit_events.jsonl"
@@ -11,12 +11,22 @@ DEFAULT_POLICY_STORE_PATH = "/tmp/logs/policy_store.json"
 DEFAULT_POLICY_CACHE_SECONDS = 5
 DEFAULT_POLICY_PROJECTION_MAX_STALENESS_MS = 300000
 DEFAULT_S3_PREFIX = "ai-defense/audit/"
-DEFAULT_S3_ARCHIVE_INTERVAL_SECONDS = 3600
+DEFAULT_S3_ARCHIVE_INTERVAL_SECONDS = 300
+RECOMMENDED_STAGING_S3_ARCHIVE_INTERVAL_SECONDS = 60
+RECOMMENDED_PROD_S3_ARCHIVE_INTERVAL_SECONDS = 300
 DEFAULT_CLICKHOUSE_AUDIT_TABLE = "defense_audit_events"
-DEFAULT_CLICKHOUSE_INGEST_BATCH_SIZE = 1000
+DEFAULT_CLICKHOUSE_INGEST_BATCH_SIZE = 256
 DEFAULT_CLICKHOUSE_INGEST_TIMEOUT_MS = 5000
-DEFAULT_CLICKHOUSE_WRITE_RETRY_MAX_ATTEMPTS = 2
-DEFAULT_CLICKHOUSE_WRITE_RETRY_BACKOFF_MS = 50
+RECOMMENDED_STAGING_CLICKHOUSE_INGEST_BATCH_SIZE = 128
+RECOMMENDED_PROD_CLICKHOUSE_INGEST_BATCH_SIZE = 256
+DEFAULT_CLICKHOUSE_WRITE_RETRY_MAX_ATTEMPTS = 3
+DEFAULT_CLICKHOUSE_WRITE_RETRY_BACKOFF_MS = 200
+RECOMMENDED_STAGING_CLICKHOUSE_WRITE_RETRY_MAX_ATTEMPTS = 3
+RECOMMENDED_PROD_CLICKHOUSE_WRITE_RETRY_MAX_ATTEMPTS = 3
+RECOMMENDED_STAGING_CLICKHOUSE_WRITE_RETRY_BACKOFF_MS = 200
+RECOMMENDED_PROD_CLICKHOUSE_WRITE_RETRY_BACKOFF_MS = 200
+DEFAULT_ETL_PROCESSED_LEDGER_TTL_SECONDS = 2592000
+RECOMMENDED_ETL_PROCESSED_LEDGER_TTL_SECONDS = 2592000
 DEFAULT_PROJECTION_RETRY_MAX_ATTEMPTS = 2
 DEFAULT_PROJECTION_RETRY_BACKOFF_MS = 50
 
@@ -108,6 +118,11 @@ class ClickHouseStorageConfig:
 
 
 @dataclass(slots=True, frozen=True)
+class ETLProcessedLedgerConfig:
+    ttl_seconds: int = DEFAULT_ETL_PROCESSED_LEDGER_TTL_SECONDS
+
+
+@dataclass(slots=True, frozen=True)
 class ProjectionSyncConfig:
     """Config surface for PostgreSQL -> Redis sync/resync retries."""
 
@@ -122,6 +137,9 @@ class ETLWorkerConfig:
     s3: S3ArchiveConfig
     postgres: PostgresStorageConfig
     clickhouse: ClickHouseStorageConfig
+    processed_ledger: ETLProcessedLedgerConfig = field(
+        default_factory=ETLProcessedLedgerConfig
+    )
 
     @property
     def can_run_current_postgres_prototype(self) -> bool:
@@ -215,7 +233,7 @@ def load_s3_archive_config_from_env() -> S3ArchiveConfig:
         bucket=_clean_optional_text(os.getenv("TM_S3_BUCKET")),
         region=_clean_optional_text(os.getenv("TM_S3_REGION")),
         prefix=_clean_text(os.getenv("TM_S3_PREFIX"), default=DEFAULT_S3_PREFIX),
-        archive_interval_seconds=_clean_int(
+        archive_interval_seconds=_clean_positive_int(
             os.getenv("TM_S3_ARCHIVE_INTERVAL_SECONDS"),
             default=DEFAULT_S3_ARCHIVE_INTERVAL_SECONDS,
             env_name="TM_S3_ARCHIVE_INTERVAL_SECONDS",
@@ -241,17 +259,17 @@ def load_clickhouse_storage_config_from_env() -> ClickHouseStorageConfig:
             os.getenv("TM_CLICKHOUSE_AUDIT_TABLE"),
             default=DEFAULT_CLICKHOUSE_AUDIT_TABLE,
         ),
-        ingest_batch_size=_clean_int(
+        ingest_batch_size=_clean_positive_int(
             os.getenv("TM_CLICKHOUSE_INGEST_BATCH_SIZE"),
             default=DEFAULT_CLICKHOUSE_INGEST_BATCH_SIZE,
             env_name="TM_CLICKHOUSE_INGEST_BATCH_SIZE",
         ),
-        ingest_timeout_ms=_clean_int(
+        ingest_timeout_ms=_clean_positive_int(
             os.getenv("TM_CLICKHOUSE_INGEST_TIMEOUT_MS"),
             default=DEFAULT_CLICKHOUSE_INGEST_TIMEOUT_MS,
             env_name="TM_CLICKHOUSE_INGEST_TIMEOUT_MS",
         ),
-        write_retry_max_attempts=_clean_int(
+        write_retry_max_attempts=_clean_positive_int(
             os.getenv("TM_CLICKHOUSE_WRITE_RETRY_MAX_ATTEMPTS"),
             default=DEFAULT_CLICKHOUSE_WRITE_RETRY_MAX_ATTEMPTS,
             env_name="TM_CLICKHOUSE_WRITE_RETRY_MAX_ATTEMPTS",
@@ -261,6 +279,16 @@ def load_clickhouse_storage_config_from_env() -> ClickHouseStorageConfig:
             default=DEFAULT_CLICKHOUSE_WRITE_RETRY_BACKOFF_MS,
             env_name="TM_CLICKHOUSE_WRITE_RETRY_BACKOFF_MS",
         ),
+    )
+
+
+def load_etl_processed_ledger_config_from_env() -> ETLProcessedLedgerConfig:
+    return ETLProcessedLedgerConfig(
+        ttl_seconds=_clean_positive_int(
+            os.getenv("TM_ETL_PROCESSED_LEDGER_TTL_SECONDS"),
+            default=DEFAULT_ETL_PROCESSED_LEDGER_TTL_SECONDS,
+            env_name="TM_ETL_PROCESSED_LEDGER_TTL_SECONDS",
+        )
     )
 
 
@@ -288,6 +316,7 @@ def load_etl_worker_config_from_env() -> ETLWorkerConfig:
         s3=load_s3_archive_config_from_env(),
         postgres=load_postgres_storage_config_from_env(required=False),
         clickhouse=load_clickhouse_storage_config_from_env(),
+        processed_ledger=load_etl_processed_ledger_config_from_env(),
     )
 
 
@@ -342,6 +371,7 @@ def validate_clickhouse_ingest_env_for_prod() -> None:
         return
 
     etl_config = load_etl_worker_config_from_env()
+    redis_config = load_runtime_redis_config_from_env()
     if not etl_config.s3.archive_enabled:
         raise StorageOperationalConfigError(
             "TM_S3_BUCKET must be set when TM_ENV=prod for archive-backed ClickHouse ingest."
@@ -349,6 +379,10 @@ def validate_clickhouse_ingest_env_for_prod() -> None:
     if not etl_config.clickhouse.enabled:
         raise StorageOperationalConfigError(
             "TM_CLICKHOUSE_URL must be set when TM_ENV=prod for ClickHouse ingest."
+        )
+    if not redis_config.redis_url:
+        raise StorageOperationalConfigError(
+            "TM_REDIS_URL must be set when TM_ENV=prod for ClickHouse ingest processed-key ledger."
         )
 
 
@@ -374,6 +408,13 @@ def _clean_int(raw: str | None, *, default: int, env_name: str) -> int:
         return int(cleaned)
     except ValueError as exc:
         raise ValueError(f"{env_name} must be an integer.") from exc
+
+
+def _clean_positive_int(raw: str | None, *, default: int, env_name: str) -> int:
+    value = _clean_int(raw, default=default, env_name=env_name)
+    if value <= 0:
+        raise ValueError(f"{env_name} must be a positive integer.")
+    return value
 
 
 def _clean_optional_int(raw: str | None, *, default: int | None, env_name: str) -> int | None:

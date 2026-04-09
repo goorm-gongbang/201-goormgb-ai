@@ -85,10 +85,10 @@ from ..d0_mvp.core.models import CheckRequest as D0CheckRequest
 from ..d0_mvp.events.common import RuntimeEvent as D0RuntimeEvent
 from ..d0_mvp.state.redis_client import build_runtime_redis_from_env
 from ..auth_guard import AuthGuardBlockService
+from .archive_runtime import run_s3_archive_loop
 from .audit import (
     DefenseDecisionAuditLogger,
     S3Uploader,
-    rotate_and_upload_audit_log,
 )
 from .challenge_runtime import ChallengeConfig, ChallengeRuntime
 from .models import (
@@ -207,10 +207,6 @@ logger = logging.getLogger(__name__)
 _MATCH_ID_PATH_RE = re.compile(r"/matches/(?P<match_id>\d+)(?:/|$)")
 
 # S3 Archiver Config
-_S3_BUCKET = os.getenv("TM_S3_BUCKET")
-_S3_PREFIX = os.getenv("TM_S3_PREFIX", "ai-defense/audit/")
-_S3_REGION = os.getenv("TM_S3_REGION")
-_S3_INTERVAL = int(os.getenv("TM_S3_ARCHIVE_INTERVAL_SECONDS", "3600"))
 _TURNSTILE_SECRET_KEY = os.getenv("TM_TURNSTILE_SECRET_KEY", "").strip()
 _TURNSTILE_SITEVERIFY_URL = os.getenv(
     "TM_TURNSTILE_SITEVERIFY_URL",
@@ -228,7 +224,7 @@ _VQA_LOW_DWELL_THRESHOLD = float(os.getenv("TM_VQA_LOW_DWELL_THRESHOLD", "80"))
 _VQA_MIN_POINTS_FOR_ABNORMAL_TERMINAL = int(os.getenv("TM_VQA_MIN_POINTS_FOR_ABNORMAL_TERMINAL", "6"))
 _VQA_MIN_STRONG_SIGNALS_FOR_TERMINAL = int(os.getenv("TM_VQA_MIN_STRONG_SIGNALS_FOR_TERMINAL", "3"))
 
-_S3_UPLOADER = S3Uploader(bucket=_S3_BUCKET, prefix=_S3_PREFIX, region=_S3_REGION) if _S3_BUCKET else None
+_S3_UPLOADER = S3Uploader.from_env()
 
 _DEFAULT_CORS_ALLOW_ORIGINS = (
     "http://localhost:3000",
@@ -246,20 +242,7 @@ def _cors_allow_origins_from_env() -> list[str]:
 
 
 async def _s3_archive_loop():
-    """Background loop to periodically upload logs to S3."""
-    if not _S3_UPLOADER:
-        logger.info("S3 Archiving is disabled (TM_S3_BUCKET not set).")
-        return
-
-    logger.info("Starting S3 Archiving Loop (Interval: %ds)", _S3_INTERVAL)
-    while True:
-        try:
-            await asyncio.sleep(_S3_INTERVAL)
-            rotate_and_upload_audit_log(_audit, _S3_UPLOADER)
-        except asyncio.CancelledError:
-            break
-        except Exception as exc:
-            logger.error("Error in S3 archiving loop: %s", exc)
+    await run_s3_archive_loop(audit_logger=_audit, uploader=_S3_UPLOADER)
 
 
 @asynccontextmanager

@@ -8,6 +8,7 @@ SESSION_LOCK_KEY_PREFIX = "tm:decision-state-lock:session:"
 
 BLOCK_KEY_PREFIX = "tm:block-state:session:"
 DEDUP_KEY_PREFIX = "tm:event-dedup:"
+ETL_PROCESSED_KEY_PREFIX = "tm:etl:processed:s3:"
 ANALYZER_WINDOW_KEY_PREFIX = "tm:scoring-window:"
 
 POLICY_VERSION_KEY_PREFIX = "tm:decision-policy:version:"
