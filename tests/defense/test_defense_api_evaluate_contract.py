@@ -20,7 +20,19 @@ if "pythonjsonlogger" not in sys.modules:
     )
 
 if "jwt" not in sys.modules:
-    sys.modules["jwt"] = types.SimpleNamespace(decode=lambda token, options=None: {})
+    def _jwt_encode(payload, key, algorithm=None):
+        sid = payload.get("sid", "")
+        return f"stub-jwt:{sid}"
+
+    def _jwt_decode(token, options=None, **kwargs):
+        if isinstance(token, str) and token.startswith("stub-jwt:"):
+            return {"sid": token.split(":", 1)[1]}
+        return {}
+
+    sys.modules["jwt"] = types.SimpleNamespace(
+        decode=_jwt_decode,
+        encode=_jwt_encode,
+    )
 
 if "opentelemetry" not in sys.modules:
     class _NoOp:
@@ -117,6 +129,19 @@ def _read_audit_rows(log_path) -> list[dict]:
         json.loads(line)
         for line in log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
+    ]
+
+
+def _queue_bot_like_events() -> list[dict[str, float | int | str]]:
+    return [
+        {"type": "mousemove", "tsMs": 0, "xNorm": 0.10, "yNorm": 0.50},
+        {"type": "mousemove", "tsMs": 80, "xNorm": 0.18, "yNorm": 0.50},
+        {"type": "mousemove", "tsMs": 160, "xNorm": 0.26, "yNorm": 0.50},
+        {"type": "mousemove", "tsMs": 240, "xNorm": 0.34, "yNorm": 0.50},
+        {"type": "mousemove", "tsMs": 320, "xNorm": 0.42, "yNorm": 0.50},
+        {"type": "mousemove", "tsMs": 400, "xNorm": 0.50, "yNorm": 0.50},
+        {"type": "mousemove", "tsMs": 480, "xNorm": 0.58, "yNorm": 0.50},
+        {"type": "click", "tsMs": 560, "xNorm": 0.66, "yNorm": 0.50, "button": 0},
     ]
 
 
@@ -276,8 +301,9 @@ def test_soft_action_early_return_emits_canonical_audit(tmp_path, monkeypatch) -
     assert row["action"] == "THROTTLE"
     assert row["flow_state"] == "S5"
     assert row["reason_code"] == "TARGET_SOFT_ACTION"
-    assert row["policy_version"] == "policy-soft-action"
+    assert row["policy_version"] == row["raw_payload"]["runtime_state"]["policy_version"]
     assert row["raw_payload"]["decision_reason"] == "soft_action"
+    assert row["raw_payload"]["decision_source"] == "target_api_early_return"
     assert row["raw_payload"]["target_event_type"] == "SEAT_HOLDS"
     assert row["raw_payload"]["feature_summary"] == {
         "mouse_point_count": 4,
@@ -307,6 +333,57 @@ def test_post_vqa_events_require_s3_when_vqa_not_passed(monkeypatch) -> None:
     assert captured == []
 
 
+def test_queue_enter_soft_action_still_persists_d0_score_and_audit(tmp_path, monkeypatch) -> None:
+    sid = "sess-eval-soft-score-1"
+    state_key = f"{sid}:{MATCH_ID}"
+    log_path = tmp_path / "decision_audit.jsonl"
+    monkeypatch.setattr(api_main, "_audit", DefenseDecisionAuditLogger(str(log_path)))
+    precheck = client.post(
+        "/ai/precheck",
+        json={"matchId": MATCH_ID, "cfToken": "ok-token"},
+        headers=_headers(session_id=sid),
+    )
+    assert precheck.status_code == 200
+    ingest = client.post(
+        "/ai/telemetry/ingest",
+        json={
+            "matchId": MATCH_ID,
+            "stage": "QUEUE_ENTER_PRECLICK",
+            "events": _queue_bot_like_events(),
+        },
+        headers=_headers(session_id=sid),
+    )
+    assert ingest.status_code == 200
+
+    response = client.post(
+        "/ai/evaluate",
+        json=_evaluate_payload(
+            sid=sid,
+            event_type="QUEUE_ENTER",
+            path=f"/queue/matches/{MATCH_ID}/enter",
+            method="POST",
+        ),
+        headers=_headers(session_id=sid),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"decision": {"action": "REQUIRE_S3"}}
+
+    decision_state = api_main._decision_engine.session_state.get(state_key)
+    assert decision_state is not None
+    assert decision_state.risk_score > 0.0
+    assert decision_state.last_step_risk is not None
+    rows = _read_audit_rows(log_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["session_id"] == state_key
+    assert row["action"] == "REQUIRE_S3"
+    assert row["reason_code"] == "TARGET_SOFT_ACTION"
+    assert row["raw_payload"]["decision_source"] == "target_api_early_return"
+    assert row["raw_payload"]["runtime_state"]["risk_score"] == decision_state.risk_score
+    assert row["raw_payload"]["runtime_state"]["last_step_risk"] == decision_state.last_step_risk
+
+
 def test_legacy_challenge_action_does_not_emit_require_s3(monkeypatch) -> None:
     sid = "sess-eval-legacy-challenge-1"
     captured: list[dict[str, str | None]] = []
@@ -321,7 +398,7 @@ def test_legacy_challenge_action_does_not_emit_require_s3(monkeypatch) -> None:
     def _stub_block_user_in_auth_guard(**kwargs):
         captured.append(kwargs)
 
-    def _stub_execute_legacy_evaluate(_req):
+    def _stub_execute_legacy_evaluate(_req, audit=True):
         return (
             EvaluateResponse(
                 allow=False,
@@ -373,7 +450,7 @@ def test_post_vqa_guard_is_bypassed_after_vqa_pass(monkeypatch) -> None:
     def _stub_block_user_in_auth_guard(**kwargs):
         captured.append(kwargs)
 
-    def _stub_execute_legacy_evaluate(_req):
+    def _stub_execute_legacy_evaluate(_req, audit=True):
         return (
             EvaluateResponse(
                 allow=True,
@@ -421,7 +498,7 @@ def test_post_vqa_guard_uses_sid_level_vqa_mark(monkeypatch) -> None:
     assert marked.status_code == 200
     assert marked.json()["vqa_passed"] is True
 
-    def _stub_execute_legacy_evaluate(_req):
+    def _stub_execute_legacy_evaluate(_req, audit=True):
         return (
             EvaluateResponse(
                 allow=True,
@@ -473,7 +550,7 @@ def test_legacy_block_forwards_user_id_to_decision_engine(monkeypatch) -> None:
     def _stub_block_user_in_auth_guard(**kwargs):
         block_sync_calls.append(kwargs)
 
-    def _stub_execute_legacy_evaluate(req):
+    def _stub_execute_legacy_evaluate(req, audit=True):
         captured["user_id"] = req.user_id
         return (
             EvaluateResponse(
