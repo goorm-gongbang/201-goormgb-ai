@@ -2,6 +2,7 @@ import os
 import json
 import sys
 import types
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -97,6 +98,7 @@ if "opentelemetry" not in sys.modules:
 import traffic_master_ai.defense.api.main as api_main
 from traffic_master_ai.defense.api.audit import DefenseDecisionAuditLogger
 from traffic_master_ai.defense.api.models import EvaluateResponse, RuntimeStateSnapshot
+from traffic_master_ai.defense.d0_mvp.core.enums import DefenseTier, FlowState
 
 client = TestClient(api_main.app)
 MATCH_ID = 687
@@ -337,6 +339,35 @@ def test_post_vqa_events_require_s3_when_vqa_not_passed(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json() == {"decision": {"action": "REQUIRE_S3"}}
     assert captured == []
+
+
+def test_legacy_snapshot_restores_seat_mode_from_flow_hint() -> None:
+    session_id = "sess-legacy-seat-mode-hint"
+    d0_state = SimpleNamespace(
+        flow_state=FlowState.S5,
+        defense_tier=DefenseTier.T1,
+        risk_score=0.33,
+        last_step_risk=0.33,
+        last_guard_ts_ms=1710000000000,
+        challenge_fail_count=0,
+        seat_taken_streak=0,
+        hold_fail_streak=0,
+        probation_until_ms=None,
+        s3_passed=False,
+    )
+
+    snap = api_main._legacy_snapshot_from_d0_state(
+        session_id=session_id,
+        d0_state=d0_state,
+        policy_version="def-pol-2.0.0",
+        challenge_max_attempts=3,
+        now_ms=1710000001234,
+        user_id=None,
+        flow_state_hint="F4M",
+    )
+
+    assert snap.flow_state == "F4M"
+    assert snap.seat_mode == "MANUAL"
 
 
 def test_queue_enter_soft_action_still_persists_d0_score_and_audit(tmp_path, monkeypatch) -> None:

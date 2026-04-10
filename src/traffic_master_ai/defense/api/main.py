@@ -2027,6 +2027,7 @@ def _execute_legacy_evaluate(
         challenge_max_attempts=out.policy.challenge_max_attempts,
         now_ms=now_ms,
         user_id=req.user_id or (existing_snapshot.user_id if existing_snapshot is not None else None),
+        flow_state_hint=req.flow_state,
     )
     _state_store.upsert(req.session_id, snap)
     if audit:
@@ -2107,17 +2108,30 @@ def _legacy_snapshot_from_d0_state(
     challenge_max_attempts: int,
     now_ms: int,
     user_id: Optional[str],
+    flow_state_hint: Optional[str] = None,
 ) -> RuntimeStateSnapshot:
     if d0_state is None:
         existing_snap = _state_store.get(session_id)
+        seat_mode = _resolve_snapshot_seat_mode(
+            seat_mode=(existing_snap.seat_mode if existing_snap is not None else None),
+            flow_state=flow_state_hint or (existing_snap.flow_state if existing_snap is not None else None),
+        )
+        flow_state = merge_runtime_flow_state(
+            existing_snap.flow_state if existing_snap is not None else None,
+            flow_state_hint,
+        )
         if existing_snap is None:
             return RuntimeStateSnapshot(
+                flow_state=flow_state,
+                seat_mode=seat_mode,
                 updated_ts_ms=now_ms,
                 policy_version=policy_version,
                 user_id=user_id,
             )
         return existing_snap.model_copy(
             update={
+                "flow_state": flow_state,
+                "seat_mode": seat_mode,
                 "policy_version": policy_version,
                 "updated_ts_ms": now_ms,
                 "user_id": user_id or existing_snap.user_id,
@@ -2128,7 +2142,7 @@ def _legacy_snapshot_from_d0_state(
     existing_snap = _state_store.get(session_id)
     seat_mode = _resolve_snapshot_seat_mode(
         seat_mode=(existing_snap.seat_mode if existing_snap is not None else None),
-        flow_state=(existing_snap.flow_state if existing_snap is not None else None),
+        flow_state=flow_state_hint or (existing_snap.flow_state if existing_snap is not None else None),
     )
     last_result: Optional[str] = None
     if bool(getattr(d0_state, "s3_passed", False)):
@@ -2137,9 +2151,12 @@ def _legacy_snapshot_from_d0_state(
         last_result = "FAILED"
 
     return RuntimeStateSnapshot(
-        flow_state=d0_flow_state_to_runtime_with_seat_mode(
-            d0_state.flow_state,
-            seat_mode=seat_mode,
+        flow_state=merge_runtime_flow_state(
+            flow_state_hint,
+            d0_flow_state_to_runtime_with_seat_mode(
+                d0_state.flow_state,
+                seat_mode=seat_mode,
+            ),
         ),  # type: ignore[arg-type]
         seat_mode=seat_mode,
         defense_tier=d0_state.defense_tier.value,  # type: ignore[arg-type]
