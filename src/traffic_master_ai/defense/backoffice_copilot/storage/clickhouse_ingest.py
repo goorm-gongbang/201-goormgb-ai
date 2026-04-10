@@ -7,6 +7,7 @@ import json
 from typing import Any, Mapping
 
 from ...audit_contract import normalize_audit_row
+from ..legacy_normalization import normalize_action, normalize_flow_state
 from .clickhouse_validators import ClickHouseAuditEventInsertRow
 
 
@@ -28,9 +29,9 @@ def map_canonical_audit_payload_to_clickhouse_row(
         event_type=_require_non_empty_text(row.get("event_type"), field_name="event_type"),
         trace_id=_optional_text(row.get("trace_id")),
         challenge_id=_optional_text(row.get("challenge_id")),
-        flow_state=_optional_text(row.get("flow_state")),
+        flow_state=normalize_flow_state(_optional_text(row.get("flow_state"))),
         risk_tier=_optional_text(row.get("risk_tier")),
-        action=_optional_text(row.get("action")),
+        action=normalize_action(_optional_text(row.get("action"))),
         reason_code=_optional_text(row.get("reason_code")),
         policy_version=_optional_text(row.get("policy_version")),
         raw_payload_json=_serialize_raw_payload_json(row.get("raw_payload")),

@@ -178,6 +178,21 @@ class BackofficeCopilotClickHouseStorageTests(unittest.TestCase):
         self.assertEqual(row.trace_id, "trace-1")
         self.assertEqual(row.raw_payload_json, '{"extra_field":{"kept":true},"request_id":"req-1"}')
 
+    def test_canonical_audit_mapping_normalizes_legacy_flow_and_action_aliases(self) -> None:
+        row = map_canonical_audit_payload_to_clickhouse_row(
+            {
+                "ts_ms": 1710000000000,
+                "session_id": "sess-legacy",
+                "event_type": "EVALUATE",
+                "flow_state": "S5",
+                "action": "CHALLENGE",
+                "raw_payload": {"request_id": "req-legacy"},
+            }
+        )
+
+        self.assertEqual(row.flow_state, "F4")
+        self.assertEqual(row.action, "REQUIRE_S3")
+
     def test_canonical_audit_mapping_rejects_missing_required_fields(self) -> None:
         with self.assertRaises(CanonicalAuditMappingError):
             map_canonical_audit_payload_to_clickhouse_row(

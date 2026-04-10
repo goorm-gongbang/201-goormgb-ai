@@ -26,7 +26,7 @@ def test_defense_api_audit_logger_emits_canonical_snake_case_row(tmp_path) -> No
         EvaluateResponse(
             allow=False,
             session_id="sess-1",
-            flow_state="S3",
+            flow_state="F2",
             defense_tier="T2",
             action="CHALLENGE",
             reason="BOT_SIGNAL",
@@ -37,7 +37,7 @@ def test_defense_api_audit_logger_emits_canonical_snake_case_row(tmp_path) -> No
             latency_ms=10,
         ),
         RuntimeStateSnapshot(
-            flow_state="S3",
+            flow_state="F2",
             defense_tier="T2",
             policy_version="policy-v1",
         ),
@@ -56,7 +56,7 @@ def test_defense_api_audit_logger_emits_canonical_snake_case_row(tmp_path) -> No
     assert row["request_id"] == "req-1"
     assert row["correlation_id"] == "corr-1"
     assert row["event_type"] == "EVALUATE"
-    assert row["flow_state"] == "S3"
+    assert row["flow_state"] == "F2"
     assert row["risk_tier"] == "T2"
     assert row["action"] == "CHALLENGE"
     assert row["reason_code"] == "BOT_SIGNAL"
@@ -65,7 +65,7 @@ def test_defense_api_audit_logger_emits_canonical_snake_case_row(tmp_path) -> No
     assert row["raw_payload"]["path"] == "/api/check"
     assert row["raw_payload"]["method"] == "POST"
     assert row["raw_payload"]["allow"] is False
-    assert row["raw_payload"]["runtime_state"]["flow_state"] == "S3"
+    assert row["raw_payload"]["runtime_state"]["flow_state"] == "F2"
 
 
 def test_defense_api_challenge_logger_emits_canonical_raw_payload(tmp_path) -> None:
@@ -96,9 +96,9 @@ def test_defense_api_target_early_return_logger_emits_canonical_row(tmp_path) ->
         request_method="post",
         target_event_type="SEAT_ENTRY",
         action="REQUIRE_S3",
-        flow_state="S3",
+        flow_state="F2",
         runtime_state=RuntimeStateSnapshot(
-            flow_state="S2",
+            flow_state="F1",
             policy_version="policy-v7",
             vqa_passed=False,
         ),
@@ -114,14 +114,14 @@ def test_defense_api_target_early_return_logger_emits_canonical_row(tmp_path) ->
     assert row["session_id"] == "sess-early-return"
     assert row["trace_id"] == "trace-early-return"
     assert row["event_type"] == "EVALUATE"
-    assert row["flow_state"] == "S3"
+    assert row["flow_state"] == "F2"
     assert row["action"] == "REQUIRE_S3"
     assert row["reason_code"] == "SEAT_ENTRY_VQA_REQUIRED"
     assert row["policy_version"] == "policy-v7"
     assert row["raw_payload"]["decision_source"] == "target_api_early_return"
     assert row["raw_payload"]["target_event_type"] == "SEAT_ENTRY"
     assert row["raw_payload"]["decision_reason"] == "seat_entry_immediate"
-    assert row["raw_payload"]["runtime_state"]["flow_state"] == "S2"
+    assert row["raw_payload"]["runtime_state"]["flow_state"] == "F1"
 
 
 def test_validate_canonical_audit_row_rejects_unknown_top_level_field() -> None:

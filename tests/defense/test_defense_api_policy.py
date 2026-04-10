@@ -22,7 +22,7 @@ def test_vqa_gate_requires_challenge_once_after_queue() -> None:
 
     assert resp.allow is False
     assert resp.action == "CHALLENGE"
-    assert resp.flow_state == "S3"
+    assert resp.flow_state == "F2"
     assert "S3_QUEUE_EXIT_VQA_REQUIRED" in resp.rule_hits
     assert store.get("sess-1") is not None
     assert snap.vqa_passed is False
@@ -33,7 +33,7 @@ def test_repetitive_pattern_t2_gates_high_value_write() -> None:
     store.upsert(
         "sess-2",
         RuntimeStateSnapshot(
-            flow_state="S5",
+            flow_state="F4",
             defense_tier="T1",
             vqa_passed=True,
             updated_ts_ms=1772500000000,
@@ -72,7 +72,7 @@ def test_challenge_fail_threshold_blocks() -> None:
     assert resp.allow is False
     assert resp.action == "BLOCK"
     assert resp.defense_tier == "T3"
-    assert resp.flow_state == "SX"
+    assert resp.flow_state == "FX"
     assert "R2_CHALLENGE_FAIL_THRESHOLD" in resp.rule_hits
 
 
@@ -81,7 +81,7 @@ def test_s6_does_not_insert_new_challenge() -> None:
     store.upsert(
         "sess-4",
         RuntimeStateSnapshot(
-            flow_state="S6",
+            flow_state="FX",
             defense_tier="T2",
             vqa_passed=False,
             risk_score=0.7,
@@ -93,7 +93,7 @@ def test_s6_does_not_insert_new_challenge() -> None:
         path="/api/payments",
         method="POST",
         timestamp=1772500000000,
-        flow_state="S6",
+        flow_state="FX",
         defense_tier="T2",
         repetitive_pattern_count=5,
     )
@@ -102,8 +102,8 @@ def test_s6_does_not_insert_new_challenge() -> None:
 
     assert resp.allow is True
     assert resp.action == "NONE"
-    assert resp.flow_state == "S6"
-    assert "F5_NO_NEW_INTERVENTION_ON_S6" in resp.rule_hits
+    assert resp.flow_state == "FX"
+    assert "FX_NO_NEW_INTERVENTION_ON_TERMINAL" in resp.rule_hits
 
 
 def test_t3_without_decisive_hit_uses_gate_not_forced_block() -> None:
@@ -111,7 +111,7 @@ def test_t3_without_decisive_hit_uses_gate_not_forced_block() -> None:
     store.upsert(
         "sess-t3-1",
         RuntimeStateSnapshot(
-            flow_state="S5",
+            flow_state="F4",
             defense_tier="T3",
             vqa_passed=True,
             risk_score=0.9,

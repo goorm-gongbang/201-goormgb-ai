@@ -18,10 +18,6 @@ _ALLOWED_PATHS: frozenset[str] = frozenset(
         "risk.probation_seconds",
         "planner.throttle_delay_ms.T1",
         "planner.throttle_delay_ms.T2",
-        "challenge.max_attempts",
-        "challenge.cooldown_ms.first",
-        "challenge.cooldown_ms.second",
-        "challenge.halt_seconds",
     }
 )
 
@@ -30,10 +26,6 @@ _INTEGER_PATHS: frozenset[str] = frozenset(
         "risk.probation_seconds",
         "planner.throttle_delay_ms.T1",
         "planner.throttle_delay_ms.T2",
-        "challenge.max_attempts",
-        "challenge.cooldown_ms.first",
-        "challenge.cooldown_ms.second",
-        "challenge.halt_seconds",
     }
 )
 
@@ -58,10 +50,6 @@ _BASELINE_VALUES: dict[str, float] = {
     "risk.probation_seconds": 45,
     "planner.throttle_delay_ms.T1": 80,
     "planner.throttle_delay_ms.T2": 250,
-    "challenge.max_attempts": 2,
-    "challenge.cooldown_ms.first": 0,
-    "challenge.cooldown_ms.second": 2500,
-    "challenge.halt_seconds": 30,
 }
 
 _NUMERIC_BOUNDS: dict[str, tuple[float, float]] = {
@@ -73,10 +61,6 @@ _NUMERIC_BOUNDS: dict[str, tuple[float, float]] = {
     "risk.probation_seconds": (10, 120),
     "planner.throttle_delay_ms.T1": (0, 200),
     "planner.throttle_delay_ms.T2": (100, 600),
-    "challenge.max_attempts": (1, 3),
-    "challenge.cooldown_ms.first": (0, 3000),
-    "challenge.cooldown_ms.second": (0, 5000),
-    "challenge.halt_seconds": (0, 120),
 }
 
 
@@ -243,11 +227,6 @@ class ProposalValidator:
         if delay_t2 < delay_t1:
             errors.append("guardrail violated: T2 throttle delay must be >= T1")
 
-        cd1 = working_values["challenge.cooldown_ms.first"]
-        cd2 = working_values["challenge.cooldown_ms.second"]
-        if cd2 < cd1:
-            errors.append("guardrail violated: challenge cooldown second must be >= first")
-
         sanitized = {
             "proposal_id": proposal_id,
             "base_policy_version": base_policy_version,
@@ -287,10 +266,6 @@ def proposal_base_values_from_policy(policy: PolicySnapshot) -> dict[str, float]
         "risk.probation_seconds": policy.probation_seconds_after_s3_pass,
         "planner.throttle_delay_ms.T1": policy.throttle_delay_ms_t1,
         "planner.throttle_delay_ms.T2": policy.throttle_delay_ms_t2,
-        "challenge.max_attempts": policy.challenge_max_attempts,
-        "challenge.cooldown_ms.first": policy.challenge_cooldown_ms_1,
-        "challenge.cooldown_ms.second": policy.challenge_cooldown_ms_2,
-        "challenge.halt_seconds": policy.challenge_halt_seconds,
     }
 
 

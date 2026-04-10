@@ -746,34 +746,6 @@ def _resolve_path(document: dict[str, Any], path: str) -> Optional[tuple[dict[st
         "tier.hysteresis.margin": ("parameters", "tiering", "hysteresis", "margin"),
         "planner.throttle_delay_ms.T1": ("parameters", "throttle", "delay_ms", "T1"),
         "planner.throttle_delay_ms.T2": ("parameters", "throttle", "delay_ms", "T2"),
-        "challenge.max_attempts": (
-            "parameters",
-            "challenge",
-            "failure_policy",
-            "max_attempts_per_window",
-        ),
-        "challenge.cooldown_ms.first": (
-            "parameters",
-            "challenge",
-            "failure_policy",
-            "cooldown_ms",
-            "first_fail",
-        ),
-        "challenge.cooldown_ms.second": (
-            "parameters",
-            "challenge",
-            "failure_policy",
-            "cooldown_ms",
-            "second_fail",
-        ),
-        "challenge.halt_seconds": (
-            "parameters",
-            "challenge",
-            "failure_policy",
-            "on_exceed_max_attempts",
-            "temporary_lock",
-            "halt_seconds",
-        ),
     }
     parts = mapping.get(path)
     if parts is None:

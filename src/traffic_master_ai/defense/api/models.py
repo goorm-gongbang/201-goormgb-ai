@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-FlowStateStr = Literal["S0", "S1", "S2", "S3", "S4", "S4R", "S5", "S5R", "S6", "SX"]
+from .runtime_flow_state import normalize_runtime_flow_state
+
+FlowStateStr = Literal["F0", "F1", "F2", "F3", "F3R", "F3M", "F4", "F4R", "F4M", "FX"]
+SeatModeStr = Literal["RECOMMENDATION", "MANUAL"]
 DefenseTierStr = Literal["T0", "T1", "T2", "T3"]
 DefenseActionStr = Literal["NONE", "CHALLENGE", "THROTTLE", "GATE", "BLOCK"]
 ChallengeTypeStr = Literal["queue_gate", "catch_ball"]
@@ -77,6 +80,16 @@ class EvaluateRequest(BaseModel):
 
     model_config = {"extra": "forbid"}
 
+    @field_validator("flow_state", mode="before")
+    @classmethod
+    def _normalize_flow_state(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        normalized = normalize_runtime_flow_state(str(value), default=None)
+        if normalized is None:
+            return value
+        return normalized
+
 
 class EvaluateResponse(BaseModel):
     """AI defense decision response consumed by authz adapter."""
@@ -98,6 +111,14 @@ class EvaluateResponse(BaseModel):
 
     model_config = {"extra": "forbid"}
 
+    @field_validator("flow_state", mode="before")
+    @classmethod
+    def _normalize_flow_state(cls, value: Any) -> Any:
+        normalized = normalize_runtime_flow_state(str(value), default=None)
+        if normalized is None:
+            return value
+        return normalized
+
 
 class HealthResponse(BaseModel):
     """Basic liveness/readiness response."""
@@ -110,9 +131,12 @@ class HealthResponse(BaseModel):
 class RuntimeStateSnapshot(BaseModel):
     """Runtime session state kept in Redis (or in-memory fallback)."""
 
-    flow_state: FlowStateStr = "S0"
+    flow_state: FlowStateStr = "F0"
+    seat_mode: SeatModeStr | None = None
     defense_tier: DefenseTierStr = "T0"
     risk_score: float = 0.0
+    last_step_risk: float | None = None
+    last_guard_ts_ms: int | None = None
     challenge_fail_count: int = 0
     seat_taken_streak: int = 0
     hold_fail_streak: int = 0
@@ -142,6 +166,14 @@ class RuntimeStateSnapshot(BaseModel):
 
     model_config = {"populate_by_name": True, "extra": "forbid"}
 
+    @field_validator("flow_state", mode="before")
+    @classmethod
+    def _normalize_flow_state(cls, value: Any) -> Any:
+        normalized = normalize_runtime_flow_state(str(value), default="F0")
+        if normalized is None:
+            return "F0"
+        return normalized
+
 
 class ChallengeStartRequest(BaseModel):
     """Start a one-time challenge gate."""
@@ -152,6 +184,16 @@ class ChallengeStartRequest(BaseModel):
     challenge_type: ChallengeTypeStr = "catch_ball"
 
     model_config = {"extra": "forbid"}
+
+    @field_validator("flow_state", mode="before")
+    @classmethod
+    def _normalize_flow_state(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        normalized = normalize_runtime_flow_state(str(value), default=None)
+        if normalized is None:
+            return value
+        return normalized
 
 
 class ChallengeStartResponse(BaseModel):
@@ -239,6 +281,16 @@ class RuntimeVqaMarkRequest(BaseModel):
 
     model_config = {"extra": "forbid"}
 
+    @field_validator("flow_state", mode="before")
+    @classmethod
+    def _normalize_flow_state(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        normalized = normalize_runtime_flow_state(str(value), default=None)
+        if normalized is None:
+            return value
+        return normalized
+
 
 class RuntimeVqaMarkResponse(BaseModel):
     """VQA status sync response."""
@@ -248,6 +300,14 @@ class RuntimeVqaMarkResponse(BaseModel):
     flow_state: FlowStateStr
     defense_tier: DefenseTierStr
     updated_ts_ms: int
+
+    @field_validator("flow_state", mode="before")
+    @classmethod
+    def _normalize_flow_state(cls, value: Any) -> Any:
+        normalized = normalize_runtime_flow_state(str(value), default=None)
+        if normalized is None:
+            return value
+        return normalized
 
 
 class AiPrecheckRequest(BaseModel):

@@ -96,7 +96,7 @@ def main() -> int:
             "path": "/api/holds",
             "method": "POST",
             "timestamp": 1772500000000,
-            "flow_state": "S4",
+            "flow_state": "F3",
         },
     )
     print("evaluate ->", status, body.get("action"), body.get("reason"))
@@ -106,7 +106,7 @@ def main() -> int:
     status, start_body = _post(
         args.base,
         "/challenge/start",
-        {"session_id": args.session_id, "flow_state": "S3", "challenge_type": "catch_ball"},
+        {"session_id": args.session_id, "flow_state": "F2", "challenge_type": "catch_ball"},
     )
     print("challenge/start ->", status)
     if status != 200:

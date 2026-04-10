@@ -125,14 +125,13 @@ class DecisionPolicy:
             tier = "T3"
             rule_hits.append("R2_CHALLENGE_FAIL_THRESHOLD")
 
-        # S6 invariant: no new friction. BLOCK only when decisive.
-        if flow_state == "S6":
-            rule_hits.append("F5_NO_NEW_INTERVENTION_ON_S6")
+        if flow_state == "FX":
+            rule_hits.append("FX_NO_NEW_INTERVENTION_ON_TERMINAL")
             if "R2_CHALLENGE_FAIL_THRESHOLD" in rule_hits:
                 resp = self._build_response(
                     allow=False,
                     req=req,
-                    flow_state="SX",
+                    flow_state="FX",
                     defense_tier="T3",
                     actions=["BLOCK"],
                     reason="BLOCKED",
@@ -160,7 +159,7 @@ class DecisionPolicy:
             resp = self._build_response(
                 allow=False,
                 req=req,
-                flow_state="SX",
+                flow_state="FX",
                 defense_tier="T3",
                 actions=["BLOCK"],
                 reason="BLOCKED",
@@ -176,7 +175,7 @@ class DecisionPolicy:
             resp = self._build_response(
                 allow=False,
                 req=req,
-                flow_state="S3",
+                flow_state="F2",
                 defense_tier=tier,
                 actions=["CHALLENGE"],
                 reason="CHALLENGE_REQUIRED",

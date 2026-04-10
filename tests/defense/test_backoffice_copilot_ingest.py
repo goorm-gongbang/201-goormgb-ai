@@ -154,7 +154,24 @@ def test_semantic_mapping_prefers_known_contract_paths_over_unrelated_nested_key
     assert semantics.reason_code == "SAFE_CODE"
     assert semantics.terminal_reason == "SAFE_REASON"
 
+def test_semantic_mapping_normalizes_legacy_flow_state_and_action_aliases() -> None:
+    row = DefenseAuditEventRow(
+        ts_ms=400,
+        trace_id="trace-4",
+        session_id="sess-4",
+        event_type="EVALUATE",
+        payload={
+            "flowState": "S4",
+            "serverDecision": {"action": "CHALLENGE", "riskTier": "T2"},
+        },
+    )
 
+    semantics = map_event_semantics(row)
+
+    assert semantics.flow_state == "F3"
+    assert semantics.latest_flow_state == "F3"
+    assert semantics.latest_action == "REQUIRE_S3"
+    assert semantics.terminal_outcome == "NOT_BLOCKED"
 def test_loader_compatibility_read_keeps_legacy_row_support() -> None:
     row = parse_defense_audit_event_row(
         {

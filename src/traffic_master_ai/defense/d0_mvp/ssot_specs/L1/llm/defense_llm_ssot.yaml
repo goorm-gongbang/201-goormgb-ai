@@ -228,6 +228,7 @@ modules:
         - "risk.probation_seconds"
         - "planner.throttle_delay_ms.T1"
         - "planner.throttle_delay_ms.T2"
+      product_locked_paths:
         - "challenge.max_attempts"
         - "challenge.cooldown_ms.first"
         - "challenge.cooldown_ms.second"
@@ -247,8 +248,6 @@ modules:
           T2: { min: 100, max: 600 }
         tier.thresholds:
           enforce_monotonic: true
-        challenge.max_attempts: { min: 1, max: 3 }
-        challenge.halt_seconds: { min: 0, max: 120 }
 
     rollback_policy_template:
       default_rollback_conditions:
