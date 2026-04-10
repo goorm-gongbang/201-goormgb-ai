@@ -40,7 +40,7 @@ class ArchiveLoopIntervalTests(unittest.IsolatedAsyncioTestCase):
                 clear=True,
             ),
             patch(
-                "traffic_master_ai.defense.api.archive_runtime.rotate_and_upload_audit_log",
+                "traffic_master_ai.defense.api.archive_runtime.flush_audit_log_to_archive",
                 side_effect=asyncio.CancelledError,
             ) as rotate_mock,
         ):

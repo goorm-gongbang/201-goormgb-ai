@@ -631,3 +631,47 @@ def test_legacy_block_forwards_user_id_to_decision_engine(monkeypatch) -> None:
     assert block_sync_calls[0]["session_id"] == state_key
     assert block_sync_calls[0]["trigger"] == "ai_evaluate_decision_block"
     assert block_sync_calls[0]["trace_id"]
+
+
+def test_legacy_evaluate_exception_fails_open_without_runtime_refresh(monkeypatch) -> None:
+    sid = "sess-eval-legacy-exception-1"
+    state_key = f"{sid}:{MATCH_ID}"
+    snap = RuntimeStateSnapshot(
+        flow_state="F3M",
+        seat_mode="MANUAL",
+        defense_tier="T1",
+        risk_score=0.31,
+        updated_ts_ms=1710000000000,
+    )
+    api_main._state_store.upsert(state_key, snap)
+
+    refresh_call_count = 0
+
+    def _stub_execute_legacy_evaluate(_req, audit=True):
+        raise RuntimeError("legacy evaluate exploded")
+
+    def _stub_refresh_runtime_snapshot_from_decision_engine(**kwargs):
+        nonlocal refresh_call_count
+        refresh_call_count += 1
+        return kwargs["snap"]
+
+    monkeypatch.setattr(api_main, "_execute_legacy_evaluate", _stub_execute_legacy_evaluate)
+    monkeypatch.setattr(
+        api_main,
+        "_refresh_runtime_snapshot_from_decision_engine",
+        _stub_refresh_runtime_snapshot_from_decision_engine,
+    )
+
+    response = client.post(
+        "/ai/evaluate",
+        json=_evaluate_payload(
+            sid=sid,
+            event_type="SEAT_HOLDS",
+            path=f"/seat/matches/{MATCH_ID}/seat-holds",
+            method="POST",
+        ),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"decision": {"action": "NONE"}}
+    assert refresh_call_count == 1

@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..storage_env import load_s3_archive_config_from_env
-from .audit import DefenseDecisionAuditLogger, S3Uploader, rotate_and_upload_audit_log
+from .audit import DefenseDecisionAuditLogger, S3Uploader, flush_audit_log_to_archive
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ async def run_s3_archive_loop(
     while True:
         try:
             await sleep(interval_seconds)
-            rotate_and_upload_audit_log(audit_logger, uploader)
+            flush_audit_log_to_archive(audit_logger, uploader)
         except asyncio.CancelledError:
             break
         except Exception as exc:
