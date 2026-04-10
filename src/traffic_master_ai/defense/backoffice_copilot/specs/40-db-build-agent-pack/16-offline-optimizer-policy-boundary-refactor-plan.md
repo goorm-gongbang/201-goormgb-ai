@@ -22,6 +22,15 @@
 
 ## 3. 작업 로그
 
+### 2026-04-10
+
+- `fix/runtime-scoring-unification-devbase`의 `fix: persist runtime scoring across shortcut paths`를 `chore/legacy-defense-cleanup`에 통합
+- `src/traffic_master_ai/defense/api/main.py`에서 soft action shortcut 이전에도 D0 evaluate를 먼저 실행해 `risk_score`, `defense_tier`, `last_step_risk`, `last_guard_ts_ms`가 runtime snapshot과 Redis state에 반영되도록 정리
+- `src/traffic_master_ai/defense/api/models.py`에 `last_step_risk`, `last_guard_ts_ms` 노출 유지
+- `tests/defense/test_defense_api_evaluate_contract.py`, `tests/defense/test_defense_api_challenge.py`를 legacy cleanup의 `F*` runtime state 기준과 runtime scoring persistence 기준이 함께 성립하도록 통합
+- dev 운영 해석 메모: Grafana `THROTTLE`는 ClickHouse audit action 집계이고, Redis 관측은 `tm:sess:*` 또는 `tm:decision-state:session:*` 키를 직접 보는 경로라서 두 값이 바로 같다고 가정하면 안 됨
+- dev Helm 값 기준 AI image tag는 아직 `a16e08e`라서, 클러스터가 이 수정 커밋을 실제로 배포받지 않았을 수 있음
+
 ### 2026-04-09
 
 - `src/traffic_master_ai/defense/d0_mvp/api/admin_console.py` 제거
