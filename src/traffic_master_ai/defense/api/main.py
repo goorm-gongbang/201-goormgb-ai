@@ -119,8 +119,12 @@ from .models import (
     RuntimeVqaMarkResponse,
 )
 from .runtime_flow_state import (
-    d0_flow_state_to_runtime,
+    d0_flow_state_to_runtime_with_seat_mode,
+    merge_runtime_flow_state,
+    normalize_seat_mode,
     runtime_flow_state_to_d0,
+    runtime_flow_state_to_seat_mode,
+    target_event_to_seat_mode,
     target_event_to_runtime_flow_state,
 )
 from .state import build_runtime_store_from_env
@@ -322,7 +326,12 @@ async def readyz() -> HealthResponse:
 async def runtime_state(session_id: str) -> RuntimeStateSnapshot:
     snap = _state_store.get(session_id)
     if snap is not None:
-        return snap
+        return _refresh_runtime_snapshot_from_decision_engine(
+            state_key=session_id,
+            snap=snap,
+            now_ms=int(time.time() * 1000),
+            user_id=snap.user_id,
+        )
 
     decision_state = _decision_engine.session_state.get(session_id)
     if decision_state is None:
@@ -573,6 +582,12 @@ async def ai_evaluate(
         now_ms=now_ms,
         user_id=user_id,
     )
+    snap = _remember_seat_mode_for_target_event(
+        state_key=state_key,
+        snap=snap,
+        event_type=req.event.event_type,
+        now_ms=now_ms,
+    )
     legacy_req = _build_legacy_request_from_target(
         state_key=state_key,
         trace_id=trace_id,
@@ -666,6 +681,13 @@ async def ai_evaluate(
         now_ms=now_ms,
         user_id=user_id,
     )
+    snap = _remember_seat_mode_for_target_event(
+        state_key=state_key,
+        snap=snap,
+        event_type=req.event.event_type,
+        now_ms=now_ms,
+    )
+    _state_store.upsert(state_key, snap)
     soft_action = _feature_soft_action(event_type=req.event.event_type, snap=snap)
     if soft_action is not None:
         return _build_evaluate_response(
@@ -876,6 +898,7 @@ async def ai_challenge_verify(
             session_id=state_key,
             now_ms=now_ms,
             user_id=user_id or snap.user_id,
+            snap=next_snap,
         ) if vqa_risk_applied else {}
         _audit.log_challenge_event(
             session_id=state_key,
@@ -917,6 +940,7 @@ async def ai_challenge_verify(
             "active_challenge_expires_at_ms": None,
             "updated_ts_ms": now_ms,
         }
+        next_snap = snap.model_copy(update=pass_update)
         _upsert_match_state_aliases(
             session_ids=session_id_candidates,
             match_id=req.match_id,
@@ -942,6 +966,7 @@ async def ai_challenge_verify(
             session_id=state_key,
             now_ms=now_ms,
             user_id=user_id or snap.user_id,
+            snap=next_snap,
         ) if vqa_risk_applied else {}
         if runtime_overlay:
             pass_update.update(runtime_overlay)
@@ -1004,6 +1029,7 @@ async def ai_challenge_verify(
         session_id=state_key,
         now_ms=now_ms,
         user_id=user_id or snap.user_id,
+        snap=next_snap,
     ) if vqa_risk_applied else {}
     _audit.log_challenge_event(
         session_id=state_key,
@@ -1047,12 +1073,17 @@ async def storage_meta() -> dict[str, str]:
 async def runtime_mark_vqa(req: RuntimeVqaMarkRequest) -> RuntimeVqaMarkResponse:
     now_ms = int(time.time() * 1000)
     snap = _state_store.get(req.session_id) or RuntimeStateSnapshot(updated_ts_ms=now_ms)
+    seat_mode = _resolve_snapshot_seat_mode(
+        seat_mode=snap.seat_mode,
+        flow_state=req.flow_state or snap.flow_state,
+    )
 
     if req.vqa_passed:
         next_flow = req.flow_state or snap.flow_state
         next_snap = snap.model_copy(
             update={
                 "flow_state": next_flow,
+                "seat_mode": seat_mode,
                 "vqa_required": False,
                 "vqa_passed": True,
                 "vqa_last_result": "PASSED",
@@ -1066,6 +1097,7 @@ async def runtime_mark_vqa(req: RuntimeVqaMarkRequest) -> RuntimeVqaMarkResponse
         next_snap = snap.model_copy(
             update={
                 "flow_state": next_flow,
+                "seat_mode": seat_mode,
                 "vqa_required": True,
                 "vqa_passed": False,
                 "updated_ts_ms": now_ms,
@@ -1099,6 +1131,7 @@ def _reset_match_state_for_new_booking_attempt(
     return snap.model_copy(
         update={
             "flow_state": "F0",
+            "seat_mode": None,
             "defense_tier": "T0",
             "risk_score": 0.0,
             "last_step_risk": None,
@@ -1141,6 +1174,7 @@ def _reset_sid_level_vqa_state(
         snap.model_copy(
             update={
                 "flow_state": "F0",
+                "seat_mode": None,
                 "risk_score": 0.0,
                 "last_step_risk": None,
                 "last_guard_ts_ms": None,
@@ -1185,6 +1219,7 @@ def _hydrate_match_state_from_sid_vqa_mark(
     promoted = snap.model_copy(
         update={
             "flow_state": next_flow,
+            "seat_mode": sid_snap.seat_mode,
             "vqa_required": False,
             "vqa_passed": True,
             "vqa_last_result": "PASSED",
@@ -1576,6 +1611,46 @@ def _target_event_to_flow_state(event_type: str) -> str:
     return target_event_to_runtime_flow_state(event_type)
 
 
+def _resolve_snapshot_seat_mode(
+    *,
+    seat_mode: Optional[str],
+    flow_state: Optional[str] = None,
+    event_type: Optional[str] = None,
+) -> Optional[str]:
+    return (
+        normalize_seat_mode(seat_mode, default=None)
+        or runtime_flow_state_to_seat_mode(flow_state)
+        or target_event_to_seat_mode(event_type or "")
+    )
+
+
+def _remember_seat_mode_for_target_event(
+    *,
+    state_key: str,
+    snap: RuntimeStateSnapshot,
+    event_type: str,
+    now_ms: int,
+) -> RuntimeStateSnapshot:
+    target_seat_mode = target_event_to_seat_mode(event_type)
+    seat_mode = _resolve_snapshot_seat_mode(
+        seat_mode=snap.seat_mode,
+        flow_state=snap.flow_state,
+        event_type=event_type,
+    )
+    next_flow_state = _target_event_to_flow_state(event_type) if target_seat_mode is not None else snap.flow_state
+    if seat_mode == snap.seat_mode and next_flow_state == snap.flow_state:
+        return snap
+    next_snap = snap.model_copy(
+        update={
+            "flow_state": next_flow_state,
+            "seat_mode": seat_mode,
+            "updated_ts_ms": now_ms,
+        }
+    )
+    _state_store.upsert(state_key, next_snap)
+    return next_snap
+
+
 def _normalize(value: float, lower: float, upper: float) -> float:
     if upper <= lower:
         return 0.0
@@ -1734,13 +1809,26 @@ def _decision_engine_runtime_overlay(
     session_id: str,
     now_ms: int,
     user_id: Optional[str],
+    snap: Optional[RuntimeStateSnapshot] = None,
 ) -> dict[str, Any]:
     d0_state = _decision_engine.session_state.get(session_id)
     if d0_state is None:
         return {}
 
+    seat_mode = _resolve_snapshot_seat_mode(
+        seat_mode=(snap.seat_mode if snap is not None else None),
+        flow_state=(snap.flow_state if snap is not None else None),
+    )
+    runtime_flow_state = d0_flow_state_to_runtime_with_seat_mode(
+        d0_state.flow_state,
+        seat_mode=seat_mode,
+    )
+    if snap is not None and max(0, now_ms - snap.updated_ts_ms) <= 300_000:
+        runtime_flow_state = merge_runtime_flow_state(snap.flow_state, runtime_flow_state)
+
     return {
-        "flow_state": d0_flow_state_to_runtime(d0_state.flow_state),
+        "flow_state": runtime_flow_state,
+        "seat_mode": seat_mode,
         "defense_tier": d0_state.defense_tier.value,
         "risk_score": float(d0_state.risk_score),
         "last_step_risk": (
@@ -1833,6 +1921,7 @@ def _refresh_runtime_snapshot_from_decision_engine(
         session_id=state_key,
         now_ms=now_ms,
         user_id=user_id or snap.user_id,
+        snap=snap,
     )
     if not runtime_overlay:
         return snap
@@ -1986,7 +2075,16 @@ def _legacy_response_from_d0(
     return EvaluateResponse(
         allow=bool(orchestrated.allow),
         session_id=req.session_id,
-        flow_state=d0_flow_state_to_runtime(flow_state_value),  # type: ignore[arg-type]
+        flow_state=merge_runtime_flow_state(
+            req.flow_state,
+            d0_flow_state_to_runtime_with_seat_mode(
+                flow_state_value,
+                seat_mode=_resolve_snapshot_seat_mode(
+                    seat_mode=None,
+                    flow_state=req.flow_state,
+                ),
+            ),
+        ),  # type: ignore[arg-type]
         defense_tier=decision.tier.value,  # type: ignore[arg-type]
         action=action,  # type: ignore[arg-type]
         actions=[action],  # type: ignore[list-item]
@@ -2011,13 +2109,27 @@ def _legacy_snapshot_from_d0_state(
     user_id: Optional[str],
 ) -> RuntimeStateSnapshot:
     if d0_state is None:
-        return RuntimeStateSnapshot(
-            updated_ts_ms=now_ms,
-            policy_version=policy_version,
-            user_id=user_id,
+        existing_snap = _state_store.get(session_id)
+        if existing_snap is None:
+            return RuntimeStateSnapshot(
+                updated_ts_ms=now_ms,
+                policy_version=policy_version,
+                user_id=user_id,
+            )
+        return existing_snap.model_copy(
+            update={
+                "policy_version": policy_version,
+                "updated_ts_ms": now_ms,
+                "user_id": user_id or existing_snap.user_id,
+            }
         )
 
     grace = _decision_engine.session_state.get_s3_grace(session_id) or {}
+    existing_snap = _state_store.get(session_id)
+    seat_mode = _resolve_snapshot_seat_mode(
+        seat_mode=(existing_snap.seat_mode if existing_snap is not None else None),
+        flow_state=(existing_snap.flow_state if existing_snap is not None else None),
+    )
     last_result: Optional[str] = None
     if bool(getattr(d0_state, "s3_passed", False)):
         last_result = "PASSED"
@@ -2025,7 +2137,11 @@ def _legacy_snapshot_from_d0_state(
         last_result = "FAILED"
 
     return RuntimeStateSnapshot(
-        flow_state=d0_flow_state_to_runtime(d0_state.flow_state),  # type: ignore[arg-type]
+        flow_state=d0_flow_state_to_runtime_with_seat_mode(
+            d0_state.flow_state,
+            seat_mode=seat_mode,
+        ),  # type: ignore[arg-type]
+        seat_mode=seat_mode,
         defense_tier=d0_state.defense_tier.value,  # type: ignore[arg-type]
         risk_score=float(d0_state.risk_score),
         last_step_risk=(

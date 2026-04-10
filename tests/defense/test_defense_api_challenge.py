@@ -1,15 +1,106 @@
 import base64
 import json
 import os
+import sys
+import types
 import uuid
 
-import jwt
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("CI", "true")
 
+if "pythonjsonlogger" not in sys.modules:
+    class _JsonFormatter:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def add_fields(self, log_record, record, message_dict):
+            return None
+
+    sys.modules["pythonjsonlogger"] = types.SimpleNamespace(
+        jsonlogger=types.SimpleNamespace(JsonFormatter=_JsonFormatter)
+    )
+
+if "jwt" not in sys.modules:
+    def _jwt_encode(payload, key, algorithm=None):
+        sid = payload.get("sid", "")
+        return f"stub-jwt:{sid}"
+
+    def _jwt_decode(token, options=None, **kwargs):
+        if isinstance(token, str) and token.startswith("stub-jwt:"):
+            return {"sid": token.split(":", 1)[1]}
+        return {}
+
+    sys.modules["jwt"] = types.SimpleNamespace(
+        decode=_jwt_decode,
+        encode=_jwt_encode,
+    )
+
+if "opentelemetry" not in sys.modules:
+    class _NoOp:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __call__(self, *args, **kwargs):
+            return None
+
+        def add_span_processor(self, *args, **kwargs):
+            return None
+
+    class _Resource:
+        @staticmethod
+        def create(payload):
+            return payload
+
+    class _FastAPIInstrumentor:
+        @staticmethod
+        def instrument_app(app):
+            return app
+
+    root = types.ModuleType("opentelemetry")
+    root.metrics = types.SimpleNamespace(set_meter_provider=lambda provider: None)
+    root.trace = types.SimpleNamespace(set_tracer_provider=lambda provider: None)
+    sys.modules["opentelemetry"] = root
+    sys.modules["opentelemetry.metrics"] = root.metrics
+    sys.modules["opentelemetry.trace"] = root.trace
+    sys.modules["opentelemetry.exporter"] = types.ModuleType("opentelemetry.exporter")
+    sys.modules["opentelemetry.exporter.otlp"] = types.ModuleType("opentelemetry.exporter.otlp")
+    sys.modules["opentelemetry.exporter.otlp.proto"] = types.ModuleType("opentelemetry.exporter.otlp.proto")
+    sys.modules["opentelemetry.exporter.otlp.proto.grpc"] = types.ModuleType("opentelemetry.exporter.otlp.proto.grpc")
+    sys.modules["opentelemetry.exporter.otlp.proto.grpc.metric_exporter"] = types.SimpleNamespace(
+        OTLPMetricExporter=_NoOp
+    )
+    sys.modules["opentelemetry.exporter.otlp.proto.grpc.trace_exporter"] = types.SimpleNamespace(
+        OTLPSpanExporter=_NoOp
+    )
+    sys.modules["opentelemetry.instrumentation"] = types.ModuleType("opentelemetry.instrumentation")
+    sys.modules["opentelemetry.instrumentation.fastapi"] = types.SimpleNamespace(
+        FastAPIInstrumentor=_FastAPIInstrumentor
+    )
+    sys.modules["opentelemetry.sdk"] = types.ModuleType("opentelemetry.sdk")
+    sys.modules["opentelemetry.sdk.metrics"] = types.SimpleNamespace(MeterProvider=_NoOp)
+    sys.modules["opentelemetry.sdk.metrics.export"] = types.SimpleNamespace(
+        PeriodicExportingMetricReader=_NoOp
+    )
+    sys.modules["opentelemetry.sdk.resources"] = types.SimpleNamespace(Resource=_Resource)
+    sys.modules["opentelemetry.sdk.trace"] = types.SimpleNamespace(TracerProvider=_NoOp)
+    sys.modules["opentelemetry.sdk.trace.export"] = types.SimpleNamespace(
+        BatchSpanProcessor=_NoOp
+    )
+    sys.modules["opentelemetry.semconv"] = types.ModuleType("opentelemetry.semconv")
+    sys.modules["opentelemetry.semconv.resource"] = types.SimpleNamespace(
+        ResourceAttributes=types.SimpleNamespace(
+            SERVICE_NAME="service.name",
+            SERVICE_NAMESPACE="service.namespace",
+            SERVICE_VERSION="service.version",
+        )
+    )
+
+import jwt
+
 import traffic_master_ai.defense.api.main as api_main
 from traffic_master_ai.defense.api.main import _decision_engine, _state_store
+from traffic_master_ai.defense.api.models import RuntimeStateSnapshot
 
 client = TestClient(api_main.app)
 MATCH_ID = 687
@@ -197,6 +288,59 @@ def test_ai_challenge_verify_missing_vqa_telemetry_fails_and_records_risk() -> N
     assert runtime_body["vqa_passed"] is False
     assert runtime_body["risk_score"] > 0.0
     assert runtime_body["last_step_risk"] is not None
+
+
+def test_runtime_state_refreshes_stale_snapshot_from_decision_engine() -> None:
+    session_id = _session_id("sess-runtime-refresh")
+    state_key = _state_key(session_id)
+    policy_version = _decision_engine.policy_loader.load(session_id=state_key).policy_version
+
+    _state_store.upsert(
+        state_key,
+        RuntimeStateSnapshot(
+            flow_state="F4M",
+            seat_mode="MANUAL",
+            defense_tier="T0",
+            risk_score=0.0,
+            updated_ts_ms=1,
+        ),
+    )
+
+    _decision_engine.session_state.get_or_create(state_key, policy_version=policy_version)
+    _decision_engine.session_state.update_by_role(
+        "guard",
+        state_key,
+        {
+            "riskScore": 0.82,
+            "defenseTier": "T2",
+            "lastStepRisk": 0.82,
+            "lastGuardTsMs": 1710000000000,
+        },
+        is_allow=True,
+    )
+    _decision_engine.session_state.update_by_role(
+        "orchestrator",
+        state_key,
+        {"flowState": "S4"},
+        is_allow=True,
+    )
+
+    runtime = client.get(f"/runtime/{state_key}")
+    assert runtime.status_code == 200
+    body = runtime.json()
+    assert body["flow_state"] == "F3M"
+    assert body["seat_mode"] == "MANUAL"
+    assert body["defense_tier"] == "T2"
+    assert body["risk_score"] == 0.82
+    assert body["last_step_risk"] == 0.82
+    assert body["last_guard_ts_ms"] == 1710000000000
+
+    refreshed = _state_store.get(state_key)
+    assert refreshed is not None
+    assert refreshed.flow_state == "F3M"
+    assert refreshed.seat_mode == "MANUAL"
+    assert refreshed.defense_tier == "T2"
+    assert refreshed.risk_score == 0.82
 
 
 def test_ai_challenge_verify_success_marks_runtime_passed() -> None:

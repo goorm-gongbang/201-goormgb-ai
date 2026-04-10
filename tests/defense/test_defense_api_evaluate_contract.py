@@ -310,6 +310,12 @@ def test_soft_action_early_return_emits_canonical_audit(tmp_path, monkeypatch) -
         "bot_risk": 0.61,
     }
 
+    runtime = client.get(f"/runtime/{sid}:{MATCH_ID}")
+    assert runtime.status_code == 200
+    runtime_body = runtime.json()
+    assert runtime_body["flow_state"] == "F4M"
+    assert runtime_body["seat_mode"] == "MANUAL"
+
 
 def test_post_vqa_events_require_s3_when_vqa_not_passed(monkeypatch) -> None:
     sid = "sess-eval-post-vqa-guard-1"

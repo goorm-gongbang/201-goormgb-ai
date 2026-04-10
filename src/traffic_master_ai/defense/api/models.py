@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, field_validator
 from .runtime_flow_state import normalize_runtime_flow_state
 
 FlowStateStr = Literal["F0", "F1", "F2", "F3", "F3R", "F3M", "F4", "F4R", "F4M", "FX"]
+SeatModeStr = Literal["RECOMMENDATION", "MANUAL"]
 DefenseTierStr = Literal["T0", "T1", "T2", "T3"]
 DefenseActionStr = Literal["NONE", "CHALLENGE", "THROTTLE", "GATE", "BLOCK"]
 ChallengeTypeStr = Literal["queue_gate", "catch_ball"]
@@ -131,6 +132,7 @@ class RuntimeStateSnapshot(BaseModel):
     """Runtime session state kept in Redis (or in-memory fallback)."""
 
     flow_state: FlowStateStr = "F0"
+    seat_mode: SeatModeStr | None = None
     defense_tier: DefenseTierStr = "T0"
     risk_score: float = 0.0
     last_step_risk: float | None = None
