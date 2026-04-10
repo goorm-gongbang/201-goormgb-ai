@@ -203,3 +203,38 @@ def rotate_and_upload_audit_log(
             rotated_path.unlink()  # Delete local copy after successful upload
     except Exception as exc:
         logger.error("Audit log rotation failed: %s", exc)
+
+
+def list_pending_rotated_audit_logs(
+    logger_instance: DefenseDecisionAuditLogger,
+) -> tuple[Path, ...]:
+    source_path = logger_instance.file_path
+    pattern = f"{source_path.stem}_*{source_path.suffix}"
+    return tuple(
+        sorted(
+            path
+            for path in source_path.parent.glob(pattern)
+            if path.is_file()
+        )
+    )
+
+
+def upload_pending_rotated_audit_logs(
+    logger_instance: DefenseDecisionAuditLogger,
+    uploader: S3Uploader,
+) -> tuple[Path, ...]:
+    uploaded_paths: list[Path] = []
+    for rotated_path in list_pending_rotated_audit_logs(logger_instance):
+        if uploader.upload_file(rotated_path):
+            rotated_path.unlink()
+            uploaded_paths.append(rotated_path)
+    return tuple(uploaded_paths)
+
+
+def flush_audit_log_to_archive(
+    logger_instance: DefenseDecisionAuditLogger,
+    uploader: S3Uploader,
+) -> None:
+    upload_pending_rotated_audit_logs(logger_instance, uploader)
+    rotate_and_upload_audit_log(logger_instance, uploader)
+    upload_pending_rotated_audit_logs(logger_instance, uploader)

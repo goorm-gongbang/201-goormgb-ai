@@ -90,6 +90,7 @@ from .archive_runtime import run_s3_archive_loop
 from .audit import (
     DefenseDecisionAuditLogger,
     S3Uploader,
+    flush_audit_log_to_archive,
 )
 from .challenge_runtime import ChallengeConfig, ChallengeRuntime
 from .models import (
@@ -224,6 +225,9 @@ _TURNSTILE_SITEVERIFY_URL = os.getenv(
 )
 _TURNSTILE_TIMEOUT_MS = int(os.getenv("TM_TURNSTILE_VERIFY_TIMEOUT_MS", "500"))
 _PRECHECK_TTL_MS = int(os.getenv("TM_PRECHECK_TTL_MS", "300000"))
+_RUNTIME_STATE_READ_REFRESH_MAX_AGE_MS = int(
+    os.getenv("TM_RUNTIME_STATE_READ_REFRESH_MAX_AGE_MS", "1000")
+)
 _VQA_TERMINAL_RISK_THRESHOLD = float(os.getenv("TM_VQA_TERMINAL_RISK_THRESHOLD", "0.92"))
 _VQA_REVIEW_RISK_FLOOR = float(os.getenv("TM_VQA_REVIEW_RISK_FLOOR", "0.84"))
 _VQA_EXTREME_LINEARITY_THRESHOLD = float(os.getenv("TM_VQA_EXTREME_LINEARITY_THRESHOLD", "0.985"))
@@ -265,6 +269,11 @@ async def lifespan(_app: FastAPI):
         await archive_task
     except asyncio.CancelledError:
         pass
+    if _S3_UPLOADER is not None:
+        try:
+            flush_audit_log_to_archive(_audit, _S3_UPLOADER)
+        except Exception:
+            logger.exception("Final audit archive flush failed during shutdown.")
     auth_guard_close = getattr(_auth_guard_blocker, "close", None)
     if callable(auth_guard_close):
         auth_guard_close()
@@ -324,14 +333,21 @@ async def readyz() -> HealthResponse:
 
 @app.get("/runtime/{session_id}", response_model=RuntimeStateSnapshot, tags=["state"], include_in_schema=False)
 async def runtime_state(session_id: str) -> RuntimeStateSnapshot:
+    now_ms = int(time.time() * 1000)
     snap = _state_store.get(session_id)
     if snap is not None:
-        return _refresh_runtime_snapshot_from_decision_engine(
+        if _needs_runtime_snapshot_refresh(
             state_key=session_id,
             snap=snap,
-            now_ms=int(time.time() * 1000),
-            user_id=snap.user_id,
-        )
+            now_ms=now_ms,
+        ):
+            return _refresh_runtime_snapshot_from_decision_engine(
+                state_key=session_id,
+                snap=snap,
+                now_ms=now_ms,
+                user_id=snap.user_id,
+            )
+        return snap
 
     decision_state = _decision_engine.session_state.get(session_id)
     if decision_state is None:
@@ -342,7 +358,7 @@ async def runtime_state(session_id: str) -> RuntimeStateSnapshot:
         d0_state=decision_state,
         policy_version=policy.policy_version,
         challenge_max_attempts=policy.challenge_max_attempts,
-        now_ms=int(time.time() * 1000),
+        now_ms=now_ms,
     )
     _state_store.upsert(session_id, bridged)
     return bridged
@@ -661,7 +677,6 @@ async def ai_evaluate(
             },
         )
 
-    runtime_snap = snap
     legacy_req = _build_legacy_request_from_target(
         state_key=state_key,
         trace_id=trace_id,
@@ -672,15 +687,19 @@ async def ai_evaluate(
         now_ms=now_ms,
         snap=snap,
     )
-    legacy_resp, _ = await run_in_threadpool(
-        partial(_execute_legacy_evaluate, legacy_req, audit=False)
+    legacy_resp, runtime_snap, should_refresh_runtime = await _run_legacy_target_evaluate(
+        req=legacy_req,
+        snap=snap,
+        event_type=event_type,
     )
-    snap = _refresh_runtime_snapshot_from_decision_engine(
-        state_key=state_key,
-        snap=runtime_snap,
-        now_ms=now_ms,
-        user_id=user_id,
-    )
+    snap = runtime_snap
+    if should_refresh_runtime:
+        snap = _refresh_runtime_snapshot_from_decision_engine(
+            state_key=state_key,
+            snap=runtime_snap,
+            now_ms=now_ms,
+            user_id=user_id,
+        )
     snap = _remember_seat_mode_for_target_event(
         state_key=state_key,
         snap=snap,
@@ -1457,6 +1476,45 @@ def _build_evaluate_response(
     return AiEvaluateResponse(decision={"action": action})
 
 
+async def _run_legacy_target_evaluate(
+    *,
+    req: EvaluateRequest,
+    snap: RuntimeStateSnapshot,
+    event_type: str,
+) -> tuple[EvaluateResponse, RuntimeStateSnapshot, bool]:
+    try:
+        legacy_resp, legacy_snap = await run_in_threadpool(
+            partial(_execute_legacy_evaluate, req, audit=False)
+        )
+    except Exception:
+        logger.exception(
+            "Legacy target evaluate failed unexpectedly (session_id=%s, event_type=%s). Falling back to fail-open response.",
+            req.session_id,
+            event_type,
+        )
+        return (
+            EvaluateResponse(
+                allow=True,
+                session_id=req.session_id,
+                flow_state=snap.flow_state,
+                defense_tier=snap.defense_tier,
+                action="NONE",
+                actions=["NONE"],
+                reason="LEGACY_EVALUATE_UNAVAILABLE",
+                rule_hits=[],
+                risk_score=snap.risk_score,
+                policy_version=snap.policy_version,
+                headers_to_add={},
+                decision_id=f"dec-{uuid.uuid4().hex[:12]}",
+                latency_ms=0,
+                version="v2",
+            ),
+            snap,
+            False,
+        )
+    return legacy_resp, legacy_snap, True
+
+
 async def _verify_turnstile_token(turnstile_token: str) -> bool:
     token = turnstile_token.strip()
     if not token:
@@ -1928,6 +1986,32 @@ def _refresh_runtime_snapshot_from_decision_engine(
     refreshed = snap.model_copy(update=runtime_overlay)
     _state_store.upsert(state_key, refreshed)
     return refreshed
+
+
+def _needs_runtime_snapshot_refresh(
+    *,
+    state_key: str,
+    snap: RuntimeStateSnapshot,
+    now_ms: int,
+) -> bool:
+    if max(0, now_ms - snap.updated_ts_ms) > _RUNTIME_STATE_READ_REFRESH_MAX_AGE_MS:
+        return True
+
+    runtime_overlay = _decision_engine_runtime_overlay(
+        session_id=state_key,
+        now_ms=now_ms,
+        user_id=snap.user_id,
+        snap=snap,
+    )
+    if not runtime_overlay:
+        return False
+
+    for key, value in runtime_overlay.items():
+        if key == "updated_ts_ms":
+            continue
+        if getattr(snap, key) != value:
+            return True
+    return False
 
 
 def _audit_target_evaluate_decision(

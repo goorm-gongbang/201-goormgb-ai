@@ -343,6 +343,63 @@ def test_runtime_state_refreshes_stale_snapshot_from_decision_engine() -> None:
     assert refreshed.risk_score == 0.82
 
 
+def test_runtime_state_skips_refresh_for_fresh_snapshot_without_runtime_drift(monkeypatch) -> None:
+    session_id = _session_id("sess-runtime-fresh")
+    state_key = _state_key(session_id)
+    now_ms = 1710000005000
+    policy_version = _decision_engine.policy_loader.load(session_id=state_key).policy_version
+
+    snap = RuntimeStateSnapshot(
+        flow_state="F3M",
+        seat_mode="MANUAL",
+        defense_tier="T2",
+        risk_score=0.82,
+        last_step_risk=0.82,
+        last_guard_ts_ms=1710000000000,
+        policy_version=policy_version,
+        updated_ts_ms=now_ms,
+    )
+    _state_store.upsert(state_key, snap)
+
+    _decision_engine.session_state.get_or_create(state_key, policy_version=policy_version)
+    _decision_engine.session_state.update_by_role(
+        "guard",
+        state_key,
+        {
+            "riskScore": 0.82,
+            "defenseTier": "T2",
+            "lastStepRisk": 0.82,
+            "lastGuardTsMs": 1710000000000,
+        },
+        is_allow=True,
+    )
+    _decision_engine.session_state.update_by_role(
+        "orchestrator",
+        state_key,
+        {"flowState": "S4"},
+        is_allow=True,
+    )
+
+    upsert_calls = 0
+    original_upsert = _state_store.upsert
+
+    def _counting_upsert(session_id: str, snapshot: RuntimeStateSnapshot) -> None:
+        nonlocal upsert_calls
+        upsert_calls += 1
+        original_upsert(session_id, snapshot)
+
+    monkeypatch.setattr(api_main, "time", types.SimpleNamespace(time=lambda: now_ms / 1000.0))
+    monkeypatch.setattr(_state_store, "upsert", _counting_upsert)
+
+    runtime = client.get(f"/runtime/{state_key}")
+    assert runtime.status_code == 200
+    body = runtime.json()
+    assert body["flow_state"] == "F3M"
+    assert body["defense_tier"] == "T2"
+    assert body["risk_score"] == 0.82
+    assert upsert_calls == 0
+
+
 def test_ai_challenge_verify_success_marks_runtime_passed() -> None:
     session_id = _session_id("sess-ai-verify-pass")
     start = client.post(

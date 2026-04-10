@@ -29,6 +29,22 @@ TargetEvaluateEventTypeStr = Literal[
 ]
 
 
+def _normalize_optional_flow_state(value: Any) -> Any:
+    if value is None:
+        return None
+    normalized = normalize_runtime_flow_state(str(value), default=None)
+    if normalized is None:
+        return value
+    return normalized
+
+
+def _normalize_default_flow_state(value: Any, *, default: str) -> Any:
+    normalized = normalize_runtime_flow_state(str(value), default=default)
+    if normalized is None:
+        return default
+    return normalized
+
+
 class EvaluateTelemetryFeatures(BaseModel):
     """Telemetry summary features for a single trigger window."""
 
@@ -83,12 +99,7 @@ class EvaluateRequest(BaseModel):
     @field_validator("flow_state", mode="before")
     @classmethod
     def _normalize_flow_state(cls, value: Any) -> Any:
-        if value is None:
-            return None
-        normalized = normalize_runtime_flow_state(str(value), default=None)
-        if normalized is None:
-            return value
-        return normalized
+        return _normalize_optional_flow_state(value)
 
 
 class EvaluateResponse(BaseModel):
@@ -114,10 +125,7 @@ class EvaluateResponse(BaseModel):
     @field_validator("flow_state", mode="before")
     @classmethod
     def _normalize_flow_state(cls, value: Any) -> Any:
-        normalized = normalize_runtime_flow_state(str(value), default=None)
-        if normalized is None:
-            return value
-        return normalized
+        return _normalize_optional_flow_state(value)
 
 
 class HealthResponse(BaseModel):
@@ -169,10 +177,7 @@ class RuntimeStateSnapshot(BaseModel):
     @field_validator("flow_state", mode="before")
     @classmethod
     def _normalize_flow_state(cls, value: Any) -> Any:
-        normalized = normalize_runtime_flow_state(str(value), default="F0")
-        if normalized is None:
-            return "F0"
-        return normalized
+        return _normalize_default_flow_state(value, default="F0")
 
 
 class ChallengeStartRequest(BaseModel):
@@ -188,12 +193,7 @@ class ChallengeStartRequest(BaseModel):
     @field_validator("flow_state", mode="before")
     @classmethod
     def _normalize_flow_state(cls, value: Any) -> Any:
-        if value is None:
-            return None
-        normalized = normalize_runtime_flow_state(str(value), default=None)
-        if normalized is None:
-            return value
-        return normalized
+        return _normalize_optional_flow_state(value)
 
 
 class ChallengeStartResponse(BaseModel):
@@ -284,12 +284,7 @@ class RuntimeVqaMarkRequest(BaseModel):
     @field_validator("flow_state", mode="before")
     @classmethod
     def _normalize_flow_state(cls, value: Any) -> Any:
-        if value is None:
-            return None
-        normalized = normalize_runtime_flow_state(str(value), default=None)
-        if normalized is None:
-            return value
-        return normalized
+        return _normalize_optional_flow_state(value)
 
 
 class RuntimeVqaMarkResponse(BaseModel):
@@ -304,10 +299,7 @@ class RuntimeVqaMarkResponse(BaseModel):
     @field_validator("flow_state", mode="before")
     @classmethod
     def _normalize_flow_state(cls, value: Any) -> Any:
-        normalized = normalize_runtime_flow_state(str(value), default=None)
-        if normalized is None:
-            return value
-        return normalized
+        return _normalize_optional_flow_state(value)
 
 
 class AiPrecheckRequest(BaseModel):
