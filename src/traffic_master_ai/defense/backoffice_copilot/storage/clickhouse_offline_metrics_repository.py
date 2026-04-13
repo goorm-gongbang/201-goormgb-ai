@@ -199,6 +199,10 @@ class ClickHouseOfflineMetricsRepository:
             "count() AS events_total, "
             "uniqExact(session_id) AS unique_sessions, "
             "uniqExactIf(trace_id, isNotNull(trace_id) AND trace_id != '') AS unique_traces, "
+            "uniqExactIf(trace_id, isNotNull(trace_id) AND trace_id != '' "
+            "AND event_type = 'DEF_ORCH_EXECUTED') AS orch_trace_total, "
+            "uniqExactIf(trace_id, isNotNull(trace_id) AND trace_id != '' "
+            "AND reason_code = 'INTERNAL_ERROR') AS internal_error_trace_total, "
             "argMax(ifNull(policy_version, ''), ts_ms) AS latest_policy_version, "
             "countIf(position(raw_payload_json, '\"isDuplicate\":true') > 0) AS duplicate_count "
             f"FROM {self.table_name} "
@@ -308,15 +312,6 @@ class ClickHouseOfflineMetricsRepository:
             )
             if value is not None
         ]
-        internal_error_trace_total = len(
-            {
-                row["trace_id"]
-                for row in details
-                if row["trace_id"] and row.get("reason_code") == "INTERNAL_ERROR"
-            }
-        )
-        detail_trace_total = len({row["trace_id"] for row in details if row["trace_id"]})
-
         snapshot = OfflineMetricsSnapshot(
             window_start_ms=query.window_start_ms,
             window_end_ms=query.window_end_ms,
@@ -345,8 +340,8 @@ class ClickHouseOfflineMetricsRepository:
             ),
             missing_feature_rate=_safe_rate(missing_feature_total, len(guard_rows)),
             internal_error_rate=_safe_rate(
-                internal_error_trace_total,
-                orch_trace_total or detail_trace_total,
+                _coerce_int(summary_row.get("internal_error_trace_total"), 0),
+                _coerce_int(summary_row.get("orch_trace_total"), 0) or orch_trace_total,
             ),
             latest_policy_version=_coerce_text(summary_row.get("latest_policy_version")),
         )

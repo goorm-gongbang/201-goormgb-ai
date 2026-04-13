@@ -13,8 +13,9 @@ else:
     Engine = Any
 
 _SQL_DIR = Path(__file__).resolve().parent / "sql"
+_POLICY_CONTROL_PLANE_MIGRATION_FILE = "002_postgresql_policy_control_plane_tables.sql"
 _POSTGRES_MIGRATION_FILES = (
-    "002_postgresql_policy_control_plane_tables.sql",
+    _POLICY_CONTROL_PLANE_MIGRATION_FILE,
 )
 
 
@@ -32,8 +33,7 @@ def apply_postgres_storage_migrations(
             cursor = raw_connection.cursor()
             try:
                 for file_name in migration_files:
-                    sql_path = _SQL_DIR / file_name
-                    cursor.execute(sql_path.read_text(encoding="utf-8"))
+                    cursor.execute(_read_migration_sql(file_name))
                     applied.append(file_name)
                 raw_connection.commit()
             except Exception:
@@ -47,6 +47,13 @@ def apply_postgres_storage_migrations(
         if owns_engine:
             pg_engine.dispose()
     return tuple(applied)
+
+
+def _read_migration_sql(file_name: str) -> str:
+    sql_path = _SQL_DIR / file_name
+    if not sql_path.is_file():
+        raise RuntimeError(f"PostgreSQL storage migration SQL file is missing: {file_name}")
+    return sql_path.read_text(encoding="utf-8")
 
 
 def run_storage_migration() -> None:

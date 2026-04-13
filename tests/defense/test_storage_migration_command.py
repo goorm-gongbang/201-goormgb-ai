@@ -75,6 +75,15 @@ class StorageMigrationCommandTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 run_storage_migration()
 
+    def test_storage_migration_fails_with_clear_error_when_sql_file_is_missing(self) -> None:
+        engine = _FakeEngine()
+
+        with self.assertRaisesRegex(RuntimeError, "missing.sql"):
+            apply_postgres_storage_migrations(engine, migration_files=("missing.sql",))
+
+        self.assertTrue(engine.raw_connection_obj.rolled_back)
+        self.assertFalse(engine.raw_connection_obj.committed)
+
     def test_storage_migration_command_builds_engine_from_env_and_disposes_it(self) -> None:
         engine = _FakeEngine()
 

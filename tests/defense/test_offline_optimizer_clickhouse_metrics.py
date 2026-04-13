@@ -30,6 +30,8 @@ class _FakeSelectClient:
                     "events_total": 10,
                     "unique_sessions": 3,
                     "unique_traces": 5,
+                    "orch_trace_total": 5,
+                    "internal_error_trace_total": 0,
                     "latest_policy_version": "policy-v9",
                     "duplicate_count": 2,
                 }
@@ -269,6 +271,12 @@ class _PolicyVersionSelectClient:
                     "events_total": self.events_total,
                     "unique_sessions": 2,
                     "unique_traces": self.unique_traces,
+                    "orch_trace_total": 2
+                    if policy_version == "policy-base"
+                    else 2 + self.candidate_internal_errors,
+                    "internal_error_trace_total": self.candidate_internal_errors
+                    if policy_version == "policy-candidate"
+                    else 0,
                     "latest_policy_version": policy_version,
                     "duplicate_count": 0,
                 }
@@ -363,6 +371,7 @@ class OfflineOptimizerClickHouseMetricsTests(unittest.TestCase):
         self.assertEqual(len(client.calls), 3)
         self.assertTrue(all(call[1]["window_start_ms"] == 1000 for call in client.calls))
         self.assertTrue(all(call[1]["window_end_ms"] == 5000 for call in client.calls))
+        self.assertIn("internal_error_trace_total", client.calls[0][0])
         detail_call = next(
             call for call in client.calls if "AND event_type IN :event_types " in call[0]
         )
