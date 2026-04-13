@@ -525,6 +525,46 @@ def test_post_vqa_guard_is_bypassed_after_vqa_pass(monkeypatch) -> None:
     assert captured == []
 
 
+def test_post_vqa_risky_seat_stage_is_throttled_instead_of_rechallenged(monkeypatch) -> None:
+    sid = "sess-eval-post-vqa-risky-seat-stage-1"
+    state_key = f"{sid}:{MATCH_ID}"
+    captured: list[dict[str, str | None]] = []
+    api_main._state_store.upsert(
+        state_key,
+        RuntimeStateSnapshot(
+            updated_ts_ms=1,
+            flow_state="S4",
+            vqa_required=False,
+            vqa_passed=True,
+            vqa_last_result="PASSED",
+            latest_seat_stage_summary={"mousePointCount": 3, "botRisk": 0.95},
+            latest_seat_stage_at_ms=1,
+        ),
+    )
+
+    def _stub_block_user_in_auth_guard(**kwargs):
+        captured.append(kwargs)
+
+    def _stub_execute_legacy_evaluate(_req):
+        raise AssertionError("legacy evaluation should not run for soft-action post-VQA flow")
+
+    monkeypatch.setattr(api_main, "_block_user_in_auth_guard", _stub_block_user_in_auth_guard)
+    monkeypatch.setattr(api_main, "_execute_legacy_evaluate", _stub_execute_legacy_evaluate)
+
+    response = client.post(
+        "/ai/evaluate",
+        json=_evaluate_payload(
+            sid=sid,
+            event_type="SEAT_HOLDS",
+            path=f"/seat/matches/{MATCH_ID}/seat-holds",
+            method="POST",
+        ),
+    )
+    assert response.status_code == 200
+    assert response.json() == {"decision": {"action": "THROTTLE"}}
+    assert captured == []
+
+
 def test_post_vqa_guard_uses_sid_level_vqa_mark(monkeypatch) -> None:
     sid = "sess-eval-post-vqa-sid-mark-1"
     state_key = f"{sid}:{MATCH_ID}"
