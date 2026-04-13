@@ -663,6 +663,56 @@ def test_ai_challenge_verify_pass_survives_runtime_policy_sync_failure(monkeypat
     assert runtime_body["vqa_last_result"] == "PASSED"
 
 
+def test_ai_challenge_verify_pass_survives_decision_engine_mark_sync_failure(monkeypatch) -> None:
+    session_id = _session_id("sess-ai-verify-mark-sync-fail-open")
+    start = client.post(
+        "/ai/challenge/start",
+        json={"matchId": MATCH_ID},
+        headers=_headers(session_id),
+    )
+    assert start.status_code == 200
+    challenge_id = start.json()["challengeId"]
+
+    ingest = client.post(
+        "/ai/telemetry/ingest",
+        json={
+            "matchId": MATCH_ID,
+            "stage": "VQA_CHALLENGE",
+            "events": _vqa_events(),
+        },
+        headers=_headers(session_id),
+    )
+    assert ingest.status_code == 200
+
+    def _raise_mark_sync_failure(*, req, now_ms):  # noqa: ANN001
+        raise RuntimeError(f"decision-engine mark sync unavailable for {req.session_id} at {now_ms}")
+
+    monkeypatch.setattr(api_main, "_sync_mark_to_decision_engine", _raise_mark_sync_failure)
+
+    verify = client.post(
+        "/ai/challenge/verify",
+        json={
+            "matchId": MATCH_ID,
+            "challengeId": challenge_id,
+            "caught": True,
+            "catchTsMs": 560,
+            "catchXNorm": 0.52,
+            "catchYNorm": 0.52,
+        },
+        headers=_headers(session_id),
+    )
+
+    assert verify.status_code == 200
+    assert verify.json()["success"] is True
+
+    runtime = client.get(f"/runtime/{_state_key(session_id)}")
+    assert runtime.status_code == 200
+    runtime_body = runtime.json()
+    assert runtime_body["vqa_passed"] is True
+    assert runtime_body["vqa_last_result"] == "PASSED"
+
+
+
 def test_ai_challenge_verify_pass_refreshes_anonymous_session_ttl() -> None:
     session_id = _session_id("sess-ai-verify-pass-anon")
     state_key = _state_key(session_id)

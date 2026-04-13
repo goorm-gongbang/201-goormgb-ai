@@ -905,13 +905,15 @@ async def ai_challenge_verify(
             }
         )
         _state_store.upsert(state_key, next_snap)
-        _sync_mark_to_decision_engine(
+        _best_effort_sync_mark_to_decision_engine(
             req=RuntimeVqaMarkRequest(
                 session_id=state_key,
                 vqa_passed=False,
                 flow_state=next_snap.flow_state,
             ),
             now_ms=now_ms,
+            log_context="challenge verify abnormal_terminal",
+            challenge_id=req.challenge_id,
         )
         runtime_overlay = _decision_engine_runtime_overlay(
             session_id=state_key,
@@ -973,13 +975,15 @@ async def ai_challenge_verify(
             flow_state=next_flow,
             user_id=user_id or snap.user_id,
         )
-        _sync_mark_to_decision_engine(
+        _best_effort_sync_mark_to_decision_engine(
             req=RuntimeVqaMarkRequest(
                 session_id=state_key,
                 vqa_passed=True,
                 flow_state=next_flow,
             ),
             now_ms=now_ms,
+            log_context="challenge verify pass",
+            challenge_id=req.challenge_id,
         )
         runtime_overlay = _decision_engine_runtime_overlay(
             session_id=state_key,
@@ -1036,13 +1040,15 @@ async def ai_challenge_verify(
         }
     )
     _state_store.upsert(state_key, next_snap)
-    _sync_mark_to_decision_engine(
+    _best_effort_sync_mark_to_decision_engine(
         req=RuntimeVqaMarkRequest(
             session_id=state_key,
             vqa_passed=False,
             flow_state=next_snap.flow_state,
         ),
         now_ms=now_ms,
+        log_context="challenge verify fail",
+        challenge_id=req.challenge_id,
     )
     runtime_overlay = _decision_engine_runtime_overlay(
         session_id=state_key,
@@ -2449,6 +2455,24 @@ def _sync_mark_to_decision_engine(*, req: RuntimeVqaMarkRequest, now_ms: int) ->
         },
         is_allow=False,
     )
+
+
+def _best_effort_sync_mark_to_decision_engine(
+    *,
+    req: RuntimeVqaMarkRequest,
+    now_ms: int,
+    log_context: str,
+    challenge_id: str | None = None,
+) -> None:
+    try:
+        _sync_mark_to_decision_engine(req=req, now_ms=now_ms)
+    except Exception:  # noqa: BLE001 - verify/runtime mark must remain fail-open
+        logger.exception(
+            "Best-effort decision-engine mark sync failed during %s (session_id=%s, challenge_id=%s)",
+            log_context,
+            req.session_id,
+            challenge_id,
+        )
 
 @app.get("/metrics", tags=["infrastructure"], include_in_schema=False)
 async def metrics():
