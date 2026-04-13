@@ -1933,6 +1933,10 @@ def _feature_soft_action(
         return None
 
     if risk >= require_s3_threshold:
+        # A successfully completed VQA should stay terminal for the current
+        # booking flow. Keep the softer throttle signal, but do not re-issue S3.
+        if snap.vqa_passed:
+            return "THROTTLE"
         return "REQUIRE_S3"
     if risk >= throttle_threshold:
         return "THROTTLE"
