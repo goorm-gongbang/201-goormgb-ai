@@ -31,6 +31,15 @@ class ClickHouseOfflineMetricsReadRepository(Protocol):
     ) -> tuple[OfflineTraceSample, ...]:
         ...
 
+    def read_rollout_guardrail_deltas(
+        self,
+        query: OfflineMetricsQuery,
+        *,
+        base_policy_version: str,
+        candidate_policy_version: str,
+    ) -> dict[str, float] | None:
+        ...
+
 
 @dataclass(slots=True)
 class ClickHouseOfflineMetricsRepository:
@@ -56,75 +65,76 @@ class ClickHouseOfflineMetricsRepository:
             self.select_sql_for_metric_details(query),
             _with_event_types(params),
         )
-
-        event_counts = _parse_event_counts(event_rows)
-        details = tuple(_parse_metric_detail_row(row) for row in detail_rows)
-        orch_rows = tuple(row for row in details if row["event_type"] == "DEF_ORCH_EXECUTED")
-        throttle_rows = tuple(row for row in details if row["event_type"] == "DEF_THROTTLE_APPLIED")
-        block_rows = tuple(row for row in details if row["event_type"] == "DEF_BLOCK_ENFORCED")
-        challenge_rows = tuple(row for row in details if row["event_type"] == "S3_CHALLENGE_RESULT")
-        halted_rows = tuple(row for row in details if row["event_type"] == "S3_CHALLENGE_HALTED")
-        guard_rows = tuple(row for row in details if row["event_type"] == "DEF_GUARD_SCORED")
-
-        orch_trace_total = len({row["trace_id"] for row in orch_rows if row["trace_id"]})
-        throttle_trace_total = len({row["trace_id"] for row in throttle_rows if row["trace_id"]})
-        block_trace_total = len({row["trace_id"] for row in block_rows if row["trace_id"]})
-        require_s3_total = len(
-            {
-                row["trace_id"]
-                for row in orch_rows
-                if row["trace_id"] and row.get("action") == "REQUIRE_S3"
-            }
+        return self._snapshot_from_rows(
+            query=query,
+            summary_row=summary_row,
+            event_rows=event_rows,
+            detail_rows=detail_rows,
         )
 
-        challenge_distribution = _distribution_by_trace(
-            challenge_rows,
-            lambda row: _nested_text(row["raw_payload"], "challenge", "result") or "UNKNOWN",
-        )
-        challenge_total = sum(challenge_distribution.values())
-        missing_feature_total = sum(
-            1
-            for row in guard_rows
-            if _has_missing_features(row["raw_payload"])
-        )
-        throttle_delays = [
-            value
-            for value in (
-                _nested_int(row["raw_payload"], "throttle", "delayMs") for row in throttle_rows
+    def read_metrics_for_policy_version(
+        self,
+        query: OfflineMetricsQuery,
+        *,
+        policy_version: str,
+    ) -> OfflineMetricsSnapshot:
+        params = serialize_offline_metrics_query(query)
+        params["policy_version"] = policy_version
+        summary_row = _first_row(
+            self.client.query(
+                self.select_sql_for_policy_summary(query),
+                params,
             )
-            if value is not None
-        ]
-
-        snapshot = OfflineMetricsSnapshot(
-            window_start_ms=query.window_start_ms,
-            window_end_ms=query.window_end_ms,
-            events_total=_coerce_int(summary_row.get("events_total"), 0),
-            unique_sessions=_coerce_int(summary_row.get("unique_sessions"), 0),
-            unique_traces=_coerce_int(summary_row.get("unique_traces"), 0),
-            event_counts_by_type=event_counts,
-            tier_distribution=_distribution_by_trace(
-                orch_rows,
-                lambda row: row.get("risk_tier") or "UNKNOWN",
-            ),
-            action_distribution=_distribution_by_trace(
-                orch_rows,
-                lambda row: row.get("action") or "UNKNOWN",
-            ),
-            block_rate=_safe_rate(block_trace_total, orch_trace_total),
-            require_s3_rate=_safe_rate(require_s3_total, orch_trace_total),
-            throttle_applied_rate=_safe_rate(throttle_trace_total, orch_trace_total),
-            avg_throttle_delay_ms=_average(throttle_delays),
-            s3_pass_rate=_safe_rate(challenge_distribution.get("PASS", 0), challenge_total),
-            s3_fail_rate=_safe_rate(challenge_distribution.get("FAIL", 0), challenge_total),
-            s3_temp_lock_rate=_safe_rate(len(halted_rows), len(challenge_rows) + len(halted_rows)),
-            dedup_duplicate_rate=_safe_rate(
-                _coerce_int(summary_row.get("duplicate_count"), 0),
-                _coerce_int(summary_row.get("events_total"), 0),
-            ),
-            missing_feature_rate=_safe_rate(missing_feature_total, len(guard_rows)),
-            latest_policy_version=_coerce_text(summary_row.get("latest_policy_version")),
         )
-        return validate_offline_metrics_snapshot(snapshot)
+        event_rows = self.client.query(
+            self.select_sql_for_policy_event_counts(query),
+            params,
+        )
+        detail_rows = self.client.query(
+            self.select_sql_for_policy_metric_details(query),
+            _with_event_types(params),
+        )
+        return self._snapshot_from_rows(
+            query=query,
+            summary_row=summary_row,
+            event_rows=event_rows,
+            detail_rows=detail_rows,
+        )
+
+    def read_rollout_guardrail_deltas(
+        self,
+        query: OfflineMetricsQuery,
+        *,
+        base_policy_version: str,
+        candidate_policy_version: str,
+    ) -> dict[str, float] | None:
+        base = self.read_metrics_for_policy_version(
+            query,
+            policy_version=base_policy_version,
+        )
+        candidate = self.read_metrics_for_policy_version(
+            query,
+            policy_version=candidate_policy_version,
+        )
+        if _insufficient_rollout_metrics(base) or _insufficient_rollout_metrics(candidate):
+            return None
+        return {
+            "s3_temp_lock_rate_pp": _rate_delta_pp(
+                candidate.s3_temp_lock_rate,
+                base.s3_temp_lock_rate,
+            ),
+            "block_rate_pp": _rate_delta_pp(candidate.block_rate, base.block_rate),
+            "avg_throttle_delay_ms": round(
+                candidate.avg_throttle_delay_ms - base.avg_throttle_delay_ms,
+                2,
+            ),
+            "s3_fail_rate_pp": _rate_delta_pp(candidate.s3_fail_rate, base.s3_fail_rate),
+            "dedup_duplicate_rate_pp": _rate_delta_pp(
+                candidate.dedup_duplicate_rate,
+                base.dedup_duplicate_rate,
+            ),
+            "internal_error_rate_pp": 0.0,
+        }
 
     def read_trace_samples(
         self,
@@ -221,6 +231,109 @@ class ClickHouseOfflineMetricsRepository:
             "ORDER BY ts_ms DESC, event_type ASC "
             "LIMIT :scan_limit"
         )
+
+    def select_sql_for_policy_summary(self, query: OfflineMetricsQuery) -> str:
+        return self.select_sql_for_summary(query) + " AND policy_version = :policy_version"
+
+    def select_sql_for_policy_event_counts(self, query: OfflineMetricsQuery) -> str:
+        del query
+        return (
+            "SELECT event_type, count() AS event_count "
+            f"FROM {self.table_name} "
+            "WHERE ts_ms >= :window_start_ms AND ts_ms <= :window_end_ms "
+            "AND policy_version = :policy_version "
+            "GROUP BY event_type "
+            "ORDER BY event_type ASC"
+        )
+
+    def select_sql_for_policy_metric_details(self, query: OfflineMetricsQuery) -> str:
+        del query
+        return (
+            "SELECT ts_ms, session_id, event_type, trace_id, risk_tier, action, reason_code, "
+            "policy_version, raw_payload_json "
+            f"FROM {self.table_name} "
+            "WHERE ts_ms >= :window_start_ms AND ts_ms <= :window_end_ms "
+            "AND policy_version = :policy_version "
+            "AND event_type IN :event_types "
+            "ORDER BY ts_ms DESC, event_type ASC"
+        )
+
+    def _snapshot_from_rows(
+        self,
+        *,
+        query: OfflineMetricsQuery,
+        summary_row: Mapping[str, object],
+        event_rows: Sequence[Mapping[str, object]],
+        detail_rows: Sequence[Mapping[str, object]],
+    ) -> OfflineMetricsSnapshot:
+        event_counts = _parse_event_counts(event_rows)
+        details = tuple(_parse_metric_detail_row(row) for row in detail_rows)
+        orch_rows = tuple(row for row in details if row["event_type"] == "DEF_ORCH_EXECUTED")
+        throttle_rows = tuple(row for row in details if row["event_type"] == "DEF_THROTTLE_APPLIED")
+        block_rows = tuple(row for row in details if row["event_type"] == "DEF_BLOCK_ENFORCED")
+        challenge_rows = tuple(row for row in details if row["event_type"] == "S3_CHALLENGE_RESULT")
+        halted_rows = tuple(row for row in details if row["event_type"] == "S3_CHALLENGE_HALTED")
+        guard_rows = tuple(row for row in details if row["event_type"] == "DEF_GUARD_SCORED")
+
+        orch_trace_total = len({row["trace_id"] for row in orch_rows if row["trace_id"]})
+        throttle_trace_total = len({row["trace_id"] for row in throttle_rows if row["trace_id"]})
+        block_trace_total = len({row["trace_id"] for row in block_rows if row["trace_id"]})
+        require_s3_total = len(
+            {
+                row["trace_id"]
+                for row in orch_rows
+                if row["trace_id"] and row.get("action") == "REQUIRE_S3"
+            }
+        )
+
+        challenge_distribution = _distribution_by_trace(
+            challenge_rows,
+            lambda row: _nested_text(row["raw_payload"], "challenge", "result") or "UNKNOWN",
+        )
+        challenge_total = sum(challenge_distribution.values())
+        missing_feature_total = sum(
+            1
+            for row in guard_rows
+            if _has_missing_features(row["raw_payload"])
+        )
+        throttle_delays = [
+            value
+            for value in (
+                _nested_int(row["raw_payload"], "throttle", "delayMs") for row in throttle_rows
+            )
+            if value is not None
+        ]
+
+        snapshot = OfflineMetricsSnapshot(
+            window_start_ms=query.window_start_ms,
+            window_end_ms=query.window_end_ms,
+            events_total=_coerce_int(summary_row.get("events_total"), 0),
+            unique_sessions=_coerce_int(summary_row.get("unique_sessions"), 0),
+            unique_traces=_coerce_int(summary_row.get("unique_traces"), 0),
+            event_counts_by_type=event_counts,
+            tier_distribution=_distribution_by_trace(
+                orch_rows,
+                lambda row: row.get("risk_tier") or "UNKNOWN",
+            ),
+            action_distribution=_distribution_by_trace(
+                orch_rows,
+                lambda row: row.get("action") or "UNKNOWN",
+            ),
+            block_rate=_safe_rate(block_trace_total, orch_trace_total),
+            require_s3_rate=_safe_rate(require_s3_total, orch_trace_total),
+            throttle_applied_rate=_safe_rate(throttle_trace_total, orch_trace_total),
+            avg_throttle_delay_ms=_average(throttle_delays),
+            s3_pass_rate=_safe_rate(challenge_distribution.get("PASS", 0), challenge_total),
+            s3_fail_rate=_safe_rate(challenge_distribution.get("FAIL", 0), challenge_total),
+            s3_temp_lock_rate=_safe_rate(len(halted_rows), len(challenge_rows) + len(halted_rows)),
+            dedup_duplicate_rate=_safe_rate(
+                _coerce_int(summary_row.get("duplicate_count"), 0),
+                _coerce_int(summary_row.get("events_total"), 0),
+            ),
+            missing_feature_rate=_safe_rate(missing_feature_total, len(guard_rows)),
+            latest_policy_version=_coerce_text(summary_row.get("latest_policy_version")),
+        )
+        return validate_offline_metrics_snapshot(snapshot)
 
 
 def build_clickhouse_offline_metrics_repository(
@@ -360,6 +473,14 @@ def _safe_rate(numerator: int, denominator: int) -> float:
     if denominator <= 0:
         return 0.0
     return round(float(numerator) / float(denominator), 4)
+
+
+def _rate_delta_pp(candidate_rate: float, base_rate: float) -> float:
+    return round((candidate_rate - base_rate) * 100.0, 4)
+
+
+def _insufficient_rollout_metrics(snapshot: OfflineMetricsSnapshot) -> bool:
+    return snapshot.events_total <= 0 or snapshot.unique_traces <= 0
 
 
 def _with_event_types(params: Mapping[str, object]) -> dict[str, object]:
