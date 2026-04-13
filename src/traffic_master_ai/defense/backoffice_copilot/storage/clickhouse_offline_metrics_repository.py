@@ -16,6 +16,8 @@ from .clickhouse_read_models import (
 )
 
 _METRIC_EVENT_TYPES: tuple[str, ...] = tuple(sorted(OPTIMIZER_INCLUDED_AUDIT_EVENT_TYPES))
+_MIN_ROLLOUT_GUARDRAIL_EVENTS_TOTAL = 30
+_MIN_ROLLOUT_GUARDRAIL_UNIQUE_TRACES = 10
 
 
 class ClickHouseOfflineMetricsReadRepository(Protocol):
@@ -133,6 +135,10 @@ class ClickHouseOfflineMetricsRepository:
                 candidate.dedup_duplicate_rate,
                 base.dedup_duplicate_rate,
             ),
+            "internal_error_rate_pp": _rate_delta_pp(
+                candidate.internal_error_rate,
+                base.internal_error_rate,
+            ),
         }
 
     def read_trace_samples(
@@ -193,6 +199,10 @@ class ClickHouseOfflineMetricsRepository:
             "count() AS events_total, "
             "uniqExact(session_id) AS unique_sessions, "
             "uniqExactIf(trace_id, isNotNull(trace_id) AND trace_id != '') AS unique_traces, "
+            "uniqExactIf(trace_id, isNotNull(trace_id) AND trace_id != '' "
+            "AND event_type = 'DEF_ORCH_EXECUTED') AS orch_trace_total, "
+            "uniqExactIf(trace_id, isNotNull(trace_id) AND trace_id != '' "
+            "AND reason_code = 'INTERNAL_ERROR') AS internal_error_trace_total, "
             "argMax(ifNull(policy_version, ''), ts_ms) AS latest_policy_version, "
             "countIf(position(raw_payload_json, '\"isDuplicate\":true') > 0) AS duplicate_count "
             f"FROM {self.table_name} "
@@ -302,7 +312,6 @@ class ClickHouseOfflineMetricsRepository:
             )
             if value is not None
         ]
-
         snapshot = OfflineMetricsSnapshot(
             window_start_ms=query.window_start_ms,
             window_end_ms=query.window_end_ms,
@@ -330,6 +339,10 @@ class ClickHouseOfflineMetricsRepository:
                 _coerce_int(summary_row.get("events_total"), 0),
             ),
             missing_feature_rate=_safe_rate(missing_feature_total, len(guard_rows)),
+            internal_error_rate=_safe_rate(
+                _coerce_int(summary_row.get("internal_error_trace_total"), 0),
+                _coerce_int(summary_row.get("orch_trace_total"), 0) or orch_trace_total,
+            ),
             latest_policy_version=_coerce_text(summary_row.get("latest_policy_version")),
         )
         return validate_offline_metrics_snapshot(snapshot)
@@ -479,7 +492,10 @@ def _rate_delta_pp(candidate_rate: float, base_rate: float) -> float:
 
 
 def _insufficient_rollout_metrics(snapshot: OfflineMetricsSnapshot) -> bool:
-    return snapshot.events_total <= 0 or snapshot.unique_traces <= 0
+    return (
+        snapshot.events_total < _MIN_ROLLOUT_GUARDRAIL_EVENTS_TOTAL
+        or snapshot.unique_traces < _MIN_ROLLOUT_GUARDRAIL_UNIQUE_TRACES
+    )
 
 
 def _with_event_types(params: Mapping[str, object]) -> dict[str, object]:

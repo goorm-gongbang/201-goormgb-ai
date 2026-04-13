@@ -18,7 +18,7 @@ from .response_utils import (
     merge_headers,
     parse_request_meta_headers,
 )
-from .runtime import DefenseRuntime, build_evaluate_request
+from .runtime import DefenseRuntime, RuntimeAPIError, build_evaluate_request
 
 
 def create_evaluate_router(runtime: Optional[DefenseRuntime] = None) -> APIRouter:
@@ -86,13 +86,26 @@ def create_evaluate_router(runtime: Optional[DefenseRuntime] = None) -> APIRoute
 
         try:
             out = rt.evaluate(req)
+        except RuntimeAPIError as exc:
+            raise_contract_http_error(
+                exc.to_error_body(),
+                status_code=exc.status_code,
+                headers=passthrough_headers,
+            )
         except ValueError as exc:
             raise_contract_http_error(
                 error_payload(ReasonCode.VALIDATION_ERROR, str(exc)),
                 status_code=400,
             )
         except Exception as exc:
-            out = rt.fail_open_on_unavailable(request=req, error=exc)
+            try:
+                out = rt.fail_open_on_unavailable(request=req, error=exc)
+            except RuntimeAPIError as runtime_exc:
+                raise_contract_http_error(
+                    runtime_exc.to_error_body(),
+                    status_code=runtime_exc.status_code,
+                    headers=passthrough_headers,
+                )
 
         orchestrated = out.orchestrator_result
         decision = orchestrated.decision

@@ -3,6 +3,11 @@ from __future__ import annotations
 import json
 import unittest
 
+from traffic_master_ai.defense.d0_mvp.api.runtime import (
+    DefenseRuntime,
+    RuntimeAPIError,
+    build_evaluate_request,
+)
 from traffic_master_ai.defense.d0_mvp.policy.loader import (
     InMemoryPolicyStore,
     PolicyLoader,
@@ -240,6 +245,46 @@ class RuntimePolicyReadAdapterTests(unittest.TestCase):
 
         with self.assertRaises(RuntimePolicyAuthorityError):
             loader.load("session-strict-stale")
+
+    def test_strict_runtime_does_not_fail_open_policy_projection_error(self) -> None:
+        redis = InMemoryRedis()
+        loader = PolicyLoader(
+            store=RedisPolicyStore(redis),
+            cache_seconds=0,
+            strict_authority=True,
+        )
+        runtime = DefenseRuntime(redis=redis, policy_loader=loader)
+        request = build_evaluate_request(
+            session_id="session-strict-runtime-missing",
+            trace_id="trace-strict-runtime-missing",
+            body={
+                "event": {
+                    "eventType": "API_CALL_OBS",
+                    "tsMs": 1710000000000,
+                    "flowState": "S2",
+                    "requestPath": "/api/availability",
+                    "requestMethod": "GET",
+                },
+                "context": {
+                    "policyVersion": PolicySnapshot().policy_version,
+                },
+            },
+        )
+
+        with self.assertRaises(RuntimeAPIError) as exc_info:
+            runtime.fail_open_on_unavailable(
+                request=request,
+                error=RuntimePolicyAuthorityError(
+                    session_id=request.session_id,
+                    reason="missing rollout projection",
+                ),
+            )
+
+        self.assertEqual(exc_info.exception.status_code, 503)
+        self.assertEqual(
+            exc_info.exception.detail["authority"],
+            "redis_projection",
+        )
 
 
 if __name__ == "__main__":

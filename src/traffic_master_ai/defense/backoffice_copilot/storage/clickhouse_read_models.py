@@ -132,6 +132,7 @@ class OfflineMetricsSnapshot:
     s3_temp_lock_rate: float = 0.0
     dedup_duplicate_rate: float = 0.0
     missing_feature_rate: float = 0.0
+    internal_error_rate: float = 0.0
     latest_policy_version: str | None = None
 
 
@@ -335,6 +336,7 @@ def validate_offline_metrics_snapshot(
         "s3_temp_lock_rate",
         "dedup_duplicate_rate",
         "missing_feature_rate",
+        "internal_error_rate",
     ):
         _ensure_non_negative_float(getattr(snapshot, field_name), field_name)
     _ensure_nullable_text(snapshot.latest_policy_version, "latest_policy_version")
