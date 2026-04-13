@@ -315,10 +315,11 @@ class OfflineOptimizer:
         )
         return payload
 
-    def rollback(self) -> dict[str, Any]:
+    def rollback(self, *, reason: str = "manual") -> dict[str, Any]:
         current = self.current_rollout_state()
         if current is None:
             raise ValueError("no rollout state to rollback")
+        reason = str(reason).strip() or "manual"
         state = RolloutState(**current)
         rolled_back = self._rollout.rollback(state)
         payload = _rollout_state_dict(rolled_back)
@@ -330,20 +331,20 @@ class OfflineOptimizer:
             candidate_policy_version=state.candidate_policy_version,
             reason_json={
                 "trigger": "offline_optimizer",
-                "rollback_reason": "manual_or_guardrail",
+                "rollback_reason": reason,
             },
         )
         self._save_rollout_state_authoritative(
             state=rolled_back,
             previous_state=state,
-            rollback_reason="manual_or_guardrail",
+            rollback_reason=reason,
         )
         self._append_audit_event(
             "OFFLINE_OPT_ROLLBACK_TRIGGERED",
             base_policy_version=state.base_policy_version,
             new_policy_version=state.candidate_policy_version,
             result="ROLLED_BACK",
-            rollback_reason="manual_or_guardrail",
+            rollback_reason=reason,
             rollout_state=payload,
         )
         return payload
@@ -713,7 +714,7 @@ def _normalize_rollout_state_dict(rollout_state: Mapping[str, Any]) -> Optional[
 def _rollout_state_from_authoritative_record(
     record: PolicyRolloutStateRecord,
 ) -> dict[str, Any]:
-    stage_duration_seconds = record.canary_duration_seconds if record.stage == "CANARY" else 0
+    stage_duration_seconds = _stage_duration_seconds_from_record(record)
     return {
         "stage": record.stage,
         "base_policy_version": record.base_policy_version,
@@ -728,6 +729,16 @@ def _rollout_state_from_authoritative_record(
         "canary_completed_at_ms": None,
         "rollout_finished_at_ms": record.updated_at_ms if record.stage in {"FULL", "ROLLED_BACK"} else None,
     }
+
+
+def _stage_duration_seconds_from_record(record: PolicyRolloutStateRecord) -> int:
+    if record.stage == "CANARY":
+        return record.canary_duration_seconds
+    if record.stage == "EXPAND" and record.expand_step_index is not None:
+        steps = RolloutExecutor._EXPAND_STEPS
+        if 0 <= record.expand_step_index < len(steps):
+            return steps[record.expand_step_index][1]
+    return 0
 
 
 

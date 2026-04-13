@@ -241,6 +241,71 @@ class _ErrorSelectClient:
         raise RuntimeError("clickhouse bad response")
 
 
+class _PolicyVersionSelectClient:
+    def __init__(self, *, candidate_empty: bool = False) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+        self.candidate_empty = candidate_empty
+
+    def query(self, sql_text: str, params: dict[str, object]):
+        self.calls.append((sql_text, params))
+        policy_version = params.get("policy_version")
+        if "count() AS events_total" in sql_text:
+            if policy_version == "policy-candidate" and self.candidate_empty:
+                return []
+            return [
+                {
+                    "window_start_ms": params["window_start_ms"],
+                    "window_end_ms": params["window_end_ms"],
+                    "events_total": 4,
+                    "unique_sessions": 2,
+                    "unique_traces": 2,
+                    "latest_policy_version": policy_version,
+                    "duplicate_count": 0,
+                }
+            ]
+        if "GROUP BY event_type" in sql_text:
+            return [
+                {"event_type": "DEF_ORCH_EXECUTED", "event_count": 2},
+                {"event_type": "DEF_BLOCK_ENFORCED", "event_count": 1},
+            ]
+        if policy_version == "policy-base":
+            return [
+                _orch_row("policy-base", "trace-base-1", "NONE"),
+                _orch_row("policy-base", "trace-base-2", "NONE"),
+            ]
+        if self.candidate_empty:
+            return []
+        return [
+            _orch_row("policy-candidate", "trace-candidate-1", "BLOCK"),
+            _orch_row("policy-candidate", "trace-candidate-2", "NONE"),
+            {
+                "ts_ms": 4500,
+                "session_id": "sess-candidate-1",
+                "event_type": "DEF_BLOCK_ENFORCED",
+                "trace_id": "trace-candidate-1",
+                "risk_tier": None,
+                "action": None,
+                "reason_code": "BLOCKED",
+                "policy_version": "policy-candidate",
+                "raw_payload_json": "{}",
+            },
+        ]
+
+
+def _orch_row(policy_version: str, trace_id: str, action: str) -> dict[str, object]:
+    return {
+        "ts_ms": 4600,
+        "session_id": f"sess-{trace_id}",
+        "event_type": "DEF_ORCH_EXECUTED",
+        "trace_id": trace_id,
+        "risk_tier": "T3",
+        "action": action,
+        "reason_code": None,
+        "policy_version": policy_version,
+        "raw_payload_json": "{}",
+    }
+
+
 class OfflineOptimizerClickHouseMetricsTests(unittest.TestCase):
     def test_clickhouse_repository_computes_metrics_from_raw_fact_queries(self) -> None:
         client = _FakeSelectClient()
@@ -309,6 +374,41 @@ class OfflineOptimizerClickHouseMetricsTests(unittest.TestCase):
 
         with self.assertRaises(RuntimeError):
             repository.read_metrics(OfflineMetricsQuery(window_start_ms=1000, window_end_ms=5000))
+
+    def test_clickhouse_repository_computes_rollout_guardrail_deltas(self) -> None:
+        client = _PolicyVersionSelectClient()
+        repository = ClickHouseOfflineMetricsRepository(client=client)
+
+        deltas = repository.read_rollout_guardrail_deltas(
+            OfflineMetricsQuery(window_start_ms=1000, window_end_ms=5000),
+            base_policy_version="policy-base",
+            candidate_policy_version="policy-candidate",
+        )
+
+        self.assertIsNotNone(deltas)
+        self.assertEqual(deltas["block_rate_pp"], 50.0)
+        self.assertNotIn("internal_error_rate_pp", deltas)
+        policy_calls = [
+            call for call in client.calls if "policy_version = :policy_version" in call[0]
+        ]
+        self.assertEqual(len(policy_calls), 6)
+        self.assertEqual(
+            {call[1]["policy_version"] for call in policy_calls},
+            {"policy-base", "policy-candidate"},
+        )
+
+    def test_clickhouse_repository_returns_none_for_insufficient_guardrail_data(self) -> None:
+        repository = ClickHouseOfflineMetricsRepository(
+            client=_PolicyVersionSelectClient(candidate_empty=True)
+        )
+
+        deltas = repository.read_rollout_guardrail_deltas(
+            OfflineMetricsQuery(window_start_ms=1000, window_end_ms=5000),
+            base_policy_version="policy-base",
+            candidate_policy_version="policy-candidate",
+        )
+
+        self.assertIsNone(deltas)
 
     def test_offline_optimizer_collect_metrics_uses_repository_and_default_policy_when_latest_missing(self) -> None:
         class _NoPolicyRepository:

@@ -2422,3 +2422,69 @@
 
 - 다음 우선순위는 admin/debug surface도 ClickHouse direct read로 더 정리할지, 아니면 `AuditWarehouse`를 완전히 유지보수 모드로 고정할지 결정하는 것이다.
 - 동시에 legacy compatibility loader를 어떤 경로까지 유지할지 범위를 좁혀 두면 이후 mixed-shape 재유입 리스크를 더 줄일 수 있다.
+
+## Task 30
+
+### 1. task 번호와 제목
+
+- Task 30. Legacy defense offline Step5 path 삭제
+
+### 2. 작업 일시
+
+- 2026-04-13 09:02:21 KST
+
+### 3. 실제로 수정한 파일 목록
+
+- 삭제: `src/traffic_master_ai/defense/offline/__init__.py`
+- 삭제: `src/traffic_master_ai/defense/offline/pipeline.py`
+- 삭제: `src/traffic_master_ai/defense/offline/guardrails.py`
+- 삭제: `src/traffic_master_ai/defense/offline/replay.py`
+- 삭제: `tests/defense/test_offline_pipeline.py`
+- 삭제: `tests/defense/test_offline_replay_guardrails.py`
+- 삭제: `scripts/step5_batch_evaluator.py`
+- 삭제: `scripts/step5_policy_guardrails.py`
+- 삭제: `scripts/step5_offline_llm_batch.py`
+- 삭제: `scripts/step5_build_replay_dataset.py`
+- 삭제: `scripts/step5_re_evaluate_loop.py`
+- 삭제: `scripts/step5_no_key_all.sh`
+- 삭제: `scripts/step5_with_key_all.sh`
+- 수정: `README.md`
+- 수정: `src/traffic_master_ai/defense/api/README.md`
+- 수정: `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/task-execution-log.md`
+
+### 4. 삭제 이유
+
+- manual review flag 기반 legacy offline batch/replay/guardrail path를 제거했다.
+- 삭제된 Step5 스크립트를 직접 실행하라는 README 안내만 제거했다.
+- d0_mvp policy optimizer worker/command와 storage/runtime/ClickHouse metrics 로직은 수정하지 않았다.
+
+### 5. 검증에 사용한 명령과 결과 요약
+
+- 삭제 전 import/compile 확인
+  - 명령: `PYTHONPATH=src .venv/bin/python -m py_compile src/traffic_master_ai/defense/d0_mvp/optimizer/pipeline.py src/traffic_master_ai/defense/d0_mvp/api/runtime.py src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_offline_metrics_repository.py`
+  - 결과: 문법 오류 없음
+- 삭제 검증
+  - 명령: legacy offline import/manual-review literal 검색
+  - 결과: `src/traffic_master_ai/defense/d0_poc/Specs/ST5-2/SPEC_SNAPSHOT.md` historical mention만 남음
+- 삭제된 Step5 README/스크립트 안내 검증
+  - 명령: `rg -n "step5_" README.md src/traffic_master_ai/defense/api/README.md pyproject.toml scripts tests`
+  - 결과: 매치 없음
+- 삭제 후 import/compile 확인
+  - 명령: `PYTHONPATH=src .venv/bin/python -m py_compile src/traffic_master_ai/defense/d0_mvp/optimizer/pipeline.py src/traffic_master_ai/defense/d0_mvp/api/runtime.py src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_offline_metrics_repository.py`
+  - 결과: 문법 오류 없음
+  - 명령: `PYTHONPATH=src .venv/bin/python -c 'import traffic_master_ai.defense.d0_mvp.optimizer.pipeline; import traffic_master_ai.defense.d0_mvp.api.runtime; import traffic_master_ai.defense.backoffice_copilot.storage.clickhouse_offline_metrics_repository; print("imports ok")'`
+  - 결과: `imports ok`
+- 정책 optimizer / storage 회귀
+  - 명령: `PYTHONPATH=src .venv/bin/python -m unittest tests.defense.test_policy_optimizer_worker`
+  - 결과: `Ran 19 tests ... OK`
+  - 명령: `PYTHONPATH=src .venv/bin/python -m unittest tests.defense.test_offline_optimizer_strict_authority tests.defense.test_offline_optimizer_clickhouse_metrics tests.defense.test_backoffice_copilot_policy_projection tests.defense.test_backoffice_copilot_policy_control_plane_storage tests.defense.test_storage_env_config`
+  - 결과: `Ran 43 tests ... OK`
+- 포맷 확인
+  - 명령: `git diff --check`
+  - 결과: whitespace / conflict marker 문제 없음
+
+### 6. 남은 리스크
+
+- `python` 실행 파일이 현재 PATH에 없어 `.venv/bin/python`으로 검증했다.
+- `d0_poc/Specs` 아래 Step5 historical mention은 archive 성격으로 보존했다.
+- 현재 워크트리에는 이번 삭제 task 이전의 policy optimizer worker 관련 변경이 함께 남아 있다.

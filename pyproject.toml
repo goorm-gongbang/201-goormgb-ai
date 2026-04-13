@@ -48,6 +48,7 @@ defense_api = [
 
 [project.scripts]
 tm-ai-etl = "traffic_master_ai.defense.api.etl_worker:run_etl"
+tm-ai-policy-optimizer = "traffic_master_ai.defense.d0_mvp.optimizer.worker:run_policy_optimizer"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/traffic_master_ai"]
