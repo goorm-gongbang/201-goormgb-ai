@@ -135,6 +135,10 @@ class ClickHouseOfflineMetricsRepository:
                 candidate.dedup_duplicate_rate,
                 base.dedup_duplicate_rate,
             ),
+            "internal_error_rate_pp": _rate_delta_pp(
+                candidate.internal_error_rate,
+                base.internal_error_rate,
+            ),
         }
 
     def read_trace_samples(
@@ -304,6 +308,14 @@ class ClickHouseOfflineMetricsRepository:
             )
             if value is not None
         ]
+        internal_error_trace_total = len(
+            {
+                row["trace_id"]
+                for row in details
+                if row["trace_id"] and row.get("reason_code") == "INTERNAL_ERROR"
+            }
+        )
+        detail_trace_total = len({row["trace_id"] for row in details if row["trace_id"]})
 
         snapshot = OfflineMetricsSnapshot(
             window_start_ms=query.window_start_ms,
@@ -332,6 +344,10 @@ class ClickHouseOfflineMetricsRepository:
                 _coerce_int(summary_row.get("events_total"), 0),
             ),
             missing_feature_rate=_safe_rate(missing_feature_total, len(guard_rows)),
+            internal_error_rate=_safe_rate(
+                internal_error_trace_total,
+                orch_trace_total or detail_trace_total,
+            ),
             latest_policy_version=_coerce_text(summary_row.get("latest_policy_version")),
         )
         return validate_offline_metrics_snapshot(snapshot)

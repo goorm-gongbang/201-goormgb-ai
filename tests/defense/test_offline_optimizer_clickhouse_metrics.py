@@ -248,11 +248,13 @@ class _PolicyVersionSelectClient:
         candidate_empty: bool = False,
         events_total: int = 30,
         unique_traces: int = 10,
+        candidate_internal_errors: int = 0,
     ) -> None:
         self.calls: list[tuple[str, dict[str, object]]] = []
         self.candidate_empty = candidate_empty
         self.events_total = events_total
         self.unique_traces = unique_traces
+        self.candidate_internal_errors = candidate_internal_errors
 
     def query(self, sql_text: str, params: dict[str, object]):
         self.calls.append((sql_text, params))
@@ -283,7 +285,7 @@ class _PolicyVersionSelectClient:
             ]
         if self.candidate_empty:
             return []
-        return [
+        rows = [
             _orch_row("policy-candidate", "trace-candidate-1", "BLOCK"),
             _orch_row("policy-candidate", "trace-candidate-2", "NONE"),
             {
@@ -298,9 +300,25 @@ class _PolicyVersionSelectClient:
                 "raw_payload_json": "{}",
             },
         ]
+        for index in range(self.candidate_internal_errors):
+            rows.append(
+                _orch_row(
+                    "policy-candidate",
+                    f"trace-candidate-internal-{index}",
+                    "NONE",
+                    reason_code="INTERNAL_ERROR",
+                )
+            )
+        return rows
 
 
-def _orch_row(policy_version: str, trace_id: str, action: str) -> dict[str, object]:
+def _orch_row(
+    policy_version: str,
+    trace_id: str,
+    action: str,
+    *,
+    reason_code: str | None = None,
+) -> dict[str, object]:
     return {
         "ts_ms": 4600,
         "session_id": f"sess-{trace_id}",
@@ -308,7 +326,7 @@ def _orch_row(policy_version: str, trace_id: str, action: str) -> dict[str, obje
         "trace_id": trace_id,
         "risk_tier": "T3",
         "action": action,
-        "reason_code": None,
+        "reason_code": reason_code,
         "policy_version": policy_version,
         "raw_payload_json": "{}",
     }
@@ -395,7 +413,7 @@ class OfflineOptimizerClickHouseMetricsTests(unittest.TestCase):
 
         self.assertIsNotNone(deltas)
         self.assertEqual(deltas["block_rate_pp"], 50.0)
-        self.assertNotIn("internal_error_rate_pp", deltas)
+        self.assertEqual(deltas["internal_error_rate_pp"], 0.0)
         policy_calls = [
             call for call in client.calls if "policy_version = :policy_version" in call[0]
         ]
@@ -417,6 +435,20 @@ class OfflineOptimizerClickHouseMetricsTests(unittest.TestCase):
         )
 
         self.assertIsNone(deltas)
+
+    def test_clickhouse_repository_computes_internal_error_guardrail_delta(self) -> None:
+        repository = ClickHouseOfflineMetricsRepository(
+            client=_PolicyVersionSelectClient(candidate_internal_errors=1)
+        )
+
+        deltas = repository.read_rollout_guardrail_deltas(
+            OfflineMetricsQuery(window_start_ms=1000, window_end_ms=5000),
+            base_policy_version="policy-base",
+            candidate_policy_version="policy-candidate",
+        )
+
+        self.assertIsNotNone(deltas)
+        self.assertEqual(deltas["internal_error_rate_pp"], 33.33)
 
     def test_clickhouse_repository_requires_minimum_guardrail_sample_size(self) -> None:
         repository = ClickHouseOfflineMetricsRepository(

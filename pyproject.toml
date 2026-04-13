@@ -37,6 +37,7 @@ defense_api = [
     "PyJWT>=2.9.0",
     "boto3>=1.34.0",
     "sqlalchemy>=2.0.0",
+    "psycopg[binary]>=3.1.0",
     "psycopg2-binary>=2.9.0",
     # OpenTelemetry
     "opentelemetry-sdk>=1.27.0",
@@ -49,6 +50,7 @@ defense_api = [
 [project.scripts]
 tm-ai-etl = "traffic_master_ai.defense.api.etl_worker:run_etl"
 tm-ai-policy-optimizer = "traffic_master_ai.defense.d0_mvp.optimizer.worker:run_policy_optimizer"
+tm-ai-storage-migrate = "traffic_master_ai.defense.backoffice_copilot.storage.migration:run_storage_migration"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/traffic_master_ai"]
