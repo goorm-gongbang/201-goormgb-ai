@@ -11,6 +11,8 @@ from urllib.request import Request, urlopen
 
 from ...storage_env import (
     DEFAULT_CLICKHOUSE_AUDIT_TABLE,
+    DEFAULT_CLICKHOUSE_INGEST_BATCH_SIZE,
+    DEFAULT_CLICKHOUSE_INGEST_TIMEOUT_MS,
     load_clickhouse_storage_config_from_env,
 )
 
@@ -51,8 +53,8 @@ class ClickHouseWriteConfig:
 
     url: str | None = None
     table_name: str = DEFAULT_CLICKHOUSE_AUDIT_TABLE
-    batch_size: int = 1000
-    timeout_ms: int = 5000
+    batch_size: int = DEFAULT_CLICKHOUSE_INGEST_BATCH_SIZE
+    timeout_ms: int = DEFAULT_CLICKHOUSE_INGEST_TIMEOUT_MS
 
 
 @dataclass(slots=True, frozen=True)
@@ -63,7 +65,7 @@ class ClickHouseReadModelConfig:
     session_rollup_table: str = DEFAULT_CLICKHOUSE_SESSION_ROLLUP_TABLE
     match_rollup_table: str = DEFAULT_CLICKHOUSE_MATCH_ROLLUP_TABLE
     candidate_view_name: str = DEFAULT_CLICKHOUSE_CANDIDATE_VIEW
-    timeout_ms: int = 5000
+    timeout_ms: int = DEFAULT_CLICKHOUSE_INGEST_TIMEOUT_MS
 
 
 @dataclass(slots=True, frozen=True)

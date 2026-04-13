@@ -119,10 +119,11 @@ def test_check_route_preserves_correlation_header_and_audit_meta(
     lines = [ln for ln in audit_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
     assert lines
     rows = [json.loads(ln) for ln in lines]
-    hit = [row for row in rows if row.get("traceId") == "trace-meta-1"]
+    hit = [row for row in rows if row.get("trace_id") == "trace-meta-1"]
     assert hit
-    assert any(row.get("requestMeta", {}).get("correlationId") == "corr-123" for row in hit)
-    assert any(row.get("requestMeta", {}).get("testMode") is True for row in hit)
+    assert any(row.get("correlation_id") == "corr-123" for row in hit)
+    assert any(row.get("raw_payload", {}).get("request_meta", {}).get("correlation_id") == "corr-123" for row in hit)
+    assert any(row.get("raw_payload", {}).get("request_meta", {}).get("test_mode") is True for row in hit)
 
 
 def test_tm_test_mode_header_rejected_when_disabled(

@@ -77,16 +77,14 @@ _EFFECT_EVALUATOR_PROMPT = (
     "  risk.probation_seconds (int 10-120)\n"
     "  planner.throttle_delay_ms.T1 (int 0-200)\n"
     "  planner.throttle_delay_ms.T2 (int 100-600)\n"
-    "  challenge.max_attempts (int 1-3)\n"
-    "  challenge.cooldown_ms.first (int 0-3000)\n"
-    "  challenge.cooldown_ms.second (int 0-5000)\n"
-    "  challenge.halt_seconds (int 0-120)\n\n"
+    "\n"
     "Rules:\n"
     "- patches must be non-empty (1-12 items).\n"
     "- Each patch 'op' must be 'set', 'inc', or 'dec'.\n"
     "- Tier thresholds must stay monotonic: T0_max < T1_max < T2_max < 1.0.\n"
     "- T2 throttle delay must be >= T1 throttle delay.\n"
     "- Only propose changes supported by evidence in the metrics.\n"
+    "- Do NOT change challenge retry, cooldown, halt, or any other product-owned UX policy.\n"
     "- If evidence for change is weak, prefer a single very small reversible patch with low confidence instead of inventing a separate no-change schema.\n"
     "- Do NOT include any text outside the JSON object."
 )
@@ -654,15 +652,6 @@ def _rule_based_proposal(
     block_rate = float(metrics_snapshot.get("block_rate", 0.0))
     s3_fail_rate = float(metrics_snapshot.get("s3_fail_rate", 0.0))
 
-    if s3_lock_rate > 0.020:
-        patches.append(
-            {
-                "path": "challenge.halt_seconds",
-                "op": "dec",
-                "value": 5,
-                "why": "s3 temporary lock rate above baseline",
-            }
-        )
     if avg_throttle_delay > 260:
         patches.append(
             {
@@ -740,10 +729,6 @@ def _build_llm_input(metrics_snapshot: Mapping[str, Any], base_policy_version: s
             "risk.probation_seconds",
             "planner.throttle_delay_ms.T1",
             "planner.throttle_delay_ms.T2",
-            "challenge.max_attempts",
-            "challenge.cooldown_ms.first",
-            "challenge.cooldown_ms.second",
-            "challenge.halt_seconds",
         ],
     }
     encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))

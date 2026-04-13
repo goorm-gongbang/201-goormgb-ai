@@ -19,7 +19,11 @@ from traffic_master_ai.defense.d0_mvp.policy.loader import FilePolicyStore, Poli
 from traffic_master_ai.defense.d0_mvp.state.redis_client import InMemoryRedis, build_runtime_redis_from_env
 from traffic_master_ai.defense.storage_env import (
     DEFAULT_CLICKHOUSE_AUDIT_TABLE,
+    DEFAULT_CLICKHOUSE_INGEST_BATCH_SIZE,
+    DEFAULT_CLICKHOUSE_WRITE_RETRY_BACKOFF_MS,
+    DEFAULT_CLICKHOUSE_WRITE_RETRY_MAX_ATTEMPTS,
     DEFAULT_DEFENSE_AUDIT_LOG_PATH,
+    DEFAULT_ETL_PROCESSED_LEDGER_TTL_SECONDS,
     DEFAULT_POLICY_CACHE_SECONDS,
     DEFAULT_POLICY_PROJECTION_MAX_STALENESS_MS,
     DEFAULT_POLICY_STORE_PATH,
@@ -28,10 +32,20 @@ from traffic_master_ai.defense.storage_env import (
     ClickHouseStorageConfig,
     ETLWorkerConfig,
     PostgresStorageConfig,
+    RECOMMENDED_PROD_CLICKHOUSE_INGEST_BATCH_SIZE,
+    RECOMMENDED_PROD_CLICKHOUSE_WRITE_RETRY_BACKOFF_MS,
+    RECOMMENDED_PROD_CLICKHOUSE_WRITE_RETRY_MAX_ATTEMPTS,
+    RECOMMENDED_PROD_S3_ARCHIVE_INTERVAL_SECONDS,
+    RECOMMENDED_ETL_PROCESSED_LEDGER_TTL_SECONDS,
+    RECOMMENDED_STAGING_CLICKHOUSE_INGEST_BATCH_SIZE,
+    RECOMMENDED_STAGING_CLICKHOUSE_WRITE_RETRY_BACKOFF_MS,
+    RECOMMENDED_STAGING_CLICKHOUSE_WRITE_RETRY_MAX_ATTEMPTS,
+    RECOMMENDED_STAGING_S3_ARCHIVE_INTERVAL_SECONDS,
     S3ArchiveConfig,
     load_clickhouse_storage_config_from_env,
     load_projection_sync_config_from_env,
     load_audit_log_config_from_env,
+    load_etl_processed_ledger_config_from_env,
     load_runtime_policy_config_from_env,
     load_s3_archive_config_from_env,
     validate_clickhouse_ingest_env_for_prod,
@@ -47,6 +61,7 @@ class StorageEnvConfigTests(unittest.TestCase):
             s3_config = load_s3_archive_config_from_env()
             runtime_policy_config = load_runtime_policy_config_from_env()
             clickhouse_config = load_clickhouse_storage_config_from_env()
+            ledger_config = load_etl_processed_ledger_config_from_env()
 
         self.assertIsNone(s3_config.bucket)
         self.assertEqual(s3_config.prefix, DEFAULT_S3_PREFIX)
@@ -62,6 +77,74 @@ class StorageEnvConfigTests(unittest.TestCase):
         )
         self.assertEqual(clickhouse_config.audit_table, DEFAULT_CLICKHOUSE_AUDIT_TABLE)
         self.assertIsNone(clickhouse_config.url)
+        self.assertEqual(DEFAULT_S3_ARCHIVE_INTERVAL_SECONDS, RECOMMENDED_PROD_S3_ARCHIVE_INTERVAL_SECONDS)
+        self.assertEqual(
+            clickhouse_config.ingest_batch_size,
+            DEFAULT_CLICKHOUSE_INGEST_BATCH_SIZE,
+        )
+        self.assertEqual(
+            clickhouse_config.write_retry_max_attempts,
+            DEFAULT_CLICKHOUSE_WRITE_RETRY_MAX_ATTEMPTS,
+        )
+        self.assertEqual(
+            clickhouse_config.write_retry_backoff_ms,
+            DEFAULT_CLICKHOUSE_WRITE_RETRY_BACKOFF_MS,
+        )
+        self.assertEqual(
+            DEFAULT_CLICKHOUSE_INGEST_BATCH_SIZE,
+            RECOMMENDED_PROD_CLICKHOUSE_INGEST_BATCH_SIZE,
+        )
+        self.assertEqual(
+            DEFAULT_CLICKHOUSE_WRITE_RETRY_MAX_ATTEMPTS,
+            RECOMMENDED_PROD_CLICKHOUSE_WRITE_RETRY_MAX_ATTEMPTS,
+        )
+        self.assertEqual(
+            DEFAULT_CLICKHOUSE_WRITE_RETRY_BACKOFF_MS,
+            RECOMMENDED_PROD_CLICKHOUSE_WRITE_RETRY_BACKOFF_MS,
+        )
+        self.assertEqual(
+            ledger_config.ttl_seconds,
+            DEFAULT_ETL_PROCESSED_LEDGER_TTL_SECONDS,
+        )
+        self.assertEqual(
+            DEFAULT_ETL_PROCESSED_LEDGER_TTL_SECONDS,
+            RECOMMENDED_ETL_PROCESSED_LEDGER_TTL_SECONDS,
+        )
+
+    def test_s3_archive_interval_env_surface_uses_explicit_value(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "TM_S3_ARCHIVE_INTERVAL_SECONDS": str(RECOMMENDED_STAGING_S3_ARCHIVE_INTERVAL_SECONDS),
+                "TM_CLICKHOUSE_INGEST_BATCH_SIZE": str(RECOMMENDED_STAGING_CLICKHOUSE_INGEST_BATCH_SIZE),
+                "TM_CLICKHOUSE_WRITE_RETRY_MAX_ATTEMPTS": str(
+                    RECOMMENDED_STAGING_CLICKHOUSE_WRITE_RETRY_MAX_ATTEMPTS
+                ),
+                "TM_CLICKHOUSE_WRITE_RETRY_BACKOFF_MS": str(
+                    RECOMMENDED_STAGING_CLICKHOUSE_WRITE_RETRY_BACKOFF_MS
+                ),
+            },
+            clear=True,
+        ):
+            s3_config = load_s3_archive_config_from_env()
+            clickhouse_config = load_clickhouse_storage_config_from_env()
+
+        self.assertEqual(
+            s3_config.archive_interval_seconds,
+            RECOMMENDED_STAGING_S3_ARCHIVE_INTERVAL_SECONDS,
+        )
+        self.assertEqual(
+            clickhouse_config.ingest_batch_size,
+            RECOMMENDED_STAGING_CLICKHOUSE_INGEST_BATCH_SIZE,
+        )
+        self.assertEqual(
+            clickhouse_config.write_retry_max_attempts,
+            RECOMMENDED_STAGING_CLICKHOUSE_WRITE_RETRY_MAX_ATTEMPTS,
+        )
+        self.assertEqual(
+            clickhouse_config.write_retry_backoff_ms,
+            RECOMMENDED_STAGING_CLICKHOUSE_WRITE_RETRY_BACKOFF_MS,
+        )
 
     def test_postgres_and_clickhouse_config_surfaces_use_env_values(self) -> None:
         with patch.dict(
@@ -124,22 +207,65 @@ class StorageEnvConfigTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 load_clickhouse_storage_config_from_env()
 
+        with patch.dict(
+            os.environ,
+            {
+                "TM_S3_ARCHIVE_INTERVAL_SECONDS": "0",
+            },
+            clear=True,
+        ):
+            with self.assertRaises(ValueError):
+                load_s3_archive_config_from_env()
+
+        with patch.dict(
+            os.environ,
+            {
+                "TM_CLICKHOUSE_INGEST_BATCH_SIZE": "0",
+            },
+            clear=True,
+        ):
+            with self.assertRaises(ValueError):
+                load_clickhouse_storage_config_from_env()
+
+        with patch.dict(
+            os.environ,
+            {
+                "TM_CLICKHOUSE_WRITE_RETRY_MAX_ATTEMPTS": "0",
+            },
+            clear=True,
+        ):
+            with self.assertRaises(ValueError):
+                load_clickhouse_storage_config_from_env()
+
+        with patch.dict(
+            os.environ,
+            {
+                "TM_ETL_PROCESSED_LEDGER_TTL_SECONDS": "0",
+            },
+            clear=True,
+        ):
+            with self.assertRaises(ValueError):
+                load_etl_processed_ledger_config_from_env()
+
     def test_projection_retry_and_clickhouse_retry_env_surfaces_use_env_values(self) -> None:
         with patch.dict(
             os.environ,
             {
                 "TM_CLICKHOUSE_WRITE_RETRY_MAX_ATTEMPTS": "5",
                 "TM_CLICKHOUSE_WRITE_RETRY_BACKOFF_MS": "250",
+                "TM_ETL_PROCESSED_LEDGER_TTL_SECONDS": "86400",
                 "TM_PROJECTION_RETRY_MAX_ATTEMPTS": "4",
                 "TM_PROJECTION_RETRY_BACKOFF_MS": "80",
             },
             clear=True,
         ):
             clickhouse_config = load_clickhouse_storage_config_from_env()
+            ledger_config = load_etl_processed_ledger_config_from_env()
             projection_config = load_projection_sync_config_from_env()
 
         self.assertEqual(clickhouse_config.write_retry_max_attempts, 5)
         self.assertEqual(clickhouse_config.write_retry_backoff_ms, 250)
+        self.assertEqual(ledger_config.ttl_seconds, 86400)
         self.assertEqual(projection_config.retry_max_attempts, 4)
         self.assertEqual(projection_config.retry_backoff_ms, 80)
 
@@ -232,6 +358,21 @@ class StorageEnvConfigTests(unittest.TestCase):
 
         self.assertIn("TM_CLICKHOUSE_URL must be set", str(exc_info.exception))
 
+    def test_etl_cli_fails_fast_when_redis_env_is_missing_for_processed_key_ledger(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "TM_S3_BUCKET": "audit-bucket",
+                "TM_CLICKHOUSE_URL": "clickhouse://localhost:8123/default",
+                "CI": "false",
+            },
+            clear=True,
+        ):
+            with self.assertRaises(SystemExit) as exc_info:
+                run_etl()
+
+        self.assertIn("TM_REDIS_URL must be set", str(exc_info.exception))
+
     def test_etl_worker_raises_configuration_error_when_clickhouse_env_is_missing(self) -> None:
         worker = ETLWorker(
             config=ETLWorkerConfig(
@@ -241,6 +382,7 @@ class StorageEnvConfigTests(unittest.TestCase):
             ),
             s3_client=MagicMock(),
             clickhouse_writer=MagicMock(),
+            processed_key_redis=InMemoryRedis(),
         )
 
         with self.assertRaises(ETLConfigurationError) as exc_info:
@@ -257,6 +399,7 @@ class StorageEnvConfigTests(unittest.TestCase):
             {
                 "TM_S3_BUCKET": "audit-bucket",
                 "TM_CLICKHOUSE_URL": "clickhouse://localhost:8123/default",
+                "TM_REDIS_URL": "redis://localhost:6379/0",
             },
             clear=True,
         ):

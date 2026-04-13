@@ -108,18 +108,6 @@ curl -X POST http://127.0.0.1:8010/ai/evaluate \
   -d '{"event":{"eventType":"QUEUE_ENTER","requestPath":"/queue/matches/687/enter","requestMethod":"POST"},"context":{"sid":"sid_local_dev"}}'
 ```
 
-## Offline LLM batch (post-analysis only)
-- Runtime path does not call LLM.
-- Batch runner consumes decision logs and emits review artifacts:
-```bash
-cd /Users/jangjihyeon/201-goormgb-ai
-python scripts/step5_offline_llm_batch.py --min-log-count 1 --mode mock
-```
-- Outputs:
-  - `logs/offline_judge_results.jsonl`
-  - `logs/offline_policy_patch_candidates.json`
-  - `logs/offline_batch_summary.json`
-
 ## OpenAPI
 - Swagger UI: `http://localhost:8000/docs`
 - OpenAPI JSON: `http://localhost:8000/openapi.json`

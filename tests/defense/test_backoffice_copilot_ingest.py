@@ -9,6 +9,8 @@ from traffic_master_ai.defense.backoffice_copilot.ingest import (
     interpret_event,
     load_analysis_input,
     map_event_semantics,
+    parse_canonical_defense_audit_event_row,
+    parse_defense_audit_event_row,
 )
 
 
@@ -151,3 +153,79 @@ def test_semantic_mapping_prefers_known_contract_paths_over_unrelated_nested_key
     assert semantics.latest_tier == "T2"
     assert semantics.reason_code == "SAFE_CODE"
     assert semantics.terminal_reason == "SAFE_REASON"
+
+def test_semantic_mapping_normalizes_legacy_flow_state_and_action_aliases() -> None:
+    row = DefenseAuditEventRow(
+        ts_ms=400,
+        trace_id="trace-4",
+        session_id="sess-4",
+        event_type="EVALUATE",
+        payload={
+            "flowState": "S4",
+            "serverDecision": {"action": "CHALLENGE", "riskTier": "T2"},
+        },
+    )
+
+    semantics = map_event_semantics(row)
+
+    assert semantics.flow_state == "F3"
+    assert semantics.latest_flow_state == "F3"
+    assert semantics.latest_action == "REQUIRE_S3"
+    assert semantics.terminal_outcome == "NOT_BLOCKED"
+def test_loader_compatibility_read_keeps_legacy_row_support() -> None:
+    row = parse_defense_audit_event_row(
+        {
+            "tsMs": 1710000000000,
+            "traceId": "trace-legacy",
+            "sessionId": "sess-legacy",
+            "eventType": "DEF_GUARD_SCORED",
+            "flowState": "F2",
+            "serverDecision": {"riskTier": "T1", "action": "NONE"},
+        }
+    )
+
+    assert row.ts_ms == 1710000000000
+    assert row.trace_id == "trace-legacy"
+    assert row.session_id == "sess-legacy"
+    assert row.event_type == "DEF_GUARD_SCORED"
+    assert row.payload["flowState"] == "F2"
+    assert row.payload["serverDecision"]["riskTier"] == "T1"
+
+
+def test_strict_canonical_loader_only_accepts_unified_contract() -> None:
+    row = parse_canonical_defense_audit_event_row(
+        {
+            "ts_ms": 1710000000000,
+            "session_id": "sess-canonical",
+            "trace_id": "trace-canonical",
+            "event_type": "DEF_ORCH_EXECUTED",
+            "flow_state": "F4",
+            "raw_payload": {
+                "server_decision": {"risk_tier": "T2", "action": "THROTTLE"},
+            },
+        }
+    )
+
+    assert row.ts_ms == 1710000000000
+    assert row.trace_id == "trace-canonical"
+    assert row.session_id == "sess-canonical"
+    assert row.event_type == "DEF_ORCH_EXECUTED"
+    assert row.payload == {
+        "server_decision": {"risk_tier": "T2", "action": "THROTTLE"},
+    }
+
+
+def test_strict_canonical_loader_rejects_legacy_shape() -> None:
+    try:
+        parse_canonical_defense_audit_event_row(
+            {
+                "tsMs": 1710000000000,
+                "sessionId": "sess-legacy",
+                "eventType": "DEF_ORCH_EXECUTED",
+                "payload": {},
+            }
+        )
+    except ValueError as exc:
+        assert "unified snake_case contract" in str(exc)
+    else:
+        raise AssertionError("strict canonical loader must reject legacy rows")

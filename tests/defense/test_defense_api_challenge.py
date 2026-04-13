@@ -1,14 +1,108 @@
+import base64
+import json
 import os
+import sys
+import types
 import uuid
 
-import jwt
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("CI", "true")
 
-from traffic_master_ai.defense.api.main import _decision_engine, _state_store, app
+if "pythonjsonlogger" not in sys.modules:
+    class _JsonFormatter:
+        def __init__(self, *args, **kwargs):
+            pass
 
-client = TestClient(app)
+        def add_fields(self, log_record, record, message_dict):
+            return None
+
+    sys.modules["pythonjsonlogger"] = types.SimpleNamespace(
+        jsonlogger=types.SimpleNamespace(JsonFormatter=_JsonFormatter)
+    )
+
+if "jwt" not in sys.modules:
+    def _jwt_encode(payload, key, algorithm=None):
+        sid = payload.get("sid", "")
+        return f"stub-jwt:{sid}"
+
+    def _jwt_decode(token, options=None, **kwargs):
+        if isinstance(token, str) and token.startswith("stub-jwt:"):
+            return {"sid": token.split(":", 1)[1]}
+        return {}
+
+    sys.modules["jwt"] = types.SimpleNamespace(
+        decode=_jwt_decode,
+        encode=_jwt_encode,
+    )
+
+if "opentelemetry" not in sys.modules:
+    class _NoOp:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __call__(self, *args, **kwargs):
+            return None
+
+        def add_span_processor(self, *args, **kwargs):
+            return None
+
+    class _Resource:
+        @staticmethod
+        def create(payload):
+            return payload
+
+    class _FastAPIInstrumentor:
+        @staticmethod
+        def instrument_app(app):
+            return app
+
+    root = types.ModuleType("opentelemetry")
+    root.metrics = types.SimpleNamespace(set_meter_provider=lambda provider: None)
+    root.trace = types.SimpleNamespace(set_tracer_provider=lambda provider: None)
+    sys.modules["opentelemetry"] = root
+    sys.modules["opentelemetry.metrics"] = root.metrics
+    sys.modules["opentelemetry.trace"] = root.trace
+    sys.modules["opentelemetry.exporter"] = types.ModuleType("opentelemetry.exporter")
+    sys.modules["opentelemetry.exporter.otlp"] = types.ModuleType("opentelemetry.exporter.otlp")
+    sys.modules["opentelemetry.exporter.otlp.proto"] = types.ModuleType("opentelemetry.exporter.otlp.proto")
+    sys.modules["opentelemetry.exporter.otlp.proto.grpc"] = types.ModuleType("opentelemetry.exporter.otlp.proto.grpc")
+    sys.modules["opentelemetry.exporter.otlp.proto.grpc.metric_exporter"] = types.SimpleNamespace(
+        OTLPMetricExporter=_NoOp
+    )
+    sys.modules["opentelemetry.exporter.otlp.proto.grpc.trace_exporter"] = types.SimpleNamespace(
+        OTLPSpanExporter=_NoOp
+    )
+    sys.modules["opentelemetry.instrumentation"] = types.ModuleType("opentelemetry.instrumentation")
+    sys.modules["opentelemetry.instrumentation.fastapi"] = types.SimpleNamespace(
+        FastAPIInstrumentor=_FastAPIInstrumentor
+    )
+    sys.modules["opentelemetry.sdk"] = types.ModuleType("opentelemetry.sdk")
+    sys.modules["opentelemetry.sdk.metrics"] = types.SimpleNamespace(MeterProvider=_NoOp)
+    sys.modules["opentelemetry.sdk.metrics.export"] = types.SimpleNamespace(
+        PeriodicExportingMetricReader=_NoOp
+    )
+    sys.modules["opentelemetry.sdk.resources"] = types.SimpleNamespace(Resource=_Resource)
+    sys.modules["opentelemetry.sdk.trace"] = types.SimpleNamespace(TracerProvider=_NoOp)
+    sys.modules["opentelemetry.sdk.trace.export"] = types.SimpleNamespace(
+        BatchSpanProcessor=_NoOp
+    )
+    sys.modules["opentelemetry.semconv"] = types.ModuleType("opentelemetry.semconv")
+    sys.modules["opentelemetry.semconv.resource"] = types.SimpleNamespace(
+        ResourceAttributes=types.SimpleNamespace(
+            SERVICE_NAME="service.name",
+            SERVICE_NAMESPACE="service.namespace",
+            SERVICE_VERSION="service.version",
+        )
+    )
+
+import jwt
+
+import traffic_master_ai.defense.api.main as api_main
+from traffic_master_ai.defense.api.main import _decision_engine, _state_store
+from traffic_master_ai.defense.api.models import RuntimeStateSnapshot
+
+client = TestClient(api_main.app)
 MATCH_ID = 687
 
 
@@ -16,8 +110,30 @@ def _headers(session_id: str) -> dict[str, str]:
     return {"X-Session-Id": session_id}
 
 
+def _encode_test_jwt(payload: dict[str, str]) -> str:
+    def _b64url(data: dict[str, str]) -> str:
+        raw = json.dumps(data, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
+
+    return f"{_b64url({'alg': 'none', 'typ': 'JWT'})}.{_b64url(payload)}."
+
+
+def _decode_test_jwt(token: str, options=None) -> dict[str, str]:
+    del options
+    parts = token.split(".")
+    if len(parts) < 2:
+        return {}
+    padded = parts[1] + "=" * (-len(parts[1]) % 4)
+    return json.loads(base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8"))
+
+
 def _headers_with_authorization(session_id: str, auth_sid: str) -> dict[str, str]:
-    token = jwt.encode({"sid": auth_sid}, "test-secret-that-is-long-enough-32b", algorithm="HS256")
+    encode = getattr(jwt, "encode", None)
+    if callable(encode):
+        token = encode({"sid": auth_sid}, "test-secret-that-is-long-enough-32b", algorithm="HS256")
+    else:
+        token = _encode_test_jwt({"sid": auth_sid})
+        api_main.jwt = type("JWTStub", (), {"decode": staticmethod(_decode_test_jwt)})()
     return {
         "X-Session-Id": session_id,
         "Authorization": f"Bearer {token}",
@@ -34,6 +150,17 @@ def _session_id(prefix: str) -> str:
 
 def _state_key(session_id: str) -> str:
     return f"{session_id}:{MATCH_ID}"
+
+
+def _vqa_events() -> list[dict[str, float | int | str]]:
+    return [
+        {"type": "mousemove", "tsMs": 0, "xNorm": 0.10, "yNorm": 0.50},
+        {"type": "mousemove", "tsMs": 80, "xNorm": 0.18, "yNorm": 0.53},
+        {"type": "mousemove", "tsMs": 170, "xNorm": 0.27, "yNorm": 0.47},
+        {"type": "mousemove", "tsMs": 280, "xNorm": 0.35, "yNorm": 0.55},
+        {"type": "mousemove", "tsMs": 410, "xNorm": 0.44, "yNorm": 0.48},
+        {"type": "mousemove", "tsMs": 560, "xNorm": 0.52, "yNorm": 0.52},
+    ]
 
 
 def test_ai_challenge_start_returns_target_contract() -> None:
@@ -81,7 +208,7 @@ def test_ai_challenge_verify_retries_then_blocks() -> None:
     body_1 = verify_1.json()
     assert body_1["success"] is False
     assert body_1["remainingAttempts"] == 2
-    assert body_1["reason"] == "challenge_fail"
+    assert body_1["reason"] == "missing_vqa_telemetry"
 
     verify_2 = client.post(
         "/ai/challenge/verify",
@@ -99,7 +226,7 @@ def test_ai_challenge_verify_retries_then_blocks() -> None:
     body_2 = verify_2.json()
     assert body_2["success"] is False
     assert body_2["remainingAttempts"] == 1
-    assert body_2["reason"] == "challenge_fail"
+    assert body_2["reason"] == "missing_vqa_telemetry"
 
     verify_3 = client.post(
         "/ai/challenge/verify",
@@ -117,7 +244,7 @@ def test_ai_challenge_verify_retries_then_blocks() -> None:
     body_3 = verify_3.json()
     assert body_3["success"] is False
     assert body_3["remainingAttempts"] == 0
-    assert body_3["reason"] == "max_attempts"
+    assert body_3["reason"] == "missing_vqa_telemetry"
 
     runtime = client.get(f"/runtime/{_state_key(session_id)}")
     assert runtime.status_code == 200
@@ -125,6 +252,152 @@ def test_ai_challenge_verify_retries_then_blocks() -> None:
     assert runtime_body["vqa_last_result"] == "BLOCKED"
     assert runtime_body["vqa_passed"] is False
     assert runtime_body["active_challenge_id"] is None
+
+
+def test_ai_challenge_verify_missing_vqa_telemetry_fails_and_records_risk() -> None:
+    session_id = _session_id("sess-ai-verify-missing-telemetry")
+    state_key = _state_key(session_id)
+    start = client.post(
+        "/ai/challenge/start",
+        json={"matchId": MATCH_ID},
+        headers=_headers(session_id),
+    )
+    assert start.status_code == 200
+    challenge_id = start.json()["challengeId"]
+
+    verify = client.post(
+        "/ai/challenge/verify",
+        json={
+            "matchId": MATCH_ID,
+            "challengeId": challenge_id,
+            "caught": True,
+            "catchTsMs": 1,
+            "catchXNorm": 0.45,
+            "catchYNorm": 0.55,
+        },
+        headers=_headers(session_id),
+    )
+    assert verify.status_code == 200
+    body = verify.json()
+    assert body["success"] is False
+    assert body["reason"] == "missing_vqa_telemetry"
+
+    runtime = client.get(f"/runtime/{state_key}")
+    assert runtime.status_code == 200
+    runtime_body = runtime.json()
+    assert runtime_body["vqa_passed"] is False
+    assert runtime_body["risk_score"] > 0.0
+    assert runtime_body["last_step_risk"] is not None
+
+
+def test_runtime_state_refreshes_stale_snapshot_from_decision_engine() -> None:
+    session_id = _session_id("sess-runtime-refresh")
+    state_key = _state_key(session_id)
+    policy_version = _decision_engine.policy_loader.load(session_id=state_key).policy_version
+
+    _state_store.upsert(
+        state_key,
+        RuntimeStateSnapshot(
+            flow_state="F4M",
+            seat_mode="MANUAL",
+            defense_tier="T0",
+            risk_score=0.0,
+            updated_ts_ms=1,
+        ),
+    )
+
+    _decision_engine.session_state.get_or_create(state_key, policy_version=policy_version)
+    _decision_engine.session_state.update_by_role(
+        "guard",
+        state_key,
+        {
+            "riskScore": 0.82,
+            "defenseTier": "T2",
+            "lastStepRisk": 0.82,
+            "lastGuardTsMs": 1710000000000,
+        },
+        is_allow=True,
+    )
+    _decision_engine.session_state.update_by_role(
+        "orchestrator",
+        state_key,
+        {"flowState": "S4"},
+        is_allow=True,
+    )
+
+    runtime = client.get(f"/runtime/{state_key}")
+    assert runtime.status_code == 200
+    body = runtime.json()
+    assert body["flow_state"] == "F3M"
+    assert body["seat_mode"] == "MANUAL"
+    assert body["defense_tier"] == "T2"
+    assert body["risk_score"] == 0.82
+    assert body["last_step_risk"] == 0.82
+    assert body["last_guard_ts_ms"] == 1710000000000
+
+    refreshed = _state_store.get(state_key)
+    assert refreshed is not None
+    assert refreshed.flow_state == "F3M"
+    assert refreshed.seat_mode == "MANUAL"
+    assert refreshed.defense_tier == "T2"
+    assert refreshed.risk_score == 0.82
+
+
+def test_runtime_state_skips_refresh_for_fresh_snapshot_without_runtime_drift(monkeypatch) -> None:
+    session_id = _session_id("sess-runtime-fresh")
+    state_key = _state_key(session_id)
+    now_ms = 1710000005000
+    policy_version = _decision_engine.policy_loader.load(session_id=state_key).policy_version
+
+    snap = RuntimeStateSnapshot(
+        flow_state="F3M",
+        seat_mode="MANUAL",
+        defense_tier="T2",
+        risk_score=0.82,
+        last_step_risk=0.82,
+        last_guard_ts_ms=1710000000000,
+        policy_version=policy_version,
+        updated_ts_ms=now_ms,
+    )
+    _state_store.upsert(state_key, snap)
+
+    _decision_engine.session_state.get_or_create(state_key, policy_version=policy_version)
+    _decision_engine.session_state.update_by_role(
+        "guard",
+        state_key,
+        {
+            "riskScore": 0.82,
+            "defenseTier": "T2",
+            "lastStepRisk": 0.82,
+            "lastGuardTsMs": 1710000000000,
+        },
+        is_allow=True,
+    )
+    _decision_engine.session_state.update_by_role(
+        "orchestrator",
+        state_key,
+        {"flowState": "S4"},
+        is_allow=True,
+    )
+
+    upsert_calls = 0
+    original_upsert = _state_store.upsert
+
+    def _counting_upsert(session_id: str, snapshot: RuntimeStateSnapshot) -> None:
+        nonlocal upsert_calls
+        upsert_calls += 1
+        original_upsert(session_id, snapshot)
+
+    monkeypatch.setattr(api_main, "time", types.SimpleNamespace(time=lambda: now_ms / 1000.0))
+    monkeypatch.setattr(_state_store, "upsert", _counting_upsert)
+
+    runtime = client.get(f"/runtime/{state_key}")
+    assert runtime.status_code == 200
+    body = runtime.json()
+    assert body["flow_state"] == "F3M"
+    assert body["defense_tier"] == "T2"
+    assert body["risk_score"] == 0.82
+    assert upsert_calls == 0
 
 
 def test_ai_challenge_verify_success_marks_runtime_passed() -> None:
@@ -136,6 +409,17 @@ def test_ai_challenge_verify_success_marks_runtime_passed() -> None:
     )
     assert start.status_code == 200
     challenge_id = start.json()["challengeId"]
+
+    ingest = client.post(
+        "/ai/telemetry/ingest",
+        json={
+            "matchId": MATCH_ID,
+            "stage": "VQA_CHALLENGE",
+            "events": _vqa_events(),
+        },
+        headers=_headers(session_id),
+    )
+    assert ingest.status_code == 200
 
     verify = client.post(
         "/ai/challenge/verify",
@@ -190,6 +474,17 @@ def test_ai_challenge_verify_success_on_last_remaining_attempt_does_not_block() 
         assert verify_fail.status_code == 200
         assert verify_fail.json()["success"] is False
 
+    ingest = client.post(
+        "/ai/telemetry/ingest",
+        json={
+            "matchId": MATCH_ID,
+            "stage": "VQA_CHALLENGE",
+            "events": _vqa_events(),
+        },
+        headers=_headers(session_id),
+    )
+    assert ingest.status_code == 200
+
     verify_pass = client.post(
         "/ai/challenge/verify",
         json={
@@ -231,14 +526,7 @@ def test_ai_challenge_verify_pass_applies_vqa_risk_and_seat_entry_does_not_recom
         json={
             "matchId": MATCH_ID,
             "stage": "VQA_CHALLENGE",
-            "events": [
-                {"type": "mousemove", "tsMs": 0, "xNorm": 0.10, "yNorm": 0.50},
-                {"type": "mousemove", "tsMs": 80, "xNorm": 0.18, "yNorm": 0.53},
-                {"type": "mousemove", "tsMs": 170, "xNorm": 0.27, "yNorm": 0.47},
-                {"type": "mousemove", "tsMs": 280, "xNorm": 0.35, "yNorm": 0.55},
-                {"type": "mousemove", "tsMs": 410, "xNorm": 0.44, "yNorm": 0.48},
-                {"type": "mousemove", "tsMs": 560, "xNorm": 0.52, "yNorm": 0.52},
-            ],
+            "events": _vqa_events(),
         },
         headers=_headers(session_id),
     )
@@ -263,6 +551,7 @@ def test_ai_challenge_verify_pass_applies_vqa_risk_and_seat_entry_does_not_recom
     assert runtime_before.status_code == 200
     risk_before = runtime_before.json()["risk_score"]
     assert risk_before > 0.0
+    assert runtime_before.json()["last_step_risk"] is not None
 
     seat_entry = client.post(
         "/ai/evaluate",
@@ -299,14 +588,7 @@ def test_ai_challenge_verify_pass_with_user_header_does_not_500() -> None:
         json={
             "matchId": MATCH_ID,
             "stage": "VQA_CHALLENGE",
-            "events": [
-                {"type": "mousemove", "tsMs": 0, "xNorm": 0.10, "yNorm": 0.50},
-                {"type": "mousemove", "tsMs": 80, "xNorm": 0.18, "yNorm": 0.53},
-                {"type": "mousemove", "tsMs": 170, "xNorm": 0.27, "yNorm": 0.47},
-                {"type": "mousemove", "tsMs": 280, "xNorm": 0.35, "yNorm": 0.55},
-                {"type": "mousemove", "tsMs": 410, "xNorm": 0.44, "yNorm": 0.48},
-                {"type": "mousemove", "tsMs": 560, "xNorm": 0.52, "yNorm": 0.52},
-            ],
+            "events": _vqa_events(),
         },
         headers=headers,
     )
@@ -343,14 +625,7 @@ def test_ai_challenge_verify_pass_survives_runtime_policy_sync_failure(monkeypat
         json={
             "matchId": MATCH_ID,
             "stage": "VQA_CHALLENGE",
-            "events": [
-                {"type": "mousemove", "tsMs": 0, "xNorm": 0.10, "yNorm": 0.50},
-                {"type": "mousemove", "tsMs": 80, "xNorm": 0.18, "yNorm": 0.53},
-                {"type": "mousemove", "tsMs": 170, "xNorm": 0.27, "yNorm": 0.47},
-                {"type": "mousemove", "tsMs": 280, "xNorm": 0.35, "yNorm": 0.55},
-                {"type": "mousemove", "tsMs": 410, "xNorm": 0.44, "yNorm": 0.48},
-                {"type": "mousemove", "tsMs": 560, "xNorm": 0.52, "yNorm": 0.52},
-            ],
+            "events": _vqa_events(),
         },
         headers=_headers(session_id),
     )
@@ -408,14 +683,7 @@ def test_ai_challenge_verify_pass_refreshes_anonymous_session_ttl() -> None:
         json={
             "matchId": MATCH_ID,
             "stage": "VQA_CHALLENGE",
-            "events": [
-                {"type": "mousemove", "tsMs": 0, "xNorm": 0.10, "yNorm": 0.50},
-                {"type": "mousemove", "tsMs": 80, "xNorm": 0.18, "yNorm": 0.53},
-                {"type": "mousemove", "tsMs": 170, "xNorm": 0.27, "yNorm": 0.47},
-                {"type": "mousemove", "tsMs": 280, "xNorm": 0.35, "yNorm": 0.55},
-                {"type": "mousemove", "tsMs": 410, "xNorm": 0.44, "yNorm": 0.48},
-                {"type": "mousemove", "tsMs": 560, "xNorm": 0.52, "yNorm": 0.52},
-            ],
+            "events": _vqa_events(),
         },
         headers=_headers(session_id),
     )
@@ -520,15 +788,26 @@ def test_ai_challenge_verify_pass_survives_sid_source_drift() -> None:
     verify_headers = {
         "Authorization": start_headers["Authorization"],
     }
+    ingest = client.post(
+        "/ai/telemetry/ingest",
+        json={
+            "matchId": MATCH_ID,
+            "stage": "VQA_CHALLENGE",
+            "events": _vqa_events(),
+        },
+        headers=verify_headers,
+    )
+    assert ingest.status_code == 200
+
     verify = client.post(
         "/ai/challenge/verify",
         json={
             "matchId": MATCH_ID,
             "challengeId": challenge_id,
             "caught": True,
-            "catchTsMs": 1,
-            "catchXNorm": 0.45,
-            "catchYNorm": 0.55,
+            "catchTsMs": 560,
+            "catchXNorm": 0.52,
+            "catchYNorm": 0.52,
         },
         headers=verify_headers,
     )
@@ -769,7 +1048,7 @@ def test_ai_precheck_clears_sid_level_vqa_pass_marker_for_new_booking_attempt() 
     session_id = _session_id("sess-ai-precheck-sid-reset")
     marked = client.post(
         "/runtime/vqa/mark",
-        json={"session_id": session_id, "vqa_passed": True, "flow_state": "S4"},
+        json={"session_id": session_id, "vqa_passed": True, "flow_state": "F3"},
     )
     assert marked.status_code == 200
     assert marked.json()["vqa_passed"] is True

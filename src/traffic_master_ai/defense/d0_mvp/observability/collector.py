@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+from ...audit_contract import normalize_audit_row
 from ..core.constants import AUDIT_COLLECTOR_CHECKPOINT_FILENAME
 from .audit_logger import AuditLogger
 from .schemas import AuditEntry
@@ -37,12 +38,12 @@ class AuditCollector:
         return self._warehouse
 
     def ingest_entry(self, entry: AuditEntry | Mapping[str, Any]) -> None:
-        payload = entry.to_dict() if isinstance(entry, AuditEntry) else dict(entry)
+        payload = entry.to_dict() if isinstance(entry, AuditEntry) else normalize_audit_row(entry)
         appended = self._warehouse.append(payload)
         if not appended:
             return
         self._rows_ingested_total += 1
-        ts_ms = _safe_int(payload.get("tsMs"))
+        ts_ms = _safe_int(payload.get("ts_ms"))
         if ts_ms is not None:
             self._last_ingested_ts_ms = ts_ms
             self._last_ingest_lag_ms = max(0, int(time.time() * 1000) - ts_ms)
@@ -110,12 +111,13 @@ def _safe_int(value: Any) -> Optional[int]:
 
 
 def _entry_identity(entry: Mapping[str, Any]) -> tuple[str, str, str, str, int]:
+    row = normalize_audit_row(entry)
     return (
-        str(entry.get("requestId", "")),
-        str(entry.get("eventType", "")),
-        str(entry.get("traceId", "")),
-        str(entry.get("sessionId", "")),
-        _safe_int(entry.get("tsMs")) or 0,
+        str(row.get("request_id", "")),
+        str(row.get("event_type", "")),
+        str(row.get("trace_id", "")),
+        str(row.get("session_id", "")),
+        _safe_int(row.get("ts_ms")) or 0,
     )
 
 

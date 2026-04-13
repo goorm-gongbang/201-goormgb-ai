@@ -16,6 +16,7 @@ import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
+from functools import partial
 from typing import Any, Optional
 
 from pythonjsonlogger import jsonlogger
@@ -85,10 +86,11 @@ from ..d0_mvp.core.models import CheckRequest as D0CheckRequest
 from ..d0_mvp.events.common import RuntimeEvent as D0RuntimeEvent
 from ..d0_mvp.state.redis_client import build_runtime_redis_from_env
 from ..auth_guard import AuthGuardBlockService
+from .archive_runtime import run_s3_archive_loop
 from .audit import (
     DefenseDecisionAuditLogger,
     S3Uploader,
-    rotate_and_upload_audit_log,
+    flush_audit_log_to_archive,
 )
 from .challenge_runtime import ChallengeConfig, ChallengeRuntime
 from .models import (
@@ -116,6 +118,15 @@ from .models import (
     RuntimeStateSnapshot,
     RuntimeVqaMarkRequest,
     RuntimeVqaMarkResponse,
+)
+from .runtime_flow_state import (
+    d0_flow_state_to_runtime_with_seat_mode,
+    merge_runtime_flow_state,
+    normalize_seat_mode,
+    runtime_flow_state_to_d0,
+    runtime_flow_state_to_seat_mode,
+    target_event_to_seat_mode,
+    target_event_to_runtime_flow_state,
 )
 from .state import build_runtime_store_from_env
 
@@ -207,10 +218,6 @@ logger = logging.getLogger(__name__)
 _MATCH_ID_PATH_RE = re.compile(r"/matches/(?P<match_id>\d+)(?:/|$)")
 
 # S3 Archiver Config
-_S3_BUCKET = os.getenv("TM_S3_BUCKET")
-_S3_PREFIX = os.getenv("TM_S3_PREFIX", "ai-defense/audit/")
-_S3_REGION = os.getenv("TM_S3_REGION")
-_S3_INTERVAL = int(os.getenv("TM_S3_ARCHIVE_INTERVAL_SECONDS", "3600"))
 _TURNSTILE_SECRET_KEY = os.getenv("TM_TURNSTILE_SECRET_KEY", "").strip()
 _TURNSTILE_SITEVERIFY_URL = os.getenv(
     "TM_TURNSTILE_SITEVERIFY_URL",
@@ -218,6 +225,9 @@ _TURNSTILE_SITEVERIFY_URL = os.getenv(
 )
 _TURNSTILE_TIMEOUT_MS = int(os.getenv("TM_TURNSTILE_VERIFY_TIMEOUT_MS", "500"))
 _PRECHECK_TTL_MS = int(os.getenv("TM_PRECHECK_TTL_MS", "300000"))
+_RUNTIME_STATE_READ_REFRESH_MAX_AGE_MS = int(
+    os.getenv("TM_RUNTIME_STATE_READ_REFRESH_MAX_AGE_MS", "1000")
+)
 _VQA_TERMINAL_RISK_THRESHOLD = float(os.getenv("TM_VQA_TERMINAL_RISK_THRESHOLD", "0.92"))
 _VQA_REVIEW_RISK_FLOOR = float(os.getenv("TM_VQA_REVIEW_RISK_FLOOR", "0.84"))
 _VQA_EXTREME_LINEARITY_THRESHOLD = float(os.getenv("TM_VQA_EXTREME_LINEARITY_THRESHOLD", "0.985"))
@@ -228,7 +238,7 @@ _VQA_LOW_DWELL_THRESHOLD = float(os.getenv("TM_VQA_LOW_DWELL_THRESHOLD", "80"))
 _VQA_MIN_POINTS_FOR_ABNORMAL_TERMINAL = int(os.getenv("TM_VQA_MIN_POINTS_FOR_ABNORMAL_TERMINAL", "6"))
 _VQA_MIN_STRONG_SIGNALS_FOR_TERMINAL = int(os.getenv("TM_VQA_MIN_STRONG_SIGNALS_FOR_TERMINAL", "3"))
 
-_S3_UPLOADER = S3Uploader(bucket=_S3_BUCKET, prefix=_S3_PREFIX, region=_S3_REGION) if _S3_BUCKET else None
+_S3_UPLOADER = S3Uploader.from_env()
 
 _DEFAULT_CORS_ALLOW_ORIGINS = (
     "http://localhost:3000",
@@ -246,20 +256,7 @@ def _cors_allow_origins_from_env() -> list[str]:
 
 
 async def _s3_archive_loop():
-    """Background loop to periodically upload logs to S3."""
-    if not _S3_UPLOADER:
-        logger.info("S3 Archiving is disabled (TM_S3_BUCKET not set).")
-        return
-
-    logger.info("Starting S3 Archiving Loop (Interval: %ds)", _S3_INTERVAL)
-    while True:
-        try:
-            await asyncio.sleep(_S3_INTERVAL)
-            rotate_and_upload_audit_log(_audit, _S3_UPLOADER)
-        except asyncio.CancelledError:
-            break
-        except Exception as exc:
-            logger.error("Error in S3 archiving loop: %s", exc)
+    await run_s3_archive_loop(audit_logger=_audit, uploader=_S3_UPLOADER)
 
 
 @asynccontextmanager
@@ -272,6 +269,11 @@ async def lifespan(_app: FastAPI):
         await archive_task
     except asyncio.CancelledError:
         pass
+    if _S3_UPLOADER is not None:
+        try:
+            flush_audit_log_to_archive(_audit, _S3_UPLOADER)
+        except Exception:
+            logger.exception("Final audit archive flush failed during shutdown.")
     auth_guard_close = getattr(_auth_guard_blocker, "close", None)
     if callable(auth_guard_close):
         auth_guard_close()
@@ -331,8 +333,20 @@ async def readyz() -> HealthResponse:
 
 @app.get("/runtime/{session_id}", response_model=RuntimeStateSnapshot, tags=["state"], include_in_schema=False)
 async def runtime_state(session_id: str) -> RuntimeStateSnapshot:
+    now_ms = int(time.time() * 1000)
     snap = _state_store.get(session_id)
     if snap is not None:
+        if _needs_runtime_snapshot_refresh(
+            state_key=session_id,
+            snap=snap,
+            now_ms=now_ms,
+        ):
+            return _refresh_runtime_snapshot_from_decision_engine(
+                state_key=session_id,
+                snap=snap,
+                now_ms=now_ms,
+                user_id=snap.user_id,
+            )
         return snap
 
     decision_state = _decision_engine.session_state.get(session_id)
@@ -344,7 +358,7 @@ async def runtime_state(session_id: str) -> RuntimeStateSnapshot:
         d0_state=decision_state,
         policy_version=policy.policy_version,
         challenge_max_attempts=policy.challenge_max_attempts,
-        now_ms=int(time.time() * 1000),
+        now_ms=now_ms,
     )
     _state_store.upsert(session_id, bridged)
     return bridged
@@ -578,6 +592,28 @@ async def ai_evaluate(
         snap=snap,
         now_ms=now_ms,
     )
+    snap = _refresh_runtime_snapshot_from_decision_engine(
+        state_key=state_key,
+        snap=snap,
+        now_ms=now_ms,
+        user_id=user_id,
+    )
+    snap = _remember_seat_mode_for_target_event(
+        state_key=state_key,
+        snap=snap,
+        event_type=req.event.event_type,
+        now_ms=now_ms,
+    )
+    legacy_req = _build_legacy_request_from_target(
+        state_key=state_key,
+        trace_id=trace_id,
+        user_id=user_id,
+        event_type=req.event.event_type,
+        request_path=req.event.request_path,
+        request_method=req.event.request_method,
+        now_ms=now_ms,
+        snap=snap,
+    )
 
     event_type = req.event.event_type
 
@@ -590,6 +626,16 @@ async def ai_evaluate(
             trace_id=trace_id,
             block_trigger="ai_evaluate_precheck_block",
             stage=event_type,
+            request_path=req.event.request_path,
+            request_method=req.event.request_method,
+            target_event_type=req.event.event_type,
+            flow_state=_target_event_to_flow_state(req.event.event_type),
+            runtime_state=snap,
+            reason_code="PRECHECK_REQUIRED",
+            audit_payload={
+                "precheck_valid": False,
+                "decision_reason": "precheck_block",
+            },
         )
 
     if event_type == "SEAT_ENTRY":
@@ -601,6 +647,16 @@ async def ai_evaluate(
                 session_id=state_key,
                 trace_id=trace_id,
                 stage=event_type,
+                request_path=req.event.request_path,
+                request_method=req.event.request_method,
+                target_event_type=req.event.event_type,
+                flow_state=_target_event_to_flow_state(req.event.event_type),
+                runtime_state=snap,
+                reason_code="SEAT_ENTRY_VQA_REQUIRED",
+                audit_payload={
+                    "decision_reason": "seat_entry_immediate",
+                    "vqa_passed": False,
+                },
             )
         return _build_evaluate_response(
             background_tasks=background_tasks,
@@ -609,17 +665,16 @@ async def ai_evaluate(
             session_id=state_key,
             trace_id=trace_id,
             stage=event_type,
-        )
-
-    soft_action = _feature_soft_action(event_type=event_type, snap=snap)
-    if soft_action is not None:
-        return _build_evaluate_response(
-            background_tasks=background_tasks,
-            action=soft_action,
-            user_id=user_id,
-            session_id=state_key,
-            trace_id=trace_id,
-            stage=event_type,
+            request_path=req.event.request_path,
+            request_method=req.event.request_method,
+            target_event_type=req.event.event_type,
+            flow_state=_target_event_to_flow_state(req.event.event_type),
+            runtime_state=snap,
+            reason_code="SEAT_ENTRY_VQA_PASSED",
+            audit_payload={
+                "decision_reason": "seat_entry_immediate",
+                "vqa_passed": True,
+            },
         )
 
     legacy_req = _build_legacy_request_from_target(
@@ -632,11 +687,64 @@ async def ai_evaluate(
         now_ms=now_ms,
         snap=snap,
     )
-
-    legacy_resp, _ = await run_in_threadpool(_execute_legacy_evaluate, legacy_req)
-    action = _target_action_from_legacy(legacy_resp.action)
-    if event_type == "QUEUE_ENTER" and action == "REQUIRE_S3":
-        action = "THROTTLE"
+    legacy_resp, runtime_snap, should_refresh_runtime = await _run_legacy_target_evaluate(
+        req=legacy_req,
+        snap=snap,
+        event_type=event_type,
+    )
+    snap = runtime_snap
+    if should_refresh_runtime:
+        snap = _refresh_runtime_snapshot_from_decision_engine(
+            state_key=state_key,
+            snap=runtime_snap,
+            now_ms=now_ms,
+            user_id=user_id,
+        )
+    snap = _remember_seat_mode_for_target_event(
+        state_key=state_key,
+        snap=snap,
+        event_type=req.event.event_type,
+        now_ms=now_ms,
+    )
+    _state_store.upsert(state_key, snap)
+    soft_action = _feature_soft_action(event_type=req.event.event_type, snap=snap)
+    if soft_action is not None:
+        return _build_evaluate_response(
+            background_tasks=background_tasks,
+            action=soft_action,
+            user_id=user_id,
+            session_id=state_key,
+            trace_id=trace_id,
+            stage=event_type,
+            request_path=req.event.request_path,
+            request_method=req.event.request_method,
+            target_event_type=req.event.event_type,
+            flow_state=_target_event_to_flow_state(req.event.event_type),
+            runtime_state=snap,
+            reason_code="TARGET_SOFT_ACTION",
+            audit_payload={
+                "decision_reason": "soft_action",
+                "feature_summary": (
+                    snap.latest_queue_enter_preclick_summary
+                    if req.event.event_type == "QUEUE_ENTER"
+                    else snap.latest_seat_stage_summary
+                ),
+            },
+        )
+    base_action = _target_action_from_legacy(legacy_resp.action)
+    action = _merge_target_actions(
+        event_type=req.event.event_type,
+        base_action=base_action,
+        soft_action=None,
+    )
+    _audit_target_evaluate_decision(
+        req=legacy_req,
+        snap=snap,
+        action=action,
+        reason=legacy_resp.reason,
+        rule_hits=list(legacy_resp.rule_hits),
+        decision_id=legacy_resp.decision_id,
+    )
     return _build_evaluate_response(
         background_tasks=background_tasks,
         action=action,
@@ -672,7 +780,7 @@ async def ai_challenge_start(
     _remember_runtime_user_id(session_id=sid, user_id=user_id, now_ms=now_ms)
     start_req = ChallengeStartRequest(
         session_id=state_key,
-        flow_state="S3",
+        flow_state="F2",
         challenge_type="catch_ball",
     )
     resp = await _start_challenge_internal(start_req)
@@ -742,13 +850,15 @@ async def ai_challenge_verify(
         )
 
     feature_summary = snap.latest_vqa_challenge_summary or {}
+    telemetry_point_count = _opt_int(feature_summary.get("mousePointCount")) or 0
+    has_vqa_telemetry = telemetry_point_count >= 2
+    missing_vqa_telemetry = not has_vqa_telemetry
     in_bounds = 0.0 <= req.catch_x_norm <= 1.0 and 0.0 <= req.catch_y_norm <= 1.0
     timely = req.catch_ts_ms <= (snap.active_challenge_expires_at_ms or now_ms)
-    plausible = True
-    if feature_summary:
-        plausible = bool(feature_summary.get("mousePointCount", 0.0) >= 2.0)
-    passed = req.caught and in_bounds and timely and plausible
+    passed = req.caught and in_bounds and timely and has_vqa_telemetry
     vqa_attempt_score, vqa_reason_codes, vqa_terminal_abnormal = _score_vqa_attempt(feature_summary)
+    if missing_vqa_telemetry and "missing_vqa_telemetry" not in vqa_reason_codes:
+        vqa_reason_codes.append("missing_vqa_telemetry")
     d0_result = "PASS" if passed and not vqa_terminal_abnormal else "FAIL"
     try:
         vqa_risk_applied = _apply_vqa_telemetry_to_decision_engine(
@@ -768,8 +878,8 @@ async def ai_challenge_verify(
         )
         vqa_risk_applied = False
 
-    if not feature_summary:
-        VQA_TELEMETRY_SCORE_REQUESTS.labels(decision="skip").inc()
+    if missing_vqa_telemetry:
+        VQA_TELEMETRY_SCORE_REQUESTS.labels(decision="missing_telemetry").inc()
     elif passed and vqa_terminal_abnormal:
         VQA_TELEMETRY_SCORE_REQUESTS.labels(decision="terminal").inc()
     elif passed:
@@ -807,6 +917,7 @@ async def ai_challenge_verify(
             session_id=state_key,
             now_ms=now_ms,
             user_id=user_id or snap.user_id,
+            snap=next_snap,
         ) if vqa_risk_applied else {}
         _audit.log_challenge_event(
             session_id=state_key,
@@ -819,6 +930,7 @@ async def ai_challenge_verify(
                 "catchTsMs": req.catch_ts_ms,
                 "catchXNorm": req.catch_x_norm,
                 "catchYNorm": req.catch_y_norm,
+                "telemetryPresent": has_vqa_telemetry,
                 "featureSummary": feature_summary,
                 "vqaAttemptScore": vqa_attempt_score,
                 "reasonCodes": vqa_reason_codes,
@@ -834,7 +946,7 @@ async def ai_challenge_verify(
 
     if passed:
         remaining = max(snap.vqa_retry_limit - snap.vqa_attempt_count, 0)
-        next_flow = "S4" if snap.flow_state == "S3" else snap.flow_state
+        next_flow = snap.flow_state
         pass_update = {
             "flow_state": next_flow,
             "vqa_required": False,
@@ -847,6 +959,7 @@ async def ai_challenge_verify(
             "active_challenge_expires_at_ms": None,
             "updated_ts_ms": now_ms,
         }
+        next_snap = snap.model_copy(update=pass_update)
         _upsert_match_state_aliases(
             session_ids=session_id_candidates,
             match_id=req.match_id,
@@ -872,6 +985,7 @@ async def ai_challenge_verify(
             session_id=state_key,
             now_ms=now_ms,
             user_id=user_id or snap.user_id,
+            snap=next_snap,
         ) if vqa_risk_applied else {}
         if runtime_overlay:
             pass_update.update(runtime_overlay)
@@ -893,6 +1007,7 @@ async def ai_challenge_verify(
                 "catchTsMs": req.catch_ts_ms,
                 "catchXNorm": req.catch_x_norm,
                 "catchYNorm": req.catch_y_norm,
+                "telemetryPresent": has_vqa_telemetry,
                 "featureSummary": feature_summary,
                 "vqaAttemptScore": vqa_attempt_score,
                 "reasonCodes": vqa_reason_codes,
@@ -933,6 +1048,7 @@ async def ai_challenge_verify(
         session_id=state_key,
         now_ms=now_ms,
         user_id=user_id or snap.user_id,
+        snap=next_snap,
     ) if vqa_risk_applied else {}
     _audit.log_challenge_event(
         session_id=state_key,
@@ -945,6 +1061,7 @@ async def ai_challenge_verify(
             "catchTsMs": req.catch_ts_ms,
             "catchXNorm": req.catch_x_norm,
             "catchYNorm": req.catch_y_norm,
+            "telemetryPresent": has_vqa_telemetry,
             "featureSummary": feature_summary,
             "vqaAttemptScore": vqa_attempt_score,
             "reasonCodes": vqa_reason_codes,
@@ -955,7 +1072,11 @@ async def ai_challenge_verify(
     return AiChallengeVerifyResponse(
         success=False,
         remainingAttempts=remaining,
-        reason="challenge_fail" if remaining > 0 else "max_attempts",
+        reason=(
+            "missing_vqa_telemetry"
+            if missing_vqa_telemetry
+            else ("challenge_fail" if remaining > 0 else "max_attempts")
+        ),
     )
 
 
@@ -971,12 +1092,17 @@ async def storage_meta() -> dict[str, str]:
 async def runtime_mark_vqa(req: RuntimeVqaMarkRequest) -> RuntimeVqaMarkResponse:
     now_ms = int(time.time() * 1000)
     snap = _state_store.get(req.session_id) or RuntimeStateSnapshot(updated_ts_ms=now_ms)
+    seat_mode = _resolve_snapshot_seat_mode(
+        seat_mode=snap.seat_mode,
+        flow_state=req.flow_state or snap.flow_state,
+    )
 
     if req.vqa_passed:
-        next_flow = req.flow_state or ("S4" if snap.flow_state == "S3" else snap.flow_state)
+        next_flow = req.flow_state or snap.flow_state
         next_snap = snap.model_copy(
             update={
                 "flow_state": next_flow,
+                "seat_mode": seat_mode,
                 "vqa_required": False,
                 "vqa_passed": True,
                 "vqa_last_result": "PASSED",
@@ -990,6 +1116,7 @@ async def runtime_mark_vqa(req: RuntimeVqaMarkRequest) -> RuntimeVqaMarkResponse
         next_snap = snap.model_copy(
             update={
                 "flow_state": next_flow,
+                "seat_mode": seat_mode,
                 "vqa_required": True,
                 "vqa_passed": False,
                 "updated_ts_ms": now_ms,
@@ -1022,9 +1149,12 @@ def _reset_match_state_for_new_booking_attempt(
 ) -> RuntimeStateSnapshot:
     return snap.model_copy(
         update={
-            "flow_state": "S0",
+            "flow_state": "F0",
+            "seat_mode": None,
             "defense_tier": "T0",
             "risk_score": 0.0,
+            "last_step_risk": None,
+            "last_guard_ts_ms": None,
             "challenge_fail_count": 0,
             "seat_taken_streak": 0,
             "hold_fail_streak": 0,
@@ -1062,7 +1192,11 @@ def _reset_sid_level_vqa_state(
         sid,
         snap.model_copy(
             update={
-                "flow_state": "S0",
+                "flow_state": "F0",
+                "seat_mode": None,
+                "risk_score": 0.0,
+                "last_step_risk": None,
+                "last_guard_ts_ms": None,
                 "updated_ts_ms": now_ms,
                 "user_id": user_id or snap.user_id,
                 "vqa_required": True,
@@ -1100,10 +1234,11 @@ def _hydrate_match_state_from_sid_vqa_mark(
     if sid_snap is None or not sid_snap.vqa_passed:
         return snap
 
-    next_flow = sid_snap.flow_state if sid_snap.flow_state != "S0" else snap.flow_state
+    next_flow = sid_snap.flow_state if sid_snap.flow_state != "F0" else snap.flow_state
     promoted = snap.model_copy(
         update={
             "flow_state": next_flow,
+            "seat_mode": sid_snap.seat_mode,
             "vqa_required": False,
             "vqa_passed": True,
             "vqa_last_result": "PASSED",
@@ -1301,8 +1436,35 @@ def _build_evaluate_response(
     trace_id: str,
     block_trigger: str = "ai_evaluate_block",
     stage: str = "unknown",
+    request_path: str | None = None,
+    request_method: str | None = None,
+    target_event_type: str | None = None,
+    flow_state: str | None = None,
+    runtime_state: RuntimeStateSnapshot | None = None,
+    reason_code: str | None = None,
+    audit_payload: dict[str, Any] | None = None,
 ) -> AiEvaluateResponse:
     EVALUATE_REQUESTS.labels(decision=action, stage=stage).inc()
+    if (
+        request_path is not None
+        and request_method is not None
+        and target_event_type is not None
+        and flow_state is not None
+        and runtime_state is not None
+    ):
+        _audit.log_target_evaluate_event(
+            session_id=session_id,
+            trace_id=trace_id,
+            request_path=request_path,
+            request_method=request_method,
+            target_event_type=target_event_type,
+            action=action,
+            flow_state=flow_state,
+            runtime_state=runtime_state,
+            reason_code=reason_code,
+            policy_version=runtime_state.policy_version,
+            raw_payload=audit_payload,
+        )
     if action == "BLOCK":
         background_tasks.add_task(
             _block_user_in_auth_guard,
@@ -1312,6 +1474,45 @@ def _build_evaluate_response(
             trigger=block_trigger,
         )
     return AiEvaluateResponse(decision={"action": action})
+
+
+async def _run_legacy_target_evaluate(
+    *,
+    req: EvaluateRequest,
+    snap: RuntimeStateSnapshot,
+    event_type: str,
+) -> tuple[EvaluateResponse, RuntimeStateSnapshot, bool]:
+    try:
+        legacy_resp, legacy_snap = await run_in_threadpool(
+            partial(_execute_legacy_evaluate, req, audit=False)
+        )
+    except Exception:
+        logger.exception(
+            "Legacy target evaluate failed unexpectedly (session_id=%s, event_type=%s). Falling back to fail-open response.",
+            req.session_id,
+            event_type,
+        )
+        return (
+            EvaluateResponse(
+                allow=True,
+                session_id=req.session_id,
+                flow_state=snap.flow_state,
+                defense_tier=snap.defense_tier,
+                action="NONE",
+                actions=["NONE"],
+                reason="LEGACY_EVALUATE_UNAVAILABLE",
+                rule_hits=[],
+                risk_score=snap.risk_score,
+                policy_version=snap.policy_version,
+                headers_to_add={},
+                decision_id=f"dec-{uuid.uuid4().hex[:12]}",
+                latency_ms=0,
+                version="v2",
+            ),
+            snap,
+            False,
+        )
+    return legacy_resp, legacy_snap, True
 
 
 async def _verify_turnstile_token(turnstile_token: str) -> bool:
@@ -1465,15 +1666,47 @@ def _summary_to_legacy_features(summary: dict[str, float]) -> Optional[EvaluateT
 
 
 def _target_event_to_flow_state(event_type: str) -> str:
-    mapping = {
-        "QUEUE_ENTER": "S2",
-        "SEAT_ENTRY": "S3",
-        "RECOMMENDATION_BLOCKS": "S4",
-        "SECTION_BLOCKS": "S4",
-        "ASSIGN_HOLD": "S5",
-        "SEAT_HOLDS": "S5",
-    }
-    return mapping.get(event_type, "S0")
+    return target_event_to_runtime_flow_state(event_type)
+
+
+def _resolve_snapshot_seat_mode(
+    *,
+    seat_mode: Optional[str],
+    flow_state: Optional[str] = None,
+    event_type: Optional[str] = None,
+) -> Optional[str]:
+    return (
+        normalize_seat_mode(seat_mode, default=None)
+        or runtime_flow_state_to_seat_mode(flow_state)
+        or target_event_to_seat_mode(event_type or "")
+    )
+
+
+def _remember_seat_mode_for_target_event(
+    *,
+    state_key: str,
+    snap: RuntimeStateSnapshot,
+    event_type: str,
+    now_ms: int,
+) -> RuntimeStateSnapshot:
+    target_seat_mode = target_event_to_seat_mode(event_type)
+    seat_mode = _resolve_snapshot_seat_mode(
+        seat_mode=snap.seat_mode,
+        flow_state=snap.flow_state,
+        event_type=event_type,
+    )
+    next_flow_state = _target_event_to_flow_state(event_type) if target_seat_mode is not None else snap.flow_state
+    if seat_mode == snap.seat_mode and next_flow_state == snap.flow_state:
+        return snap
+    next_snap = snap.model_copy(
+        update={
+            "flow_state": next_flow_state,
+            "seat_mode": seat_mode,
+            "updated_ts_ms": now_ms,
+        }
+    )
+    _state_store.upsert(state_key, next_snap)
+    return next_snap
 
 
 def _normalize(value: float, lower: float, upper: float) -> float:
@@ -1572,11 +1805,17 @@ def _apply_vqa_telemetry_to_decision_engine(
     result: str,
 ) -> bool:
     point_count = _opt_int(feature_summary.get("mousePointCount")) or 0
-    if point_count < 2:
-        return False
+    has_feature_summary = point_count >= 2
 
     policy = _decision_engine.policy_loader.load(session_id=session_id)
-    external_score = max(0.0, min(1.0, 1.0 - vqa_attempt_score))
+    if has_feature_summary:
+        external_score = max(0.0, min(1.0, 1.0 - vqa_attempt_score))
+        features: Optional[dict[str, float]] = feature_summary
+    else:
+        # Missing VQA telemetry is itself suspicious enough to warrant a scored
+        # failure path instead of silently leaving the cumulative risk untouched.
+        external_score = 0.0 if result != "PASS" else 0.5
+        features = None
     event = D0RuntimeEvent(
         event_type="S3_RESULT",
         ts_ms=now_ms,
@@ -1597,7 +1836,7 @@ def _apply_vqa_telemetry_to_decision_engine(
             event=event,
             state=state,
             policy=policy,
-            features=feature_summary,
+            features=features,
             external_score=external_score,
         )
         _decision_engine.guard.persist(
@@ -1628,15 +1867,34 @@ def _decision_engine_runtime_overlay(
     session_id: str,
     now_ms: int,
     user_id: Optional[str],
+    snap: Optional[RuntimeStateSnapshot] = None,
 ) -> dict[str, Any]:
     d0_state = _decision_engine.session_state.get(session_id)
     if d0_state is None:
         return {}
 
+    seat_mode = _resolve_snapshot_seat_mode(
+        seat_mode=(snap.seat_mode if snap is not None else None),
+        flow_state=(snap.flow_state if snap is not None else None),
+    )
+    runtime_flow_state = d0_flow_state_to_runtime_with_seat_mode(
+        d0_state.flow_state,
+        seat_mode=seat_mode,
+    )
+    if snap is not None and max(0, now_ms - snap.updated_ts_ms) <= 300_000:
+        runtime_flow_state = merge_runtime_flow_state(snap.flow_state, runtime_flow_state)
+
     return {
-        "flow_state": d0_state.flow_state.value,
+        "flow_state": runtime_flow_state,
+        "seat_mode": seat_mode,
         "defense_tier": d0_state.defense_tier.value,
         "risk_score": float(d0_state.risk_score),
+        "last_step_risk": (
+            float(d0_state.last_step_risk)
+            if getattr(d0_state, "last_step_risk", None) is not None
+            else None
+        ),
+        "last_guard_ts_ms": getattr(d0_state, "last_guard_ts_ms", None),
         "challenge_fail_count": int(d0_state.challenge_fail_count),
         "seat_taken_streak": int(d0_state.seat_taken_streak),
         "hold_fail_streak": int(d0_state.hold_fail_streak),
@@ -1681,6 +1939,110 @@ def _feature_soft_action(
     return None
 
 
+def _legacy_action_from_target(action: str) -> str:
+    if action == "REQUIRE_S3":
+        return "CHALLENGE"
+    return action
+
+
+def _target_action_priority(action: str) -> int:
+    return {
+        "NONE": 0,
+        "THROTTLE": 1,
+        "REQUIRE_S3": 2,
+        "BLOCK": 3,
+    }.get(action, 0)
+
+
+def _merge_target_actions(
+    *,
+    event_type: str,
+    base_action: str,
+    soft_action: Optional[str],
+) -> str:
+    resolved = base_action
+    if event_type == "QUEUE_ENTER" and resolved == "REQUIRE_S3":
+        resolved = "THROTTLE"
+    if soft_action is not None and _target_action_priority(soft_action) > _target_action_priority(resolved):
+        return soft_action
+    return resolved
+
+
+def _refresh_runtime_snapshot_from_decision_engine(
+    *,
+    state_key: str,
+    snap: RuntimeStateSnapshot,
+    now_ms: int,
+    user_id: Optional[str],
+) -> RuntimeStateSnapshot:
+    runtime_overlay = _decision_engine_runtime_overlay(
+        session_id=state_key,
+        now_ms=now_ms,
+        user_id=user_id or snap.user_id,
+        snap=snap,
+    )
+    if not runtime_overlay:
+        return snap
+    refreshed = snap.model_copy(update=runtime_overlay)
+    _state_store.upsert(state_key, refreshed)
+    return refreshed
+
+
+def _needs_runtime_snapshot_refresh(
+    *,
+    state_key: str,
+    snap: RuntimeStateSnapshot,
+    now_ms: int,
+) -> bool:
+    if max(0, now_ms - snap.updated_ts_ms) > _RUNTIME_STATE_READ_REFRESH_MAX_AGE_MS:
+        return True
+
+    runtime_overlay = _decision_engine_runtime_overlay(
+        session_id=state_key,
+        now_ms=now_ms,
+        user_id=snap.user_id,
+        snap=snap,
+    )
+    if not runtime_overlay:
+        return False
+
+    for key, value in runtime_overlay.items():
+        if key == "updated_ts_ms":
+            continue
+        if getattr(snap, key) != value:
+            return True
+    return False
+
+
+def _audit_target_evaluate_decision(
+    *,
+    req: EvaluateRequest,
+    snap: RuntimeStateSnapshot,
+    action: str,
+    reason: Optional[str],
+    rule_hits: list[str],
+    decision_id: Optional[str] = None,
+) -> None:
+    audit_action = _legacy_action_from_target(action)
+    resp = EvaluateResponse(
+        allow=action in {"NONE", "THROTTLE"},
+        session_id=req.session_id,
+        flow_state=snap.flow_state,
+        defense_tier=snap.defense_tier,
+        action=audit_action,  # type: ignore[arg-type]
+        actions=[audit_action],  # type: ignore[list-item]
+        reason=reason,
+        rule_hits=rule_hits,
+        risk_score=snap.risk_score,
+        policy_version=snap.policy_version,
+        headers_to_add={},
+        decision_id=decision_id or f"dec-{uuid.uuid4().hex[:12]}",
+        latency_ms=0,
+        version="v2",
+    )
+    _audit.log(req, resp, snap)
+
+
 def _precheck_is_valid(snap: RuntimeStateSnapshot, now_ms: int) -> bool:
     if not snap.turnstile_verified:
         return False
@@ -1723,7 +2085,10 @@ def _build_legacy_request_from_target(
     )
 
 
-def _execute_legacy_evaluate(req: EvaluateRequest) -> tuple[EvaluateResponse, RuntimeStateSnapshot]:
+def _execute_legacy_evaluate(
+    req: EvaluateRequest,
+    audit: bool = True,
+) -> tuple[EvaluateResponse, RuntimeStateSnapshot]:
     started_at = time.perf_counter()
     now_ms = int(time.time() * 1000)
     existing_snapshot = _state_store.get(req.session_id)
@@ -1746,9 +2111,11 @@ def _execute_legacy_evaluate(req: EvaluateRequest) -> tuple[EvaluateResponse, Ru
         challenge_max_attempts=out.policy.challenge_max_attempts,
         now_ms=now_ms,
         user_id=req.user_id or (existing_snapshot.user_id if existing_snapshot is not None else None),
+        flow_state_hint=req.flow_state,
     )
     _state_store.upsert(req.session_id, snap)
-    _audit.log(req, resp, snap)
+    if audit:
+        _audit.log(req, resp, snap)
     return resp, snap
 
 
@@ -1793,7 +2160,16 @@ def _legacy_response_from_d0(
     return EvaluateResponse(
         allow=bool(orchestrated.allow),
         session_id=req.session_id,
-        flow_state=flow_state_value,  # type: ignore[arg-type]
+        flow_state=merge_runtime_flow_state(
+            req.flow_state,
+            d0_flow_state_to_runtime_with_seat_mode(
+                flow_state_value,
+                seat_mode=_resolve_snapshot_seat_mode(
+                    seat_mode=None,
+                    flow_state=req.flow_state,
+                ),
+            ),
+        ),  # type: ignore[arg-type]
         defense_tier=decision.tier.value,  # type: ignore[arg-type]
         action=action,  # type: ignore[arg-type]
         actions=[action],  # type: ignore[list-item]
@@ -1816,15 +2192,42 @@ def _legacy_snapshot_from_d0_state(
     challenge_max_attempts: int,
     now_ms: int,
     user_id: Optional[str],
+    flow_state_hint: Optional[str] = None,
 ) -> RuntimeStateSnapshot:
     if d0_state is None:
-        return RuntimeStateSnapshot(
-            updated_ts_ms=now_ms,
-            policy_version=policy_version,
-            user_id=user_id,
+        existing_snap = _state_store.get(session_id)
+        seat_mode = _resolve_snapshot_seat_mode(
+            seat_mode=(existing_snap.seat_mode if existing_snap is not None else None),
+            flow_state=flow_state_hint or (existing_snap.flow_state if existing_snap is not None else None),
+        )
+        flow_state = merge_runtime_flow_state(
+            existing_snap.flow_state if existing_snap is not None else None,
+            flow_state_hint,
+        )
+        if existing_snap is None:
+            return RuntimeStateSnapshot(
+                flow_state=flow_state,
+                seat_mode=seat_mode,
+                updated_ts_ms=now_ms,
+                policy_version=policy_version,
+                user_id=user_id,
+            )
+        return existing_snap.model_copy(
+            update={
+                "flow_state": flow_state,
+                "seat_mode": seat_mode,
+                "policy_version": policy_version,
+                "updated_ts_ms": now_ms,
+                "user_id": user_id or existing_snap.user_id,
+            }
         )
 
     grace = _decision_engine.session_state.get_s3_grace(session_id) or {}
+    existing_snap = _state_store.get(session_id)
+    seat_mode = _resolve_snapshot_seat_mode(
+        seat_mode=(existing_snap.seat_mode if existing_snap is not None else None),
+        flow_state=flow_state_hint or (existing_snap.flow_state if existing_snap is not None else None),
+    )
     last_result: Optional[str] = None
     if bool(getattr(d0_state, "s3_passed", False)):
         last_result = "PASSED"
@@ -1832,9 +2235,22 @@ def _legacy_snapshot_from_d0_state(
         last_result = "FAILED"
 
     return RuntimeStateSnapshot(
-        flow_state=d0_state.flow_state.value,  # type: ignore[arg-type]
+        flow_state=merge_runtime_flow_state(
+            flow_state_hint,
+            d0_flow_state_to_runtime_with_seat_mode(
+                d0_state.flow_state,
+                seat_mode=seat_mode,
+            ),
+        ),  # type: ignore[arg-type]
+        seat_mode=seat_mode,
         defense_tier=d0_state.defense_tier.value,  # type: ignore[arg-type]
         risk_score=float(d0_state.risk_score),
+        last_step_risk=(
+            float(d0_state.last_step_risk)
+            if getattr(d0_state, "last_step_risk", None) is not None
+            else None
+        ),
+        last_guard_ts_ms=getattr(d0_state, "last_guard_ts_ms", None),
         challenge_fail_count=int(d0_state.challenge_fail_count),
         seat_taken_streak=int(d0_state.seat_taken_streak),
         hold_fail_streak=int(d0_state.hold_fail_streak),
@@ -1924,13 +2340,7 @@ def _legacy_headers_from_d0(
 
 
 def _to_d0_flow_state(value: Optional[str]) -> D0FlowState:
-    if value is None:
-        return D0FlowState.S0
-    normalized = {"S4R": "S4", "S5R": "S5"}.get(value, value)
-    try:
-        return D0FlowState(normalized)
-    except ValueError:
-        return D0FlowState.S0
+    return runtime_flow_state_to_d0(value)
 
 
 def _to_api_category(method: str) -> str:

@@ -34,7 +34,9 @@ def load_rows(path: Path, *, retention_days: int) -> tuple[list[dict[str, Any]],
                 continue
             if not isinstance(parsed, dict):
                 continue
-            ts_ms = _safe_ts_ms(parsed.get("tsMs"))
+            ts_ms = _safe_ts_ms(parsed.get("ts_ms"))
+            if ts_ms is None:
+                ts_ms = _safe_ts_ms(parsed.get("tsMs"))
             if (
                 cutoff_ms is not None
                 and ts_ms is not None
@@ -57,7 +59,9 @@ def is_within_retention(entry: dict[str, Any], *, retention_days: int) -> bool:
     cutoff_ms = retention_cutoff_ms(retention_days)
     if cutoff_ms is None:
         return True
-    ts_ms = _safe_ts_ms(entry.get("tsMs"))
+    ts_ms = _safe_ts_ms(entry.get("ts_ms"))
+    if ts_ms is None:
+        ts_ms = _safe_ts_ms(entry.get("tsMs"))
     if ts_ms is None:
         return True
     if ts_ms < _RETENTION_EPOCH_FLOOR_MS:

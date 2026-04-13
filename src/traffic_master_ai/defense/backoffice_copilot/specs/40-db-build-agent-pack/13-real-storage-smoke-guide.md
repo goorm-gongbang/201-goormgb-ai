@@ -87,10 +87,24 @@ export TM_PG_URL='postgresql+psycopg://postgres:postgres@127.0.0.1:35432/postgre
 export TM_REDIS_URL='redis://127.0.0.1:36379/0'
 export TM_CLICKHOUSE_URL='http://default:clickhouse@127.0.0.1:38123/default'
 export TM_S3_BUCKET='storage-smoke-bucket'
+export TM_S3_ARCHIVE_INTERVAL_SECONDS='60'
+export TM_CLICKHOUSE_INGEST_BATCH_SIZE='128'
+export TM_CLICKHOUSE_WRITE_RETRY_MAX_ATTEMPTS='3'
+export TM_CLICKHOUSE_WRITE_RETRY_BACKOFF_MS='200'
+export TM_ETL_PROCESSED_LEDGER_TTL_SECONDS='2592000'
 export TM_ROLLOUT_SALT='storage-smoke-salt'
 export TM_POLICY_ALLOW_LOCAL_FALLBACK=false
 export TM_ALLOW_IN_MEMORY_REDIS=false
 ```
+
+권장값 메모:
+
+- local/staging smoke는 `60`이 적절하다.
+- prod 운영 기본은 `300`을 권장한다.
+- local/staging smoke의 ClickHouse ingest batch는 `128`, prod 운영 기본은 `256`을 권장한다.
+- ClickHouse write retry는 `3`회, backoff `200ms`를 기본 운영값으로 둔다.
+- processed-key ledger TTL은 `2592000`(30일)을 기본 운영값으로 둔다.
+- `3600`은 archive -> ETL -> ClickHouse 반영 지연이 너무 길어 smoke나 운영 기본값으로 권장하지 않는다.
 
 ### 4.4 실제 저장소 smoke 실행
 
@@ -130,6 +144,7 @@ docker compose \
 
 - `TM_CLICKHOUSE_URL` 과 `003` / `004` SQL apply 여부를 먼저 본다.
 - ETL replay는 fake S3 body를 쓰지만 저장 대상은 실제 ClickHouse다.
+- 실패 로그에서 `key`, `flush_index`, `retry_max_attempts`, `last_error`가 함께 남는지 먼저 확인한다.
 - raw fact insert는 되는데 read model 조회가 안 되면 `004_clickhouse_read_models.sql` drift를 먼저 의심한다.
 
 ---

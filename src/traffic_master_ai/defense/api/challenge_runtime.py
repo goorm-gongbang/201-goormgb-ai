@@ -233,9 +233,7 @@ class ChallengeRuntime:
             attempts_left = max(artifact.attempt_limit - artifact.attempts_used, 0)
             next_state = runtime_state.model_copy(
                 update={
-                    "flow_state": (
-                        "S4" if runtime_state.flow_state == "S3" else runtime_state.flow_state
-                    ),
+                    "flow_state": runtime_state.flow_state,
                     "vqa_required": False,
                     "vqa_passed": True,
                     "vqa_last_result": "PASSED",
@@ -282,7 +280,7 @@ class ChallengeRuntime:
             artifact.final_reason = reason
             next_state = next_state.model_copy(
                 update={
-                    "flow_state": "SX",
+                    "flow_state": "FX",
                     "active_challenge_id": None,
                     "active_challenge_expires_at_ms": None,
                 }

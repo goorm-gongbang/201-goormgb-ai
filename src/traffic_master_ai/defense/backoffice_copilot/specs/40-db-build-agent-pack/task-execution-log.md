@@ -1,5 +1,113 @@
 # DB Build Task Execution Log
 
+## Task 22
+
+### 1. task 번호와 제목
+
+- Task 22. LangSmith to Grafana 최소 공유 관제 계획서 작성
+
+### 2. 작업 일시
+
+- 2026-04-09 KST
+
+### 3. 실제로 수정한 파일 목록
+
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/17-langsmith-grafana-minimum-shared-observability-plan.md`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/task-execution-log.md`
+
+### 4. 파일별 수정 요약
+
+- `17-langsmith-grafana-minimum-shared-observability-plan.md`: 38번 LangSmith 최소 도입 문서의 후속으로, LangSmith를 원천 trace 저장소로 유지하면서 Grafana 공유 집계를 붙이는 최소 운영 계획을 정리했다. 핵심 보강점은 `scope_type`, nullable token/cost, overlap 조회, repair backfill, sync state, Grafana freshness 패널, 6개 작업 묶음이다.
+- `task-execution-log.md`: 이번 문서 작성 작업을 후속 task로 append했다.
+
+### 5. 검증에 사용한 명령과 결과 요약
+
+- 관련 문서 확인
+  - 명령: `sed -n '1,260p' src/traffic_master_ai/defense/backoffice_copilot/specs/30-ops-and-check/38-langsmith-minimum-adoption-work-plan.md`
+  - 결과: 기존 LangSmith 최소 도입 범위와 용어를 확인했다.
+  - 명령: `sed -n '1,260p' src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/15-langsmith-minimum-adoption-e2e-plan.md`
+  - 결과: 15번 문서가 코드 착수 직전 E2E 체크리스트 성격임을 확인했다.
+  - 명령: `sed -n '1,260p' src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/task-execution-log-langsmith.md`
+  - 결과: LangSmith tracing helper, usage metadata, trace link, 실제 run 검증이 이미 끝난 상태임을 확인했다.
+- 작업 로그 규칙 확인
+  - 명령: `sed -n '1,260p' src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/agent.md`
+  - 결과: 문서 task도 `task-execution-log.md`에 append해야 하는 규칙을 재확인했다.
+- 번호 체계 확인
+  - 명령: `find src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack -maxdepth 1 -type f | sort`
+  - 결과: 다음 문서 번호로 `17-...`이 자연스럽다는 점을 확인했다.
+- 현재 코드 전제 확인
+  - 명령: `sed -n '1,260p' src/traffic_master_ai/defense/langsmith_support.py`
+  - 결과: `runId`, `traceUrl`, project/workspace 기반 URL 조립 helper가 있음을 확인했다.
+  - 명령: `sed -n '1,260p' src/traffic_master_ai/defense/backoffice_copilot/adapters/openai.py`
+  - 결과: `feature_name`, `agent_step_name`, `environment`, `session_id`, `match_id`, `thread_id`, `owner_team` metadata가 이미 기록되고 있음을 확인했다.
+  - 명령: `sed -n '1,260p' src/traffic_master_ai/defense/d0_mvp/optimizer/audit_summarizer.py`
+  - 결과: `audit_summary` run이 `policy_version`, `window_start_ms`, `window_end_ms`와 함께 기록됨을 확인했다.
+  - 명령: `sed -n '1,360p' src/traffic_master_ai/defense/d0_mvp/optimizer/effect_evaluator.py`
+  - 결과: `evaluate_policy_effect` run에 `metrics_snapshot_id`, `policy_version`, token usage가 기록됨을 확인했다.
+
+### 6. 남은 리스크 또는 다음 task에 넘길 입력
+
+- 남은 리스크
+  - 이번 작업은 계획 문서만 추가한 상태라 exporter, DDL, dashboard는 아직 구현되지 않았다.
+  - LangSmith run schema는 실제 exporter 구현 시 SDK 응답 기준으로 다시 맞춰야 한다.
+- 다음 task에 넘길 입력
+  - 후속 구현은 `DDL + exporter module + script entrypoint + 테스트`를 한 묶음으로 시작하는 것이 안전하다.
+  - 첫 구현 우선순위는 `scope_type 계약 고정 -> run row normalize -> Postgres upsert -> dry-run 검증` 순서가 적절하다.
+
+## Task 24
+
+### 1. task 번호와 제목
+
+- Task 24. Archive Interval 운영값 정리 및 즉시성 개선
+
+### 2. 작업 일시
+
+- 2026-04-09 10:50:11 KST
+
+### 3. 실제로 수정한 파일 목록
+
+- `src/traffic_master_ai/defense/storage_env.py`
+- `src/traffic_master_ai/defense/api/archive_runtime.py`
+- `src/traffic_master_ai/defense/api/main.py`
+- `tests/defense/test_storage_env_config.py`
+- `tests/defense/test_archive_loop_interval.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/09-env-failure-handling-test-plan.md`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/11-final-drift-review-and-handoff.md`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/12-production-operations-runbook.md`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/13-real-storage-smoke-guide.md`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/task-execution-log.md`
+
+### 4. archive interval 변경 요약
+
+- `TM_S3_ARCHIVE_INTERVAL_SECONDS` 기본값을 `3600`에서 `300`으로 낮췄다.
+- staging 권장값은 `60`, prod 권장값은 `300`으로 문서화했다.
+- `storage_env.py` loader가 `TM_S3_ARCHIVE_INTERVAL_SECONDS`를 positive int로 검증하도록 바꿨다.
+- `main.py`는 더 이상 별도 `3600` 하드코드를 읽지 않고 shared env loader 기반 archive loop를 쓰도록 정리했다.
+- archive loop 구현을 `api/archive_runtime.py`로 분리해 실제 sleep interval이 env 값을 따르는지 테스트로 잠갔다.
+
+### 5. 검증에 사용한 명령과 결과 요약
+
+- 문법 확인
+  - 명령: `python3 -m py_compile src/traffic_master_ai/defense/storage_env.py src/traffic_master_ai/defense/api/archive_runtime.py src/traffic_master_ai/defense/api/main.py tests/defense/test_storage_env_config.py tests/defense/test_archive_loop_interval.py`
+  - 결과: 문법 오류 없음
+- archive interval env / loop 회귀
+  - 명령: `.venv/bin/pytest -q tests/defense/test_storage_env_config.py tests/defense/test_archive_loop_interval.py`
+  - 결과: `16 passed`
+- 문서 충돌 점검
+  - 명령: `rg -n "3600|TM_S3_ARCHIVE_INTERVAL_SECONDS|archive interval" src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack src/traffic_master_ai/defense/storage_env.py tests/defense/test_storage_env_config.py tests/defense/test_archive_loop_interval.py src/traffic_master_ai/defense/api/main.py src/traffic_master_ai/defense/api/archive_runtime.py`
+  - 결과: 관련 문서와 코드에서 새 기본값/권장값만 남고, 남은 `3600` 표기는 “권장하지 않음” 설명 용도뿐임을 확인했다.
+
+### 6. 남은 리스크
+
+- archive loop interval을 줄여도 ETL 주기 자체는 별도라 ClickHouse 반영 지연이 완전히 사라지는 것은 아니다.
+- 너무 짧은 값은 S3 object 수 증가와 rotate/upload 빈도 증가를 만든다. 그래서 상시 운영값은 `staging 60`, `prod 300` 이상이 안전하다.
+- 현재 loop는 단순 sleep 기반이라 scheduler, processed-key ledger, queueing은 여전히 운영 hardening backlog다.
+
+### 7. 다음 task 입력
+
+- 다음 우선순위는 archive -> ETL -> ClickHouse 반영 freshness를 실제 측정할 수 있게 freshness metric 또는 lag 확인 surface를 추가하는 것이다.
+- 그 다음 단계로 ETL replay/processed 상태 hardening을 따로 분리해 `processed-key ledger` 또는 mark-processed orchestration을 설계하면 된다.
+
 ## Task 21
 
 ### 1. task 번호와 제목
@@ -1973,3 +2081,410 @@
   - `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/12-production-operations-runbook.md` 기준으로 bootstrap / cutover / rollback dry-run
   - actual object store archive 1개 기준 `ETLWorker.replay_key()` 또는 `run_etl_replay_keys()` smoke
   - `DefenseRuntime.offline_optimizer_service()` 경유 `run_once()`, `start_canary()`, `expand_rollout()`, `rollback()` 순서의 operator dry-run
+
+## Task 23
+
+### 1. task 번호와 제목
+
+- Task 23. Canonical Audit Contract 통일
+
+### 2. 작업 일시
+
+- 2026-04-09 10:42:43 KST
+
+### 3. 실제로 수정한 파일 목록
+
+- `src/traffic_master_ai/defense/audit_contract.py`
+- `src/traffic_master_ai/defense/api/audit.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/ingest/loader.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_ingest.py`
+- `src/traffic_master_ai/defense/d0_mvp/api/runtime.py`
+- `src/traffic_master_ai/defense/d0_mvp/observability/schemas.py`
+- `src/traffic_master_ai/defense/d0_mvp/observability/audit_logger.py`
+- `src/traffic_master_ai/defense/d0_mvp/observability/collector.py`
+- `src/traffic_master_ai/defense/d0_mvp/observability/warehouse.py`
+- `src/traffic_master_ai/defense/d0_mvp/observability/jsonl_retention.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/04-canonical-audit-minimum-contract.md`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/11-final-drift-review-and-handoff.md`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/task-execution-log.md`
+- `tests/defense/test_canonical_audit_contract.py`
+- `tests/defense/test_backoffice_copilot_clickhouse_storage.py`
+- `tests/defense/test_backoffice_copilot_db_smoke.py`
+- `tests/defense/test_d0_runtime_policy_alignment.py`
+- `tests/defense/test_storage_integration_real.py`
+- `tests/defense/fixtures/backoffice_copilot/single_candidate_t2.jsonl`
+
+### 4. contract 변경 요약
+
+- canonical audit row를 flat `snake_case` + top-level fixed typed field + `raw_payload` object로 통일했다.
+- `audit.py` evaluate/challenge row는 모두 canonical contract만 emit하도록 바꿨다.
+- `d0_mvp/api/runtime.py` audit emission도 nested `camelCase` row 대신 canonical row를 직접 기록하도록 바꿨다.
+- `risk_tier`를 canonical tier field로 고정하고 `defense_tier` 추측 정규화를 제거했다.
+- `clickhouse_ingest.py`는 canonical top-level field만 읽고 `raw_payload_json`에는 `raw_payload`만 serialize 하도록 단순화했다.
+- Backoffice raw loader는 canonical row를 기본으로 읽고 legacy row는 compatibility로만 허용한다.
+- local `AuditWarehouse`는 canonical 입력을 받되 admin/dashboard 호환용 alias row를 내부에 저장하도록 정리했다.
+
+### 5. 검증에 사용한 명령과 결과 요약
+
+- 문법 확인
+  - 명령: `python3 -m py_compile src/traffic_master_ai/defense/audit_contract.py src/traffic_master_ai/defense/api/audit.py src/traffic_master_ai/defense/api/etl_worker.py src/traffic_master_ai/defense/backoffice_copilot/ingest/loader.py src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_ingest.py src/traffic_master_ai/defense/d0_mvp/api/runtime.py src/traffic_master_ai/defense/d0_mvp/observability/schemas.py src/traffic_master_ai/defense/d0_mvp/observability/audit_logger.py src/traffic_master_ai/defense/d0_mvp/observability/collector.py src/traffic_master_ai/defense/d0_mvp/observability/warehouse.py src/traffic_master_ai/defense/d0_mvp/observability/jsonl_retention.py tests/defense/test_canonical_audit_contract.py tests/defense/test_backoffice_copilot_clickhouse_storage.py tests/defense/test_backoffice_copilot_db_smoke.py tests/defense/test_d0_runtime_policy_alignment.py`
+  - 결과: 문법 오류 없음
+- canonical contract / ETL / raw loader 회귀
+  - 명령: `.venv/bin/pytest -q tests/defense/test_canonical_audit_contract.py tests/defense/test_backoffice_copilot_clickhouse_storage.py tests/defense/test_backoffice_copilot_db_smoke.py tests/defense/test_d0_runtime_policy_alignment.py tests/defense/test_backoffice_copilot_ingest.py`
+  - 결과: `31 passed`
+- runtime / warehouse / Backoffice compatibility 추가 회귀
+  - 명령: `.venv/bin/pytest -q tests/defense/test_d0_runtime_contract_validation.py tests/defense/test_d0_runtime_sync_api.py tests/defense/test_d0_runtime_auth_guard.py tests/defense/test_backoffice_copilot_candidates.py tests/defense/test_backoffice_copilot_session_analysis.py`
+  - 결과: `16 passed`
+
+### 6. 남은 리스크
+
+- historical archive에 legacy mixed schema가 남아 있으면 새 ETL mapper는 그대로 거부한다.
+- canonical top-level field는 통일됐지만 event taxonomy 자체는 아직 `EVALUATE`, `CHALLENGE_VERIFIED`, D0 runtime catalog가 함께 존재한다.
+- `match_id`, `http_status`, `dedup_is_duplicate`, rollout field는 아직 top-level typed field로 승격되지 않았다.
+
+### 7. 다음 task 입력
+
+- 다음 우선순위는 event taxonomy 정규화 여부를 결정하고 `EVALUATE` / `CHALLENGE_*` / D0 runtime catalog를 하나의 운영 카탈로그로 맞추는 것이다.
+- 그 다음 단계로 `match_id`, `http_status`, `dedup_is_duplicate` 중 실제 조회 빈도가 높은 필드부터 top-level typed 승격 task를 분리하는 것이 안전하다.
+
+## Task 25
+
+### 1. task 번호와 제목
+
+- Task 25. ETL Batch / Flush / Retry 튜닝
+
+### 2. 작업 일시
+
+- 2026-04-09 10:53:01 KST
+
+### 3. 실제로 수정한 파일 목록
+
+- `src/traffic_master_ai/defense/storage_env.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_connection.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_repository.py`
+- `src/traffic_master_ai/defense/api/etl_worker.py`
+- `tests/defense/test_storage_env_config.py`
+- `tests/defense/test_backoffice_copilot_clickhouse_storage.py`
+- `tests/defense/test_backoffice_copilot_db_smoke.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/11-final-drift-review-and-handoff.md`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/12-production-operations-runbook.md`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/13-real-storage-smoke-guide.md`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/task-execution-log.md`
+
+### 4. tuning 변경 요약
+
+- ClickHouse ingest 기본값을 short archive cadence 기준으로 조정했다. `TM_CLICKHOUSE_INGEST_BATCH_SIZE` 기본값은 `256`, `TM_CLICKHOUSE_WRITE_RETRY_MAX_ATTEMPTS` 기본값은 `3`, `TM_CLICKHOUSE_WRITE_RETRY_BACKOFF_MS` 기본값은 `200`으로 정리했다.
+- staging/prod 운영 권장값도 함께 고정했다. staging은 `batch_size=128`, prod는 `batch_size=256`, 두 환경 모두 `retry_max_attempts=3`, `retry_backoff_ms=200`을 권장값으로 문서화했다.
+- env loader는 `TM_CLICKHOUSE_INGEST_BATCH_SIZE`, `TM_CLICKHOUSE_INGEST_TIMEOUT_MS`, `TM_CLICKHOUSE_WRITE_RETRY_MAX_ATTEMPTS`를 positive integer로 검증하도록 강화했다.
+- `ClickHouseBatchWriteError`는 `backoff_ms`, `last_error_message`를 보존하도록 바꿨고, retry 로그에 `attempt`, `row_count`, `backoff_ms`, `last_error`가 함께 남도록 정리했다.
+- `ETLWorker`는 key 단위 ingest 결과에 `source_row_count`, `attempted_row_count`, `flush_count`, `batch_size`, `retry_*`를 포함하고, flush log와 object-level failure log에 `key`, `flush_index`, `retry_max_attempts`, `retry_backoff_ms`, `last_error`를 남기도록 보강했다.
+- 짧은 주기 ingest를 가정한 multi-flush smoke와 retry exhaustion error surface 검증을 추가했다.
+
+### 5. 검증에 사용한 명령과 결과 요약
+
+- 문법 확인
+  - 명령: `python3 -m py_compile src/traffic_master_ai/defense/storage_env.py src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_connection.py src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_repository.py src/traffic_master_ai/defense/api/etl_worker.py tests/defense/test_storage_env_config.py tests/defense/test_backoffice_copilot_clickhouse_storage.py tests/defense/test_backoffice_copilot_db_smoke.py`
+  - 결과: 문법 오류 없음
+- ETL tuning / retry / smoke 회귀
+  - 명령: `.venv/bin/pytest -q tests/defense/test_storage_env_config.py tests/defense/test_backoffice_copilot_clickhouse_storage.py tests/defense/test_backoffice_copilot_db_smoke.py`
+  - 결과: `35 passed`
+- 포맷 확인
+  - 명령: `git diff --check -- src/traffic_master_ai/defense/storage_env.py src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_connection.py src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_repository.py src/traffic_master_ai/defense/api/etl_worker.py tests/defense/test_storage_env_config.py tests/defense/test_backoffice_copilot_clickhouse_storage.py tests/defense/test_backoffice_copilot_db_smoke.py`
+  - 결과: whitespace / conflict marker 문제 없음
+
+### 6. 남은 리스크
+
+- processed-key ledger가 아직 없어서 같은 S3 object replay 자체를 완전히 막지는 못한다. 현재 안정성은 row dedupe와 operator replay discipline에 의존한다.
+- retry/backoff는 synchronous path만 튜닝한 상태라 장기 장애나 sustained backlog를 흡수하는 background queue 성격의 완충 계층은 여전히 없다.
+- batch 기본값을 낮춰도 object 수 자체가 급증하면 ETL 실행 횟수와 ClickHouse write call 수는 함께 늘어난다.
+
+### 7. 다음 task 입력
+
+- 다음 우선순위는 processed-key ledger 또는 archive move/mark-processed 규칙을 정해 replay idempotency를 운영 절차가 아니라 코드 경계로 고정하는 것이다.
+- 그 다음 단계로 scheduler/lag metric/alerting을 붙여 archive 주기 단축 이후 ETL freshness를 실제 운영 지표로 관측 가능하게 만드는 것이 자연스럽다.
+
+## Task 26
+
+### 1. task 번호와 제목
+
+- Task 26. Redis Processed-Key Ledger 최소 도입
+
+### 2. 작업 일시
+
+- 2026-04-09 11:25:34 KST
+
+### 3. 실제로 수정한 파일 목록
+
+- `src/traffic_master_ai/defense/storage_env.py`
+- `src/traffic_master_ai/defense/api/etl_worker.py`
+- `src/traffic_master_ai/defense/d0_mvp/state/keyspace.py`
+- `src/traffic_master_ai/defense/d0_mvp/state/etl_processed_ledger.py`
+- `src/traffic_master_ai/defense/d0_mvp/state/__init__.py`
+- `tests/defense/test_storage_env_config.py`
+- `tests/defense/test_etl_processed_ledger.py`
+- `tests/defense/test_backoffice_copilot_db_smoke.py`
+- `tests/defense/test_storage_integration_real.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/11-final-drift-review-and-handoff.md`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/12-production-operations-runbook.md`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/13-real-storage-smoke-guide.md`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/task-execution-log.md`
+
+### 4. Redis ledger 설계 요약
+
+- Redis processed-key prefix로 `tm:etl:processed:s3:`를 추가했다.
+- object identity는 `{bucket}\n{object_key}\n{etag_or_dash}` canonical string을 만들고, `sha256` hash를 써서 최종 Redis key를 `tm:etl:processed:s3:{bucket}:{object_identity_hash}` 형태로 고정했다.
+- ledger value는 JSON string으로 저장하고 `status`, `bucket`, `object_key`, `etag`, `processed_at_ms`, `row_count`만 남긴다.
+- `TM_ETL_PROCESSED_LEDGER_TTL_SECONDS` env를 추가했고 기본값과 권장값은 `2592000`(30일)로 고정했다.
+- normal ingest는 processed ledger hit면 object를 skip하고, ClickHouse write 전체 성공 후에만 ledger를 기록한다.
+- explicit replay는 `force=True`일 때만 ledger를 bypass한다. force replay 성공 시 ledger는 같은 key에 다시 overwrite 된다.
+- ETag가 list/head metadata에서 있으면 identity에 포함하고, 없으면 bucket + object key + `-` fallback으로 동작한다. 이 fallback은 exact identity가 아니라 최소 운영 dedup cache 수준임을 문서에 명시했다.
+
+### 5. 검증에 사용한 명령과 결과 요약
+
+- 문법 확인
+  - 명령: `python3 -m py_compile src/traffic_master_ai/defense/storage_env.py src/traffic_master_ai/defense/api/etl_worker.py src/traffic_master_ai/defense/d0_mvp/state/keyspace.py src/traffic_master_ai/defense/d0_mvp/state/etl_processed_ledger.py src/traffic_master_ai/defense/d0_mvp/state/__init__.py tests/defense/test_storage_env_config.py tests/defense/test_etl_processed_ledger.py tests/defense/test_backoffice_copilot_db_smoke.py tests/defense/test_storage_integration_real.py`
+  - 결과: 문법 오류 없음
+- Redis ledger / ETL skip / force replay / TTL 회귀
+  - 명령: `.venv/bin/pytest -q tests/defense/test_storage_env_config.py tests/defense/test_etl_processed_ledger.py tests/defense/test_backoffice_copilot_db_smoke.py tests/defense/test_storage_integration_real.py`
+  - 결과: `30 passed, 2 skipped`
+
+### 6. 남은 리스크
+
+- 이 구현은 inflight lock이나 distributed lease가 아니라 completed object TTL cache라서 동시에 같은 object를 잡는 race는 막지 못한다.
+- explicit replay가 ETag를 얻지 못하는 환경에서는 bucket + object key + `-` fallback identity로 동작하므로 strict object version 구분은 약해질 수 있다.
+- ledger mark 실패가 ClickHouse write 성공 뒤에 발생하면 다음 run에서 같은 object를 다시 ingest할 수 있다. 현재는 이 상태를 조용히 숨기지 않고 실패로 surface한다.
+
+### 7. 다음 task 입력
+
+- 다음 우선순위는 inflight lock 또는 archive move/mark-processed 규칙을 추가해 concurrent duplicate ingest risk를 더 줄이는 것이다.
+- 그 다음 단계로 scheduler/lag metric/alerting을 붙여 processed-key ledger hit율과 ETL freshness를 운영 지표로 관측 가능하게 만드는 것이 자연스럽다.
+
+## Task 27
+
+### 1. task 번호와 제목
+
+- Task 27. OfflineOptimizer ClickHouse Read Source 전환
+
+### 2. 작업 일시
+
+- 2026-04-09 12:38:26 KST
+
+### 3. 실제로 수정한 파일 목록
+
+- `src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_read_models.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_offline_metrics_repository.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/storage/__init__.py`
+- `src/traffic_master_ai/defense/d0_mvp/optimizer/pipeline.py`
+- `src/traffic_master_ai/defense/d0_mvp/api/runtime.py`
+- `src/traffic_master_ai/defense/d0_mvp/observability/warehouse.py`
+- `tests/defense/test_offline_optimizer_strict_authority.py`
+- `tests/defense/test_offline_optimizer_clickhouse_metrics.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/11-final-drift-review-and-handoff.md`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/12-production-operations-runbook.md`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/task-execution-log.md`
+
+### 4. ClickHouse optimizer read 전환 요약
+
+- `OfflineOptimizer`가 더 이상 `AuditWarehouse`나 `AdminDashboardService`를 읽지 않도록 `OfflineMetricsRepository` 경계를 추가했다.
+- optimizer 전용 DTO로 `OfflineMetricsQuery`, `OfflineMetricsSnapshot`, `OfflineTraceSample`를 추가했다.
+- 새 `ClickHouseOfflineMetricsRepository`는 기존 `TM_CLICKHOUSE_URL`, `ClickHouseSelectClient`, `defense_audit_events`만 재사용해서 raw fact를 직접 읽는다.
+- repository는 4개 raw fact query로 total/event-count/detail/sample-trace를 읽고, tier/action/block/require_s3/throttle/s3/integrity/latest policy를 Python aggregation으로 계산한다.
+- runtime은 `offline_optimizer_service()`에서 ClickHouse repository를 주입하고, `TM_CLICKHOUSE_URL`이 없으면 optimizer를 명시적으로 fail-fast 시킨다.
+- `AuditWarehouse`는 제거하지 않고 admin/debug 과도기 adapter라는 역할만 더 분명하게 문서화했다.
+
+### 5. 검증에 사용한 명령과 결과 요약
+
+- 문법 확인
+  - 명령: `python3 -m py_compile src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_read_models.py src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_offline_metrics_repository.py src/traffic_master_ai/defense/backoffice_copilot/storage/__init__.py src/traffic_master_ai/defense/d0_mvp/optimizer/pipeline.py src/traffic_master_ai/defense/d0_mvp/api/runtime.py src/traffic_master_ai/defense/d0_mvp/observability/warehouse.py tests/defense/test_offline_optimizer_strict_authority.py tests/defense/test_offline_optimizer_clickhouse_metrics.py`
+  - 결과: 문법 오류 없음
+- optimizer / repository 회귀
+  - 명령: `.venv/bin/pytest -q tests/defense/test_offline_optimizer_strict_authority.py tests/defense/test_offline_optimizer_clickhouse_metrics.py`
+  - 결과: `8 passed`
+- 기존 ClickHouse read-model 회귀
+  - 명령: `.venv/bin/pytest -q tests/defense/test_backoffice_copilot_clickhouse_read_models.py`
+  - 결과: `7 passed`
+
+### 6. 남은 리스크
+
+- 새 DB object 없이 raw fact를 직접 읽기 때문에 optimizer 집계 일부는 SQL pre-aggregation 대신 Python aggregation에 의존한다. window가 커지면 read cost가 커질 수 있다.
+- `raw_payload_json` nested field는 최소 parse만 하므로, taxonomy drift가 생기면 후속 Task에서 whitelist/contract test로 더 강하게 잠가야 한다.
+- admin/debug surface는 아직 `AuditWarehouse`를 유지한다. production truth는 ClickHouse로 정리됐지만, admin console까지 완전히 같은 read source로 합쳐진 상태는 아니다.
+
+### 7. 다음 task 입력
+
+- 다음 우선순위는 early return canonical audit 누락을 막고, authoritative event taxonomy whitelist 테스트를 추가해 optimizer 집계 의미를 더 강하게 고정하는 것이다.
+- 그 다음 단계로 canonical contract strict regression과 `AuditWarehouse` 역할 축소를 테스트와 문서에서 같이 마감하는 것이 자연스럽다.
+
+## Task 28
+
+### 1. task 번호와 제목
+
+- Task 28. Early Return Canonical Audit 보강 및 Taxonomy Whitelist 잠금
+
+### 2. 작업 일시
+
+- 2026-04-09 12:48:14 KST
+
+### 3. 실제로 수정한 파일 목록
+
+- `src/traffic_master_ai/defense/api/main.py`
+- `src/traffic_master_ai/defense/api/audit.py`
+- `src/traffic_master_ai/defense/d0_mvp/observability/schemas.py`
+- `src/traffic_master_ai/defense/d0_mvp/observability/__init__.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_offline_metrics_repository.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/04-canonical-audit-minimum-contract.md`
+- `tests/defense/test_defense_api_evaluate_contract.py`
+- `tests/defense/test_canonical_audit_contract.py`
+- `tests/defense/test_audit_event_taxonomy.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/task-execution-log.md`
+
+### 4. early return / taxonomy 변경 요약
+
+- `ai/evaluate` early return 세 경로인 precheck block, `SEAT_ENTRY` immediate path, `soft_action` path에서 response 직전 canonical `EVALUATE` audit를 공용 helper로 남기도록 보강했다.
+- early return row도 top-level은 canonical typed field만 쓰고, 상세 사유는 `raw_payload`의 `decision_source`, `decision_reason`, `target_event_type`, `feature_summary`, `runtime_state`로만 남기게 정리했다.
+- legacy API event, runtime event, optimizer 포함 event를 각각 코드 상수로 고정했다.
+- legacy API logger는 canonical union whitelist만 허용하고, D0 `AuditEntry`는 runtime whitelist만 허용하도록 분리했다.
+- OfflineOptimizer raw fact repository는 local tuple 대신 authoritative optimizer event whitelist 상수를 재사용하도록 바꿨다.
+
+### 5. 검증에 사용한 명령과 결과 요약
+
+- 문법 확인
+  - 명령: `python3 -m py_compile src/traffic_master_ai/defense/api/main.py src/traffic_master_ai/defense/api/audit.py src/traffic_master_ai/defense/d0_mvp/observability/schemas.py src/traffic_master_ai/defense/d0_mvp/observability/__init__.py src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_offline_metrics_repository.py tests/defense/test_defense_api_evaluate_contract.py tests/defense/test_canonical_audit_contract.py tests/defense/test_audit_event_taxonomy.py`
+  - 결과: 문법 오류 없음
+- early return / taxonomy / optimizer 회귀
+  - 명령: `.venv/bin/pytest -q tests/defense/test_defense_api_evaluate_contract.py tests/defense/test_canonical_audit_contract.py tests/defense/test_audit_event_taxonomy.py tests/defense/test_offline_optimizer_clickhouse_metrics.py`
+  - 결과: `24 passed`
+- 포맷 확인
+  - 명령: `git diff --check -- src/traffic_master_ai/defense/api/main.py src/traffic_master_ai/defense/api/audit.py src/traffic_master_ai/defense/d0_mvp/observability/schemas.py src/traffic_master_ai/defense/d0_mvp/observability/__init__.py src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_offline_metrics_repository.py src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/04-canonical-audit-minimum-contract.md tests/defense/test_defense_api_evaluate_contract.py tests/defense/test_canonical_audit_contract.py tests/defense/test_audit_event_taxonomy.py`
+  - 결과: whitespace / conflict marker 문제 없음
+
+### 6. 남은 리스크
+
+- target API legacy audit taxonomy는 whitelist로 잠갔지만 `EVALUATE` 자체는 여전히 coarse-grained event라, optimizer가 이 계열을 직접 집계하는 구조로 다시 확장하면 semantic ambiguity가 생길 수 있다.
+- early return completeness는 `ai/evaluate` 주요 분기 기준으로 막았지만, challenge/VQA 계열 legacy endpoint taxonomy 정리는 아직 별도 단계가 남아 있다.
+- admin/debug surface는 여전히 `AuditWarehouse` compatibility row를 읽기 때문에, canonical raw log만 기준으로 보는 최종 상태는 아니다.
+
+### 7. 다음 task 입력
+
+- 다음 우선순위는 canonical contract strict regression과 loader/ETL/runtime mixed-shape 방지를 테스트로 더 강하게 잠그는 것이다.
+- 그 다음 단계로 `AuditWarehouse`를 admin/debug 전용으로만 남긴다는 점을 코드와 문서에서 더 분명히 정리하는 것이 자연스럽다.
+
+## Task 29
+
+### 1. task 번호와 제목
+
+- Task 29. Canonical Contract 회귀 강화 및 AuditWarehouse 역할 축소
+
+### 2. 작업 일시
+
+- 2026-04-09 12:54:06 KST
+
+### 3. 실제로 수정한 파일 목록
+
+- `src/traffic_master_ai/defense/backoffice_copilot/ingest/loader.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/ingest/__init__.py`
+- `src/traffic_master_ai/defense/d0_mvp/observability/warehouse.py`
+- `tests/defense/test_canonical_audit_contract.py`
+- `tests/defense/test_backoffice_copilot_ingest.py`
+- `tests/defense/test_backoffice_copilot_clickhouse_storage.py`
+- `tests/defense/test_offline_optimizer_clickhouse_metrics.py`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/11-final-drift-review-and-handoff.md`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/12-production-operations-runbook.md`
+- `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/task-execution-log.md`
+
+### 4. canonical contract / AuditWarehouse 역할 축소 요약
+
+- loader에 `parse_canonical_defense_audit_event_row()` strict helper를 추가해 canonical flat `snake_case` row만 받는 경계를 분리했다.
+- ETL strict path는 unknown top-level field, scalar `raw_payload`, legacy camelCase row를 계속 거부하고, compatibility loader read만 legacy row를 유지하도록 테스트를 보강했다.
+- `AuditEntry.to_dict()`가 canonical top-level shape만 내보내는지 회귀 테스트로 잠갔다.
+- ClickHouse optimizer metrics test에 authoritative optimizer event whitelist 파라미터 검증을 추가했다.
+- `AuditWarehouse`는 module/class docstring과 metadata에서 admin/debug compatibility adapter라는 역할만 더 분명히 남겼다.
+
+### 5. 검증에 사용한 명령과 결과 요약
+
+- 문법 확인
+  - 명령: `python3 -m py_compile src/traffic_master_ai/defense/backoffice_copilot/ingest/loader.py src/traffic_master_ai/defense/backoffice_copilot/ingest/__init__.py src/traffic_master_ai/defense/d0_mvp/observability/warehouse.py tests/defense/test_canonical_audit_contract.py tests/defense/test_backoffice_copilot_ingest.py tests/defense/test_backoffice_copilot_clickhouse_storage.py tests/defense/test_offline_optimizer_clickhouse_metrics.py`
+  - 결과: 문법 오류 없음
+- canonical / ingest / optimizer 회귀
+  - 명령: `.venv/bin/pytest -q tests/defense/test_canonical_audit_contract.py tests/defense/test_backoffice_copilot_ingest.py tests/defense/test_backoffice_copilot_clickhouse_storage.py tests/defense/test_offline_optimizer_clickhouse_metrics.py`
+  - 결과: `36 passed`
+- 포맷 확인
+  - 명령: `git diff --check -- src/traffic_master_ai/defense/backoffice_copilot/ingest/loader.py src/traffic_master_ai/defense/backoffice_copilot/ingest/__init__.py src/traffic_master_ai/defense/d0_mvp/observability/warehouse.py tests/defense/test_canonical_audit_contract.py tests/defense/test_backoffice_copilot_ingest.py tests/defense/test_backoffice_copilot_clickhouse_storage.py tests/defense/test_offline_optimizer_clickhouse_metrics.py src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/11-final-drift-review-and-handoff.md src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/12-production-operations-runbook.md`
+  - 결과: whitespace / conflict marker 문제 없음
+
+### 6. 남은 리스크
+
+- `AuditWarehouse`는 역할을 축소했지만 admin/debug compatibility surface 자체는 아직 남아 있다. admin console read source까지 ClickHouse로 완전히 통일한 상태는 아니다.
+- strict canonical helper를 추가했지만 loader 기본 API는 compatibility read를 유지하므로, 새 호출부를 만들 때 strict helper를 명시적으로 사용해야 한다.
+- 현재 워크트리에는 이번 task와 무관한 다른 수정도 함께 존재해 별도 정리 없이 바로 commit/push 하지는 않았다.
+
+### 7. 다음 task 입력
+
+- 다음 우선순위는 admin/debug surface도 ClickHouse direct read로 더 정리할지, 아니면 `AuditWarehouse`를 완전히 유지보수 모드로 고정할지 결정하는 것이다.
+- 동시에 legacy compatibility loader를 어떤 경로까지 유지할지 범위를 좁혀 두면 이후 mixed-shape 재유입 리스크를 더 줄일 수 있다.
+
+## Task 30
+
+### 1. task 번호와 제목
+
+- Task 30. Legacy defense offline Step5 path 삭제
+
+### 2. 작업 일시
+
+- 2026-04-13 09:02:21 KST
+
+### 3. 실제로 수정한 파일 목록
+
+- 삭제: `src/traffic_master_ai/defense/offline/__init__.py`
+- 삭제: `src/traffic_master_ai/defense/offline/pipeline.py`
+- 삭제: `src/traffic_master_ai/defense/offline/guardrails.py`
+- 삭제: `src/traffic_master_ai/defense/offline/replay.py`
+- 삭제: `tests/defense/test_offline_pipeline.py`
+- 삭제: `tests/defense/test_offline_replay_guardrails.py`
+- 삭제: `scripts/step5_batch_evaluator.py`
+- 삭제: `scripts/step5_policy_guardrails.py`
+- 삭제: `scripts/step5_offline_llm_batch.py`
+- 삭제: `scripts/step5_build_replay_dataset.py`
+- 삭제: `scripts/step5_re_evaluate_loop.py`
+- 삭제: `scripts/step5_no_key_all.sh`
+- 삭제: `scripts/step5_with_key_all.sh`
+- 수정: `README.md`
+- 수정: `src/traffic_master_ai/defense/api/README.md`
+- 수정: `src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/task-execution-log.md`
+
+### 4. 삭제 이유
+
+- manual review flag 기반 legacy offline batch/replay/guardrail path를 제거했다.
+- 삭제된 Step5 스크립트를 직접 실행하라는 README 안내만 제거했다.
+- d0_mvp policy optimizer worker/command와 storage/runtime/ClickHouse metrics 로직은 수정하지 않았다.
+
+### 5. 검증에 사용한 명령과 결과 요약
+
+- 삭제 전 import/compile 확인
+  - 명령: `PYTHONPATH=src .venv/bin/python -m py_compile src/traffic_master_ai/defense/d0_mvp/optimizer/pipeline.py src/traffic_master_ai/defense/d0_mvp/api/runtime.py src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_offline_metrics_repository.py`
+  - 결과: 문법 오류 없음
+- 삭제 검증
+  - 명령: legacy offline import/manual-review literal 검색
+  - 결과: `src/traffic_master_ai/defense/d0_poc/Specs/ST5-2/SPEC_SNAPSHOT.md` historical mention만 남음
+- 삭제된 Step5 README/스크립트 안내 검증
+  - 명령: `rg -n "step5_" README.md src/traffic_master_ai/defense/api/README.md pyproject.toml scripts tests`
+  - 결과: 매치 없음
+- 삭제 후 import/compile 확인
+  - 명령: `PYTHONPATH=src .venv/bin/python -m py_compile src/traffic_master_ai/defense/d0_mvp/optimizer/pipeline.py src/traffic_master_ai/defense/d0_mvp/api/runtime.py src/traffic_master_ai/defense/backoffice_copilot/storage/clickhouse_offline_metrics_repository.py`
+  - 결과: 문법 오류 없음
+  - 명령: `PYTHONPATH=src .venv/bin/python -c 'import traffic_master_ai.defense.d0_mvp.optimizer.pipeline; import traffic_master_ai.defense.d0_mvp.api.runtime; import traffic_master_ai.defense.backoffice_copilot.storage.clickhouse_offline_metrics_repository; print("imports ok")'`
+  - 결과: `imports ok`
+- 정책 optimizer / storage 회귀
+  - 명령: `PYTHONPATH=src .venv/bin/python -m unittest tests.defense.test_policy_optimizer_worker`
+  - 결과: `Ran 19 tests ... OK`
+  - 명령: `PYTHONPATH=src .venv/bin/python -m unittest tests.defense.test_offline_optimizer_strict_authority tests.defense.test_offline_optimizer_clickhouse_metrics tests.defense.test_backoffice_copilot_policy_projection tests.defense.test_backoffice_copilot_policy_control_plane_storage tests.defense.test_storage_env_config`
+  - 결과: `Ran 43 tests ... OK`
+- 포맷 확인
+  - 명령: `git diff --check`
+  - 결과: whitespace / conflict marker 문제 없음
+
+### 6. 남은 리스크
+
+- `python` 실행 파일이 현재 PATH에 없어 `.venv/bin/python`으로 검증했다.
+- `d0_poc/Specs` 아래 Step5 historical mention은 archive 성격으로 보존했다.
+- 현재 워크트리에는 이번 삭제 task 이전의 policy optimizer worker 관련 변경이 함께 남아 있다.

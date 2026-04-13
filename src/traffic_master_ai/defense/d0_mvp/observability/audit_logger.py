@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
+from ...audit_contract import normalize_audit_row
 from ...storage_env import load_audit_log_config_from_env
 from ..core.constants import AUDIT_FILENAME, AUDIT_RETENTION_DAYS
 from .jsonl_retention import is_within_retention, load_rows, persist_rows
@@ -70,9 +71,9 @@ class AuditLogger:
         if entries is None:
             source = self.read_all()
         else:
-            source = list(entries)
+            source = [normalize_audit_row(item) for item in entries]
 
-        seen = {str(item.get("eventType", "")) for item in source}
+        seen = {str(item.get("event_type", "")) for item in source}
         missing = sorted(ev for ev in MANDATORY_AUDIT_EVENT_TYPES if ev not in seen)
         return missing
 
