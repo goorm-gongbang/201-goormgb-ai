@@ -90,13 +90,26 @@ def create_check_router(runtime: Optional[DefenseRuntime] = None) -> APIRouter:
             eval_req.context.meta.update(request_meta)
         try:
             out = rt.evaluate(eval_req)
+        except RuntimeAPIError as exc:
+            raise_contract_http_error(
+                exc.to_error_body(),
+                status_code=exc.status_code,
+                headers=passthrough_headers,
+            )
         except ValueError as exc:
             raise_contract_http_error(
                 error_payload(ReasonCode.VALIDATION_ERROR, str(exc)),
                 status_code=400,
             )
         except Exception as exc:
-            out = rt.fail_open_on_unavailable(request=eval_req, error=exc)
+            try:
+                out = rt.fail_open_on_unavailable(request=eval_req, error=exc)
+            except RuntimeAPIError as runtime_exc:
+                raise_contract_http_error(
+                    runtime_exc.to_error_body(),
+                    status_code=runtime_exc.status_code,
+                    headers=passthrough_headers,
+                )
         orchestrated = out.orchestrator_result
 
         headers = merge_headers(orchestrated.headers, passthrough_headers)

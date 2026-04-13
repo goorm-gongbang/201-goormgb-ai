@@ -130,6 +130,31 @@ class RuntimeAPIError(Exception):
         return body
 
 
+def _find_policy_authority_error(error: Exception) -> RuntimePolicyAuthorityError | None:
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, RuntimePolicyAuthorityError):
+            return current
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def _runtime_policy_unavailable_api_error(
+    error: RuntimePolicyAuthorityError,
+) -> RuntimeAPIError:
+    return RuntimeAPIError(
+        status_code=503,
+        reason_code=ReasonCode.INTERNAL_ERROR.value,
+        message="Runtime policy projection is unavailable.",
+        detail={
+            "authority": "redis_projection",
+            "repairHint": error.repair_hint,
+        },
+    )
+
+
 class DefenseRuntime:
     """Runtime composition root for D0-MVP phases 2~7.
 
@@ -841,8 +866,15 @@ class DefenseRuntime:
         error: Exception,
     ) -> EvaluatePipelineResult:
         """Return allow-path fallback and emit DEFENSE_UNAVAILABLE audit."""
+        policy_authority_error = _find_policy_authority_error(error)
+        if self.policy_loader.strict_authority and policy_authority_error is not None:
+            raise _runtime_policy_unavailable_api_error(policy_authority_error)
         try:
             policy = self.policy_loader.load(session_id=request.session_id)
+        except RuntimePolicyAuthorityError as exc:
+            if self.policy_loader.strict_authority:
+                raise _runtime_policy_unavailable_api_error(exc) from exc
+            policy = PolicySnapshot()
         except Exception:
             policy = PolicySnapshot()
         state = self.session_state.get(request.session_id) or SessionState(

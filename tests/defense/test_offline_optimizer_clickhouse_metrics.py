@@ -242,9 +242,17 @@ class _ErrorSelectClient:
 
 
 class _PolicyVersionSelectClient:
-    def __init__(self, *, candidate_empty: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        candidate_empty: bool = False,
+        events_total: int = 30,
+        unique_traces: int = 10,
+    ) -> None:
         self.calls: list[tuple[str, dict[str, object]]] = []
         self.candidate_empty = candidate_empty
+        self.events_total = events_total
+        self.unique_traces = unique_traces
 
     def query(self, sql_text: str, params: dict[str, object]):
         self.calls.append((sql_text, params))
@@ -256,9 +264,9 @@ class _PolicyVersionSelectClient:
                 {
                     "window_start_ms": params["window_start_ms"],
                     "window_end_ms": params["window_end_ms"],
-                    "events_total": 4,
+                    "events_total": self.events_total,
                     "unique_sessions": 2,
-                    "unique_traces": 2,
+                    "unique_traces": self.unique_traces,
                     "latest_policy_version": policy_version,
                     "duplicate_count": 0,
                 }
@@ -400,6 +408,19 @@ class OfflineOptimizerClickHouseMetricsTests(unittest.TestCase):
     def test_clickhouse_repository_returns_none_for_insufficient_guardrail_data(self) -> None:
         repository = ClickHouseOfflineMetricsRepository(
             client=_PolicyVersionSelectClient(candidate_empty=True)
+        )
+
+        deltas = repository.read_rollout_guardrail_deltas(
+            OfflineMetricsQuery(window_start_ms=1000, window_end_ms=5000),
+            base_policy_version="policy-base",
+            candidate_policy_version="policy-candidate",
+        )
+
+        self.assertIsNone(deltas)
+
+    def test_clickhouse_repository_requires_minimum_guardrail_sample_size(self) -> None:
+        repository = ClickHouseOfflineMetricsRepository(
+            client=_PolicyVersionSelectClient(events_total=29, unique_traces=9)
         )
 
         deltas = repository.read_rollout_guardrail_deltas(

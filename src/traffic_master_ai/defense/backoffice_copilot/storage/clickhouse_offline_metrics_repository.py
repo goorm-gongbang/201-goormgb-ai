@@ -16,6 +16,8 @@ from .clickhouse_read_models import (
 )
 
 _METRIC_EVENT_TYPES: tuple[str, ...] = tuple(sorted(OPTIMIZER_INCLUDED_AUDIT_EVENT_TYPES))
+_MIN_ROLLOUT_GUARDRAIL_EVENTS_TOTAL = 30
+_MIN_ROLLOUT_GUARDRAIL_UNIQUE_TRACES = 10
 
 
 class ClickHouseOfflineMetricsReadRepository(Protocol):
@@ -479,7 +481,10 @@ def _rate_delta_pp(candidate_rate: float, base_rate: float) -> float:
 
 
 def _insufficient_rollout_metrics(snapshot: OfflineMetricsSnapshot) -> bool:
-    return snapshot.events_total <= 0 or snapshot.unique_traces <= 0
+    return (
+        snapshot.events_total < _MIN_ROLLOUT_GUARDRAIL_EVENTS_TOTAL
+        or snapshot.unique_traces < _MIN_ROLLOUT_GUARDRAIL_UNIQUE_TRACES
+    )
 
 
 def _with_event_types(params: Mapping[str, object]) -> dict[str, object]:
