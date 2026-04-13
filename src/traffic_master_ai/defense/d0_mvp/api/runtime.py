@@ -276,7 +276,13 @@ class DefenseRuntime:
                 else self.policy_store.get_rollout_state()
             )
             if primary_rollout_state is None:
+                now_ms = int(time.time() * 1000)
                 rollout_state = self.policy_store.get_rollout_state()
+                if isinstance(rollout_state, dict):
+                    rollout_state = {
+                        **rollout_state,
+                        "projection_refreshed_at_ms": now_ms,
+                    }
                 self.policy_store.set_rollout_state(
                     rollout_state
                     if isinstance(rollout_state, dict)
@@ -285,7 +291,8 @@ class DefenseRuntime:
                         "base_policy_version": version,
                         "candidate_policy_version": None,
                         "ratio": 0.0,
-                        "updated_at_ms": int(time.time() * 1000),
+                        "updated_at_ms": now_ms,
+                        "projection_refreshed_at_ms": now_ms,
                     }
                 )
         except Exception:  # noqa: BLE001 - bootstrap should not break startup
@@ -345,6 +352,9 @@ class DefenseRuntime:
                 authority_service=self._get_policy_authority_service(),
             )
         return self._offline_optimizer
+
+    def policy_authority_service(self) -> Optional["PostgresStrictPolicyAuthorityService"]:
+        return self._get_policy_authority_service()
 
     def _get_policy_authority_service(self):
         if self._policy_authority_service is not None:

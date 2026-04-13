@@ -6,7 +6,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 import time
-from typing import Any, Protocol, Sequence
+from typing import Any, Protocol, Sequence, cast
 
 from ...d0_mvp.state.redis_client import RedisLike, build_runtime_redis_from_env
 from .connection import build_postgres_engine_from_env
@@ -241,6 +241,19 @@ class PostgresStrictPolicyAuthorityService:
             retry_policy=self.projection_retry_policy,
         )
 
+    def refresh_current_runtime_projection(
+        self,
+        *,
+        additional_policy_versions: Sequence[str] = (),
+    ) -> PolicyProjectionApplyResult:
+        return reconcile_current_policy_runtime_projection(
+            version_repository=self.version_repository,
+            rollout_state_repository=self.rollout_state_repository,
+            projection_repository=self.projection_repository,
+            additional_policy_versions=additional_policy_versions,
+            retry_policy=self.projection_retry_policy,
+        )
+
 
 def run_runtime_projection_sync_from_env(
     *,
@@ -350,7 +363,35 @@ def load_policy_runtime_projection_input(
         raise PolicyProjectionNotFoundError(
             f"policy_rollout_state row not found for rollout_id={rollout_id!r}."
         )
+    return _build_policy_runtime_projection_input(
+        rollout_state=rollout_state,
+        version_repository=version_repository,
+        additional_policy_versions=additional_policy_versions,
+    )
 
+
+def load_current_policy_runtime_projection_input(
+    *,
+    version_repository: PolicyVersionRepository,
+    rollout_state_repository: PolicyRolloutStateRepository,
+    additional_policy_versions: Sequence[str] = (),
+) -> PolicyRuntimeProjectionInput:
+    rollout_state = rollout_state_repository.get_current_state()
+    if rollout_state is None:
+        raise PolicyProjectionNotFoundError("policy_rollout_state row not found.")
+    return _build_policy_runtime_projection_input(
+        rollout_state=rollout_state,
+        version_repository=version_repository,
+        additional_policy_versions=additional_policy_versions,
+    )
+
+
+def _build_policy_runtime_projection_input(
+    *,
+    rollout_state: PolicyRolloutStateRecord,
+    version_repository: PolicyVersionRepository,
+    additional_policy_versions: Sequence[str] = (),
+) -> PolicyRuntimeProjectionInput:
     version_ids = list(additional_policy_versions)
     version_ids.append(rollout_state.base_policy_version)
     if rollout_state.candidate_policy_version is not None:
@@ -377,11 +418,17 @@ def apply_policy_runtime_projection(
     projection_input: PolicyRuntimeProjectionInput,
     *,
     projection_repository: RedisPolicyProjectionRepository,
+    projection_refreshed_at_ms: int | None = None,
 ) -> PolicyProjectionApplyResult:
     """Apply one projection bundle in document -> rollout -> index order."""
 
     validated = validate_policy_runtime_projection_input(projection_input)
     existing_index = projection_repository.read_version_index()
+    refreshed_at_ms = (
+        _now_ms()
+        if projection_refreshed_at_ms is None
+        else projection_refreshed_at_ms
+    )
 
     for record in validated.policy_versions:
         projection_repository.project_policy_version(
@@ -392,7 +439,10 @@ def apply_policy_runtime_projection(
     wrote_rollout_state = False
     if validated.rollout_state is not None:
         projection_repository.project_rollout_state(
-            build_redis_projected_rollout_state(validated.rollout_state)
+            build_redis_projected_rollout_state(
+                validated.rollout_state,
+                projection_refreshed_at_ms=refreshed_at_ms,
+            )
         )
         wrote_rollout_state = True
 
@@ -418,6 +468,7 @@ def apply_policy_runtime_projection_with_retry(
     projection_repository: RedisPolicyProjectionRepository,
     retry_policy: ProjectionRetryPolicy,
     scope: str,
+    projection_refreshed_at_ms: int | None = None,
 ) -> PolicyProjectionApplyResult:
     """Apply one projection bundle with minimal retry and explicit resync surfacing."""
 
@@ -426,6 +477,7 @@ def apply_policy_runtime_projection_with_retry(
             return apply_policy_runtime_projection(
                 projection_input,
                 projection_repository=projection_repository,
+                projection_refreshed_at_ms=projection_refreshed_at_ms,
             )
         except Exception as exc:
             logger.exception(
@@ -530,6 +582,35 @@ def reconcile_policy_runtime_projection(
     )
 
 
+def reconcile_current_policy_runtime_projection(
+    *,
+    version_repository: PolicyVersionRepository,
+    rollout_state_repository: PolicyRolloutStateRepository,
+    projection_repository: RedisPolicyProjectionRepository,
+    additional_policy_versions: Sequence[str] = (),
+    retry_policy: ProjectionRetryPolicy | None = None,
+) -> PolicyProjectionApplyResult:
+    projection_input = load_current_policy_runtime_projection_input(
+        version_repository=version_repository,
+        rollout_state_repository=rollout_state_repository,
+        additional_policy_versions=additional_policy_versions,
+    )
+    rollout_state = cast(PolicyRolloutStateRecord, projection_input.rollout_state)
+    try:
+        return apply_policy_runtime_projection_with_retry(
+            projection_input,
+            projection_repository=projection_repository,
+            retry_policy=retry_policy or ProjectionRetryPolicy(),
+            scope=f"rollout_id:{rollout_state.rollout_id}",
+        )
+    except Exception:
+        logger.exception(
+            "Current rollout-state projection failed for rollout_id=%s",
+            rollout_state.rollout_id,
+        )
+        raise
+
+
 def _json_array(raw: Any) -> list[object] | None:
     if raw is None:
         return None
@@ -548,3 +629,7 @@ def _json_array(raw: Any) -> list[object] | None:
     if isinstance(raw, tuple):
         return list(raw)
     return None
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)

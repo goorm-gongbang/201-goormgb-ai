@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from copy import deepcopy
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -29,6 +30,7 @@ class RedisProjectedRolloutState:
     ratio: float
     updated_at_ms: int
     candidate_policy_version: str | None = None
+    projection_refreshed_at_ms: int | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -110,6 +112,8 @@ def build_redis_projected_policy_document(
 
 def build_redis_projected_rollout_state(
     record: PolicyRolloutStateRecord,
+    *,
+    projection_refreshed_at_ms: int | None = None,
 ) -> RedisProjectedRolloutState:
     """Build the minimal runtime rollout payload from one authoritative PG row."""
 
@@ -123,6 +127,11 @@ def build_redis_projected_rollout_state(
         candidate_policy_version=record.candidate_policy_version,
         ratio=ratio,
         updated_at_ms=record.updated_at_ms,
+        projection_refreshed_at_ms=(
+            _now_ms()
+            if projection_refreshed_at_ms is None
+            else projection_refreshed_at_ms
+        ),
     )
 
 
@@ -159,12 +168,18 @@ def serialize_redis_projected_rollout_state(
         raise StorageValidationError("ratio must be between 0 and 1 inclusive.")
     if not isinstance(payload.updated_at_ms, int) or isinstance(payload.updated_at_ms, bool):
         raise StorageValidationError("updated_at_ms must be an int.")
+    if payload.projection_refreshed_at_ms is not None and (
+        not isinstance(payload.projection_refreshed_at_ms, int)
+        or isinstance(payload.projection_refreshed_at_ms, bool)
+    ):
+        raise StorageValidationError("projection_refreshed_at_ms must be None or an int.")
     return {
         "stage": payload.stage,
         "base_policy_version": payload.base_policy_version,
         "candidate_policy_version": payload.candidate_policy_version,
         "ratio": float(payload.ratio),
         "updated_at_ms": payload.updated_at_ms,
+        "projection_refreshed_at_ms": payload.projection_refreshed_at_ms,
     }
 
 
@@ -207,3 +222,7 @@ def decimal_to_projection_ratio(value: Decimal) -> float:
     """Expose the Decimal -> float conversion used by rollout payload projection."""
 
     return float(value)
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
