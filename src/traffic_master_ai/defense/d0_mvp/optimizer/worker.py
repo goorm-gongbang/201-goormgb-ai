@@ -41,6 +41,10 @@ logger = logging.getLogger(__name__)
 POLICY_OPTIMIZER_LOCK_KEY = "tm:policy-optimizer:lock"
 POLICY_OPTIMIZER_ROLLOUT_ID = "offline-optimizer-default"
 DEFAULT_POLICY_OPTIMIZER_LOCK_TTL_SECONDS = 300
+_RELEASE_LOCK_SCRIPT = (
+    "if redis.call('get', KEYS[1]) == ARGV[1] "
+    "then return redis.call('del', KEYS[1]) else return 0 end"
+)
 
 PolicyOptimizerWorkerStatus = Literal[
     "disabled",
@@ -52,6 +56,7 @@ PolicyOptimizerWorkerStatus = Literal[
     "rollout_expanded",
     "rollout_waiting",
     "rollback_cooling_down",
+    "rollout_cooling_down",
 ]
 
 
@@ -207,8 +212,7 @@ class PolicyOptimizerWorker:
             self._bootstrap_baseline_if_enabled()
             return self._reconcile_once()
         finally:
-            if self.redis.get(self.lock_key) == token:
-                self.redis.delete(self.lock_key)
+            _release_redis_lock(self.redis, self.lock_key, token)
 
     def _bootstrap_baseline_if_enabled(self) -> None:
         if not self.bootstrap_baseline:
@@ -296,6 +300,16 @@ class PolicyOptimizerWorker:
                     detail={"stage": stage},
                 )
             return None
+        if stage == "FULL" and current.get("expand_step_index") is not None:
+            if _cooldown_active(
+                current,
+                cooldown_seconds=self.min_apply_cooldown_seconds,
+            ):
+                return PolicyOptimizerWorkerResult(
+                    status="rollout_cooling_down",
+                    detail={"stage": stage},
+                )
+            return None
         if stage not in {"CANARY", "EXPAND"}:
             return None
         if not _is_rollout_stage_elapsed(current):
@@ -350,11 +364,14 @@ class PolicyOptimizerWorker:
         if not base_policy_version or not candidate_policy_version:
             return None
         if self.guardrail_repository is None:
-            metrics = self.optimizer.collect_metrics(window_seconds=self.window_seconds)
-            return _guardrail_deltas_from_metrics(metrics)
+            return None
         now_ms = int(time.time() * 1000)
+        stage_started_at_ms = _clean_int_value(current.get("stage_started_at_ms"))
         query = OfflineMetricsQuery(
-            window_start_ms=now_ms - (self.window_seconds * 1000),
+            window_start_ms=max(
+                now_ms - (self.window_seconds * 1000),
+                stage_started_at_ms,
+            ),
             window_end_ms=now_ms,
         )
         return self.guardrail_repository.read_rollout_guardrail_deltas(
@@ -521,6 +538,15 @@ def _load_required_text_env(env_name: str) -> str:
     return raw.strip()
 
 
+def _release_redis_lock(redis: RedisLike, lock_key: str, token: str) -> None:
+    eval_fn = getattr(redis, "eval", None)
+    if callable(eval_fn):
+        eval_fn(_RELEASE_LOCK_SCRIPT, 1, lock_key, token)
+        return
+    if redis.get(lock_key) == token:
+        redis.delete(lock_key)
+
+
 def _is_rollout_stage_elapsed(state: dict[str, Any]) -> bool:
     stage_started_at_ms = _clean_int_value(state.get("stage_started_at_ms"))
     stage_duration_seconds = _clean_int_value(state.get("stage_duration_seconds"))
@@ -558,34 +584,6 @@ def _cooldown_active(
     if finished_at_ms <= 0:
         return True
     return int(time.time() * 1000) < finished_at_ms + (cooldown_seconds * 1000)
-
-
-def _guardrail_deltas_from_metrics(metrics: Mapping[str, Any]) -> dict[str, float]:
-    return {
-        "s3_temp_lock_rate_pp": _rate_to_percentage_points(
-            metrics.get("s3_temp_lock_rate")
-        ),
-        "block_rate_pp": _rate_to_percentage_points(metrics.get("block_rate")),
-        "avg_throttle_delay_ms": _float_value(metrics.get("avg_throttle_delay_ms")),
-        "s3_fail_rate_pp": _rate_to_percentage_points(metrics.get("s3_fail_rate")),
-        "dedup_duplicate_rate_pp": _rate_to_percentage_points(
-            metrics.get("dedup_duplicate_rate")
-        ),
-        "internal_error_rate_pp": _rate_to_percentage_points(
-            metrics.get("internal_error_rate")
-        ),
-    }
-
-
-def _rate_to_percentage_points(raw: Any) -> float:
-    return _float_value(raw) * 100.0
-
-
-def _float_value(raw: Any) -> float:
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return 0.0
 
 
 def _build_baseline_policy_record(snapshot: PolicySnapshot) -> PolicyVersionRecord:

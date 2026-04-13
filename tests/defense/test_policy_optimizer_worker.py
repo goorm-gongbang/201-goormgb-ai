@@ -136,6 +136,29 @@ class _FakeRolloutGuardrailRepository:
         return self.deltas
 
 
+def _safe_guardrail_deltas() -> dict[str, float]:
+    return {
+        "s3_temp_lock_rate_pp": 0.0,
+        "block_rate_pp": 0.0,
+        "avg_throttle_delay_ms": 0.0,
+        "s3_fail_rate_pp": 0.0,
+        "dedup_duplicate_rate_pp": 0.0,
+    }
+
+
+class _EvalRedis(InMemoryRedis):
+    def __init__(self) -> None:
+        super().__init__()
+        self.eval_calls: list[tuple[str, int, tuple[Any, ...]]] = []
+
+    def eval(self, script: str, numkeys: int, *keys_and_args: Any) -> int:
+        self.eval_calls.append((script, numkeys, keys_and_args))
+        lock_key, token = keys_and_args
+        if self.get(str(lock_key)) == token:
+            return self.delete(str(lock_key))
+        return 0
+
+
 class _FakePolicyVersionRepository:
     def __init__(self, records: dict[str, PolicyVersionRecord] | None = None) -> None:
         self.records = records or {}
@@ -205,6 +228,21 @@ class PolicyOptimizerWorkerTests(unittest.TestCase):
         self.assertEqual(result.status, "lock_missed")
         self.assertEqual(optimizer.run_once_calls, 0)
         self.assertEqual(optimizer.start_canary_calls, [])
+
+    def test_worker_releases_redis_lock_with_atomic_eval_when_available(self) -> None:
+        redis = _EvalRedis()
+        optimizer = _FakeOptimizer(proposal=None)
+        worker = PolicyOptimizerWorker(
+            redis=redis,
+            optimizer=optimizer,
+            lock_ttl_seconds=60,
+        )
+
+        result = worker.run_once()
+
+        self.assertEqual(result.status, "no_change")
+        self.assertEqual(len(redis.eval_calls), 1)
+        self.assertIsNone(redis.get(POLICY_OPTIMIZER_LOCK_KEY))
 
     def test_policy_optimizer_worker_fails_fast_without_prod_storage_env(self) -> None:
         with patch.dict(
@@ -316,12 +354,14 @@ class PolicyOptimizerWorkerTests(unittest.TestCase):
 
     def test_policy_optimizer_worker_expands_after_canary_duration(self) -> None:
         redis = InMemoryRedis()
+        stage_started_at_ms = int(time.time() * 1000) - 121000
+        guardrail_repository = _FakeRolloutGuardrailRepository(_safe_guardrail_deltas())
         optimizer = _FakeOptimizer(
             rollout_state={
                 "stage": "CANARY",
                 "base_policy_version": "policy-v1",
                 "candidate_policy_version": "policy-v2",
-                "stage_started_at_ms": int(time.time() * 1000) - 121000,
+                "stage_started_at_ms": stage_started_at_ms,
                 "stage_duration_seconds": 120,
             },
             proposal={"proposal_id": "proposal-1"},
@@ -331,6 +371,7 @@ class PolicyOptimizerWorkerTests(unittest.TestCase):
             optimizer=optimizer,
             lock_ttl_seconds=60,
             window_seconds=240,
+            guardrail_repository=guardrail_repository,
         )
 
         result = worker.run_once()
@@ -338,15 +379,17 @@ class PolicyOptimizerWorkerTests(unittest.TestCase):
         self.assertEqual(result.status, "rollout_expanded")
         self.assertEqual(optimizer.expand_rollout_calls, [0])
         self.assertEqual(optimizer.run_once_calls, 0)
-        self.assertEqual(optimizer.collect_metrics_windows, [240])
+        self.assertEqual(optimizer.collect_metrics_windows, [])
+        self.assertEqual(guardrail_repository.calls[0][0], stage_started_at_ms)
 
     def test_policy_optimizer_worker_rolls_back_on_guardrail_delta(self) -> None:
+        stage_started_at_ms = int(time.time() * 1000) - 121000
         optimizer = _FakeOptimizer(
             rollout_state={
                 "stage": "CANARY",
                 "base_policy_version": "policy-v1",
                 "candidate_policy_version": "policy-v2",
-                "stage_started_at_ms": int(time.time() * 1000) - 121000,
+                "stage_started_at_ms": stage_started_at_ms,
                 "stage_duration_seconds": 120,
             },
         )
@@ -374,6 +417,7 @@ class PolicyOptimizerWorkerTests(unittest.TestCase):
         self.assertEqual(optimizer.rollback_reasons, ["guardrail"])
         self.assertEqual(optimizer.expand_rollout_calls, [])
         self.assertEqual(optimizer.guardrail_deltas[0]["block_rate_pp"], 0.31)
+        self.assertEqual(guardrail_repository.calls[0][0], stage_started_at_ms)
         self.assertEqual(guardrail_repository.calls[0][2:], ("policy-v1", "policy-v2"))
 
     def test_worker_does_not_apply_when_rollout_guardrail_data_is_insufficient(self) -> None:
@@ -399,6 +443,30 @@ class PolicyOptimizerWorkerTests(unittest.TestCase):
         self.assertEqual(optimizer.rollback_reasons, [])
         self.assertEqual(optimizer.expand_rollout_calls, [])
 
+    def test_worker_does_not_use_aggregate_metrics_as_guardrail_delta(self) -> None:
+        optimizer = _FakeOptimizer(
+            rollout_state={
+                "stage": "CANARY",
+                "base_policy_version": "policy-v1",
+                "candidate_policy_version": "policy-v2",
+                "stage_started_at_ms": int(time.time() * 1000) - 121000,
+                "stage_duration_seconds": 120,
+            }
+        )
+        worker = PolicyOptimizerWorker(
+            redis=InMemoryRedis(),
+            optimizer=optimizer,
+            lock_ttl_seconds=60,
+            guardrail_repository=None,
+        )
+
+        result = worker.run_once()
+
+        self.assertEqual(result.status, "insufficient_data")
+        self.assertEqual(optimizer.collect_metrics_windows, [])
+        self.assertEqual(optimizer.guardrail_deltas, [])
+        self.assertEqual(optimizer.expand_rollout_calls, [])
+
     def test_worker_waits_before_expand_duration_elapsed(self) -> None:
         optimizer = _FakeOptimizer(
             rollout_state={
@@ -422,12 +490,14 @@ class PolicyOptimizerWorkerTests(unittest.TestCase):
         self.assertEqual(optimizer.expand_rollout_calls, [])
 
     def test_worker_advances_elapsed_expand_to_next_step(self) -> None:
+        stage_started_at_ms = int(time.time() * 1000) - 181000
+        guardrail_repository = _FakeRolloutGuardrailRepository(_safe_guardrail_deltas())
         optimizer = _FakeOptimizer(
             rollout_state={
                 "stage": "EXPAND",
                 "base_policy_version": "policy-v1",
                 "candidate_policy_version": "policy-v2",
-                "stage_started_at_ms": int(time.time() * 1000) - 181000,
+                "stage_started_at_ms": stage_started_at_ms,
                 "stage_duration_seconds": 180,
                 "expand_step_index": 0,
             }
@@ -436,12 +506,14 @@ class PolicyOptimizerWorkerTests(unittest.TestCase):
             redis=InMemoryRedis(),
             optimizer=optimizer,
             lock_ttl_seconds=60,
+            guardrail_repository=guardrail_repository,
         )
 
         result = worker.run_once()
 
         self.assertEqual(result.status, "rollout_expanded")
         self.assertEqual(optimizer.expand_rollout_calls, [1])
+        self.assertEqual(guardrail_repository.calls[0][0], stage_started_at_ms)
 
     def test_worker_blocks_new_proposal_during_rolled_back_cooldown(self) -> None:
         optimizer = _FakeOptimizer(
@@ -463,6 +535,79 @@ class PolicyOptimizerWorkerTests(unittest.TestCase):
 
         self.assertEqual(result.status, "rollback_cooling_down")
         self.assertEqual(optimizer.run_once_calls, 0)
+
+    def test_worker_blocks_new_proposal_during_full_rollout_cooldown(self) -> None:
+        optimizer = _FakeOptimizer(
+            rollout_state={
+                "stage": "FULL",
+                "base_policy_version": "policy-v2",
+                "candidate_policy_version": None,
+                "updated_at_ms": int(time.time() * 1000),
+                "rollout_finished_at_ms": int(time.time() * 1000),
+                "expand_step_index": 2,
+            },
+            proposal={"proposal_id": "proposal-1"},
+        )
+        worker = PolicyOptimizerWorker(
+            redis=InMemoryRedis(),
+            optimizer=optimizer,
+            lock_ttl_seconds=60,
+            min_apply_cooldown_seconds=300,
+        )
+
+        result = worker.run_once()
+
+        self.assertEqual(result.status, "rollout_cooling_down")
+        self.assertEqual(optimizer.run_once_calls, 0)
+
+    def test_worker_allows_new_proposal_after_full_rollout_cooldown(self) -> None:
+        optimizer = _FakeOptimizer(
+            rollout_state={
+                "stage": "FULL",
+                "base_policy_version": "policy-v2",
+                "candidate_policy_version": None,
+                "updated_at_ms": int(time.time() * 1000) - 301000,
+                "rollout_finished_at_ms": int(time.time() * 1000) - 301000,
+                "expand_step_index": 2,
+            },
+            proposal={"proposal_id": "proposal-1", "patches": []},
+        )
+        worker = PolicyOptimizerWorker(
+            redis=InMemoryRedis(),
+            optimizer=optimizer,
+            lock_ttl_seconds=60,
+            min_apply_cooldown_seconds=300,
+        )
+
+        result = worker.run_once()
+
+        self.assertEqual(result.status, "proposal_applied")
+        self.assertEqual(optimizer.run_once_calls, 1)
+
+    def test_worker_does_not_cooldown_baseline_full_without_expand_history(self) -> None:
+        proposal = {"proposal_id": "proposal-1", "patches": []}
+        optimizer = _FakeOptimizer(
+            rollout_state={
+                "stage": "FULL",
+                "base_policy_version": "policy-v1",
+                "candidate_policy_version": None,
+                "updated_at_ms": int(time.time() * 1000),
+                "rollout_finished_at_ms": int(time.time() * 1000),
+                "expand_step_index": None,
+            },
+            proposal=proposal,
+        )
+        worker = PolicyOptimizerWorker(
+            redis=InMemoryRedis(),
+            optimizer=optimizer,
+            lock_ttl_seconds=60,
+            min_apply_cooldown_seconds=300,
+        )
+
+        result = worker.run_once()
+
+        self.assertEqual(result.status, "proposal_applied")
+        self.assertEqual(optimizer.start_canary_calls, [proposal])
 
     def test_policy_optimizer_worker_bootstraps_baseline_authoritatively(self) -> None:
         redis = InMemoryRedis()

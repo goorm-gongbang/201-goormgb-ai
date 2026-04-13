@@ -387,7 +387,7 @@ class OfflineOptimizerClickHouseMetricsTests(unittest.TestCase):
 
         self.assertIsNotNone(deltas)
         self.assertEqual(deltas["block_rate_pp"], 50.0)
-        self.assertEqual(deltas["internal_error_rate_pp"], 0.0)
+        self.assertNotIn("internal_error_rate_pp", deltas)
         policy_calls = [
             call for call in client.calls if "policy_version = :policy_version" in call[0]
         ]

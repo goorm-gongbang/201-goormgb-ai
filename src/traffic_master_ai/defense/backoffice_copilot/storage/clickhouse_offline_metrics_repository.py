@@ -133,7 +133,6 @@ class ClickHouseOfflineMetricsRepository:
                 candidate.dedup_duplicate_rate,
                 base.dedup_duplicate_rate,
             ),
-            "internal_error_rate_pp": 0.0,
         }
 
     def read_trace_samples(
