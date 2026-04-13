@@ -234,10 +234,6 @@ logs/step5*.json*                               # 오프라인 평가/정책 튜
 cd /Users/jangjihyeon/201-goormgb-ai/pilot/istio_adapter_local
 TM_FRONTEND_URL=http://localhost:3000 ./pilot_step4_all.sh
 
-# Step5 (no key)
-cd /Users/jangjihyeon/201-goormgb-ai
-./scripts/step5_no_key_all.sh
-
 # Step7 attack matrix
 cd /Users/jangjihyeon/201-goormgb-ai
 python scripts/step7_attack_mode_matrix.py --frontend-url http://localhost:3000
