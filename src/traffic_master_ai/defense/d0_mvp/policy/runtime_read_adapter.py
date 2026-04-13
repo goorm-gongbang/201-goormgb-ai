@@ -66,6 +66,7 @@ class RuntimeProjectedRolloutState:
     ratio: float
     updated_at_ms: int
     candidate_policy_version: str | None = None
+    projection_refreshed_at_ms: int | None = None
 
 
 @dataclass(slots=True)
@@ -247,12 +248,22 @@ def decode_runtime_projected_rollout_state(
     if not isinstance(updated_at_ms, int) or isinstance(updated_at_ms, bool):
         raise RuntimeProjectionDecodeError("updated_at_ms must be an int.")
 
+    projection_refreshed_at_ms = payload.get("projection_refreshed_at_ms")
+    if projection_refreshed_at_ms is not None and (
+        not isinstance(projection_refreshed_at_ms, int)
+        or isinstance(projection_refreshed_at_ms, bool)
+    ):
+        raise RuntimeProjectionDecodeError(
+            "projection_refreshed_at_ms must be None or an int."
+        )
+
     return RuntimeProjectedRolloutState(
         stage=stage,
         base_policy_version=base_policy_version,
         candidate_policy_version=candidate_policy_version,
         ratio=parsed_ratio,
         updated_at_ms=updated_at_ms,
+        projection_refreshed_at_ms=projection_refreshed_at_ms,
     )
 
 
@@ -267,9 +278,14 @@ def ensure_runtime_rollout_state_is_fresh(
     if max_staleness_ms < 0:
         raise ValueError("max_staleness_ms must be >= 0.")
     current_now_ms = now_ms if now_ms is not None else _now_ms()
-    if current_now_ms - payload.updated_at_ms > max_staleness_ms:
+    freshness_ts_ms = (
+        payload.projection_refreshed_at_ms
+        if payload.projection_refreshed_at_ms is not None
+        else payload.updated_at_ms
+    )
+    if current_now_ms - freshness_ts_ms > max_staleness_ms:
         raise RuntimeProjectionStaleError(
-            updated_at_ms=payload.updated_at_ms,
+            updated_at_ms=freshness_ts_ms,
             now_ms=current_now_ms,
             max_staleness_ms=max_staleness_ms,
         )
@@ -292,13 +308,16 @@ def serialize_runtime_projected_rollout_state(
 ) -> dict[str, object]:
     """Convert one decoded runtime rollout payload back to resolve-compatible dict."""
 
-    return {
+    serialized = {
         "stage": payload.stage,
         "base_policy_version": payload.base_policy_version,
         "candidate_policy_version": payload.candidate_policy_version,
         "ratio": payload.ratio,
         "updated_at_ms": payload.updated_at_ms,
     }
+    if payload.projection_refreshed_at_ms is not None:
+        serialized["projection_refreshed_at_ms"] = payload.projection_refreshed_at_ms
+    return serialized
 
 
 def parse_runtime_projected_payload(raw: Any) -> dict[str, Any] | None:
