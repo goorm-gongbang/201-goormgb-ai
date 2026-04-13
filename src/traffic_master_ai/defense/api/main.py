@@ -84,6 +84,10 @@ from ..d0_mvp.core.enums import DefenseAction as D0DefenseAction
 from ..d0_mvp.core.enums import FlowState as D0FlowState
 from ..d0_mvp.core.models import CheckRequest as D0CheckRequest
 from ..d0_mvp.events.common import RuntimeEvent as D0RuntimeEvent
+from ..d0_mvp.policy.projection_reconciler import (
+    PolicyProjectionReconciler,
+    load_policy_projection_reconciler_config_from_env,
+)
 from ..d0_mvp.state.redis_client import build_runtime_redis_from_env
 from ..auth_guard import AuthGuardBlockService
 from .archive_runtime import run_s3_archive_loop
@@ -259,14 +263,53 @@ async def _s3_archive_loop():
     await run_s3_archive_loop(audit_logger=_audit, uploader=_S3_UPLOADER)
 
 
+async def _policy_projection_reconciler_loop() -> None:
+    config = load_policy_projection_reconciler_config_from_env(
+        strict_authority=_decision_engine.policy_loader.strict_authority,
+        redis_backend=_decision_state_backend,
+    )
+    if not config.enabled:
+        logger.info("Policy projection reconciler disabled.")
+        return
+    authority_service = _decision_engine.policy_authority_service()
+    if authority_service is None:
+        logger.info("Policy projection reconciler skipped without strict authority service.")
+        return
+    reconciler = PolicyProjectionReconciler(
+        redis=_decision_state_redis,
+        authority_service=authority_service,
+        config=config,
+    )
+    logger.info(
+        "Policy projection reconciler started interval_seconds=%s lock_key=%s",
+        config.interval_seconds,
+        config.lock_key,
+    )
+    while True:
+        try:
+            result = await asyncio.to_thread(reconciler.reconcile_once)
+            logger.info("Policy projection reconciler tick status=%s", result.status)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Policy projection reconciler tick failed.")
+        await asyncio.sleep(config.interval_seconds)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """FastAPI lifespan: Startup/Shutdown hooks."""
     archive_task = asyncio.create_task(_s3_archive_loop())
+    projection_reconciler_task = asyncio.create_task(_policy_projection_reconciler_loop())
     yield
     archive_task.cancel()
+    projection_reconciler_task.cancel()
     try:
         await archive_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await projection_reconciler_task
     except asyncio.CancelledError:
         pass
     if _S3_UPLOADER is not None:

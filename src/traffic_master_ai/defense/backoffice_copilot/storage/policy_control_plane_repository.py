@@ -235,6 +235,21 @@ FROM policy_rollout_state
 WHERE rollout_id = :rollout_id
 """
 
+_SELECT_ACTIVE_POLICY_ROLLOUT_STATE_SQL = f"""
+SELECT {", ".join(_POLICY_ROLLOUT_STATE_COLUMNS)}
+FROM policy_rollout_state
+WHERE current_status = :current_status
+ORDER BY updated_at_ms DESC, rollout_id ASC
+LIMIT 1
+"""
+
+_SELECT_LATEST_POLICY_ROLLOUT_STATE_SQL = f"""
+SELECT {", ".join(_POLICY_ROLLOUT_STATE_COLUMNS)}
+FROM policy_rollout_state
+ORDER BY updated_at_ms DESC, rollout_id ASC
+LIMIT 1
+"""
+
 _INSERT_POLICY_ROLLOUT_EVENT_SQL = """
 INSERT INTO policy_rollout_events (
     event_id,
@@ -398,6 +413,9 @@ class PolicyRolloutStateRepository(Protocol):
     def get_state(self, rollout_id: str) -> PolicyRolloutStateRecord | None:
         """Read one rollout-state row."""
 
+    def get_current_state(self) -> PolicyRolloutStateRecord | None:
+        """Read the active rollout-state row, falling back to the latest row."""
+
 
 class PolicyRolloutEventRepository(Protocol):
     """Append-only repository for rollout event history."""
@@ -507,6 +525,23 @@ class PostgresPolicyRolloutStateRepository:
                 _SELECT_POLICY_ROLLOUT_STATE_SQL,
                 {"rollout_id": rollout_id},
             )
+        if row is None:
+            return None
+        return parse_policy_rollout_state_record(row)
+
+    def get_current_state(self) -> PolicyRolloutStateRecord | None:
+        with self.engine.begin() as connection:
+            row = self._fetch_one(
+                connection,
+                _SELECT_ACTIVE_POLICY_ROLLOUT_STATE_SQL,
+                {"current_status": "ACTIVE"},
+            )
+            if row is None:
+                row = self._fetch_one(
+                    connection,
+                    _SELECT_LATEST_POLICY_ROLLOUT_STATE_SQL,
+                    {},
+                )
         if row is None:
             return None
         return parse_policy_rollout_state_record(row)

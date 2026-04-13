@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import patch
@@ -126,13 +127,20 @@ class _FakePolicyRolloutStateRepository:
     def __init__(self, record: PolicyRolloutStateRecord | None) -> None:
         self.record = record
         self.calls: list[str] = []
+        self.current_calls = 0
+        self.save_calls = 0
 
     def get_state(self, rollout_id: str) -> PolicyRolloutStateRecord | None:
         self.calls.append(rollout_id)
         return self.record if self.record and self.record.rollout_id == rollout_id else None
 
+    def get_current_state(self) -> PolicyRolloutStateRecord | None:
+        self.current_calls += 1
+        return self.record
+
     def save_state(self, record: PolicyRolloutStateRecord) -> None:
         self.record = record
+        self.save_calls += 1
 
 
 class _FakePolicyRolloutEventRepository:
@@ -177,10 +185,23 @@ class BackofficeCopilotPolicyProjectionTests(unittest.TestCase):
                 "candidate_policy_version",
                 "ratio",
                 "updated_at_ms",
+                "projection_refreshed_at_ms",
             ),
         )
         self.assertNotIn("current_status", rollout_payload)
+        self.assertIn("projection_refreshed_at_ms", rollout_payload)
         self.assertEqual(version_index, ["policy-v1", "policy-v2"])
+
+    def test_rollout_projection_serializes_projection_refresh_timestamp(self) -> None:
+        rollout_payload = serialize_redis_projected_rollout_state(
+            build_redis_projected_rollout_state(
+                replace(_rollout_state(), updated_at_ms=1000),
+                projection_refreshed_at_ms=5000,
+            )
+        )
+
+        self.assertEqual(rollout_payload["updated_at_ms"], 1000)
+        self.assertEqual(rollout_payload["projection_refreshed_at_ms"], 5000)
 
     def test_rollout_projection_entrypoint_writes_documents_then_rollout_then_index(self) -> None:
         version_repository = _FakePolicyVersionRepository(
@@ -193,12 +214,16 @@ class BackofficeCopilotPolicyProjectionTests(unittest.TestCase):
         redis_client = _FakeRedisClient()
         projection_repository = RedisRuntimePolicyProjectionRepository(redis_client)
 
-        result = project_rollout_state_change(
-            rollout_id="rollout-1",
-            version_repository=version_repository,
-            rollout_state_repository=rollout_repository,
-            projection_repository=projection_repository,
-        )
+        with patch(
+            "traffic_master_ai.defense.backoffice_copilot.storage.policy_projection_repository._now_ms",
+            return_value=5000,
+        ):
+            result = project_rollout_state_change(
+                rollout_id="rollout-1",
+                version_repository=version_repository,
+                rollout_state_repository=rollout_repository,
+                projection_repository=projection_repository,
+            )
 
         self.assertEqual(
             [name for op, name, _ in redis_client.calls if op == "set"],
@@ -218,6 +243,7 @@ class BackofficeCopilotPolicyProjectionTests(unittest.TestCase):
                 "candidate_policy_version": "policy-v2",
                 "ratio": 0.05,
                 "updated_at_ms": 2000,
+                "projection_refreshed_at_ms": 5000,
             },
         )
         self.assertEqual(result.projected_policy_versions, ("policy-v1", "policy-v2"))
@@ -374,6 +400,73 @@ class BackofficeCopilotPolicyProjectionTests(unittest.TestCase):
 
         self.assertTrue(result.wrote_rollout_state)
         self.assertIn(POLICY_ROLLOUT_STATE_KEY, redis_client.data)
+
+    def test_resync_refreshes_projection_timestamp_without_mutating_pg_timestamp(self) -> None:
+        version_repository = _FakePolicyVersionRepository(
+            {
+                "policy-v1": _policy_record("policy-v1"),
+                "policy-v2": _policy_record("policy-v2"),
+            }
+        )
+        rollout_repository = _FakePolicyRolloutStateRepository(
+            replace(_rollout_state(), updated_at_ms=1000)
+        )
+        redis_client = _FakeRedisClient()
+        service = PostgresStrictPolicyAuthorityService(
+            version_repository=version_repository,
+            rollout_state_repository=rollout_repository,
+            rollout_event_repository=_FakePolicyRolloutEventRepository(),
+            optimization_run_repository=_FakePolicyOptimizationRunRepository(),
+            projection_repository=RedisRuntimePolicyProjectionRepository(redis_client),
+        )
+
+        with patch(
+            "traffic_master_ai.defense.backoffice_copilot.storage.policy_projection_repository._now_ms",
+            side_effect=[5000, 6000],
+        ):
+            service.resync_runtime_projection(rollout_id="rollout-1")
+            first_payload = json.loads(str(redis_client.data[POLICY_ROLLOUT_STATE_KEY]))
+            service.resync_runtime_projection(rollout_id="rollout-1")
+            second_payload = json.loads(str(redis_client.data[POLICY_ROLLOUT_STATE_KEY]))
+
+        self.assertEqual(first_payload["updated_at_ms"], 1000)
+        self.assertEqual(first_payload["projection_refreshed_at_ms"], 5000)
+        self.assertEqual(second_payload["updated_at_ms"], 1000)
+        self.assertEqual(second_payload["projection_refreshed_at_ms"], 6000)
+        self.assertEqual(rollout_repository.record.updated_at_ms, 1000)
+
+    def test_refresh_current_runtime_projection_only_refreshes_redis_projection(self) -> None:
+        version_repository = _FakePolicyVersionRepository(
+            {
+                "policy-v1": _policy_record("policy-v1"),
+                "policy-v2": _policy_record("policy-v2"),
+            }
+        )
+        rollout_repository = _FakePolicyRolloutStateRepository(
+            replace(_rollout_state(), updated_at_ms=1000)
+        )
+        redis_client = _FakeRedisClient()
+        service = PostgresStrictPolicyAuthorityService(
+            version_repository=version_repository,
+            rollout_state_repository=rollout_repository,
+            rollout_event_repository=_FakePolicyRolloutEventRepository(),
+            optimization_run_repository=_FakePolicyOptimizationRunRepository(),
+            projection_repository=RedisRuntimePolicyProjectionRepository(redis_client),
+        )
+
+        with patch(
+            "traffic_master_ai.defense.backoffice_copilot.storage.policy_projection_repository._now_ms",
+            return_value=7000,
+        ):
+            result = service.refresh_current_runtime_projection()
+
+        rollout_payload = json.loads(str(redis_client.data[POLICY_ROLLOUT_STATE_KEY]))
+        self.assertTrue(result.wrote_rollout_state)
+        self.assertEqual(rollout_payload["updated_at_ms"], 1000)
+        self.assertEqual(rollout_payload["projection_refreshed_at_ms"], 7000)
+        self.assertEqual(rollout_repository.record.updated_at_ms, 1000)
+        self.assertEqual(rollout_repository.current_calls, 1)
+        self.assertEqual(rollout_repository.save_calls, 0)
 
     def test_strict_authority_service_from_env_uses_retry_env_and_validates_prod_contract(self) -> None:
         with patch.dict(

@@ -57,6 +57,7 @@ class RuntimePolicyReadAdapterTests(unittest.TestCase):
         self.assertIn("planner", policy_doc.parameters)
         self.assertEqual(rollout_state.base_policy_version, "policy-v1")
         self.assertEqual(rollout_state.candidate_policy_version, "policy-v2")
+        self.assertIsNone(rollout_state.projection_refreshed_at_ms)
 
     def test_decode_invalid_projection_payloads_raise_typed_contract_error(self) -> None:
         with self.assertRaises(RuntimeProjectionDecodeError):
@@ -183,6 +184,24 @@ class RuntimePolicyReadAdapterTests(unittest.TestCase):
                 max_staleness_ms=100,
                 now_ms=2000,
             )
+
+    def test_runtime_rollout_projection_staleness_guard_prefers_projection_refresh_timestamp(self) -> None:
+        projected = decode_runtime_projected_rollout_state(
+            {
+                "stage": "CANARY",
+                "base_policy_version": "policy-v1",
+                "candidate_policy_version": "policy-v2",
+                "ratio": 0.05,
+                "updated_at_ms": 1000,
+                "projection_refreshed_at_ms": 1950,
+            }
+        )
+
+        ensure_runtime_rollout_state_is_fresh(
+            projected,
+            max_staleness_ms=100,
+            now_ms=2000,
+        )
 
     def test_policy_loader_can_drop_stale_rollout_projection_before_resolution(self) -> None:
         redis = InMemoryRedis()
