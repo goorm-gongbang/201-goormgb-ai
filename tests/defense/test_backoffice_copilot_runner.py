@@ -114,6 +114,25 @@ def _passing_analysis_input() -> AnalysisInput:
 
 
 class BackofficeCopilotRunnerTests(unittest.TestCase):
+    def test_post_review_default_window_aligns_with_clickhouse_read_model_view_window(self) -> None:
+        """Post-Review 기본 window는 defense_session_rollups / defense_post_review_candidates_v1
+        VIEW의 window(600,000ms = 10분)와 반드시 일치해야 한다.
+        불일치 시 WHERE window_start_ms = X AND window_end_ms = Y exact-match 조건이
+        구조적으로 항상 0건을 반환하여 status=no_input / candidate_count=0이 된다.
+        이 테스트는 해당 회귀를 코드 수준에서 방지한다."""
+        from traffic_master_ai.defense.backoffice_copilot.runner import (
+            DEFAULT_POST_REVIEW_WINDOW_SECONDS,
+        )
+
+        CLICKHOUSE_SESSION_ROLLUP_VIEW_WINDOW_MS = 600_000  # 004_clickhouse_read_models.sql
+
+        self.assertEqual(
+            DEFAULT_POST_REVIEW_WINDOW_SECONDS * 1000,
+            CLICKHOUSE_SESSION_ROLLUP_VIEW_WINDOW_MS,
+            "Post-Review window must equal the ClickHouse VIEW window. "
+            "Mismatch causes structural no_input on every run.",
+        )
+
     def test_default_window_uses_previous_utc_ten_minute_bucket(self) -> None:
         window_start_ms, window_end_ms = resolve_default_post_review_window(
             now_ms=1776112567123

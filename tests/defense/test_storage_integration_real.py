@@ -239,8 +239,8 @@ class RealStorageIntegrationSmokeTest(unittest.TestCase):
 
     def test_clickhouse_ingest_and_read_models_real_smoke(self) -> None:
         ts_ms = 1712400000000
-        window_start_ms = ts_ms - (ts_ms % 300000)
-        window_end_ms = window_start_ms + 300000
+        window_start_ms = ts_ms - (ts_ms % 600000)
+        window_end_ms = window_start_ms + 600000
         archive_key = "ai-defense/audit/2026/04/06/storage_real_smoke.jsonl"
         payload = {
             "ts_ms": ts_ms,
