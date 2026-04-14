@@ -713,8 +713,19 @@ def _coerce_postgres_param_value(value: object) -> object:
 
 
 def _wrap_jsonb(value: object) -> object:
+    # psycopg2 는 `Json` 어댑터만 공식 제공하며, jsonb 컬럼도 자동 캐스트된다.
+    # 일부 배포의 `psycopg2.extras.Jsonb` 는 adapter 등록이 누락돼 `can't adapt type 'Jsonb'` 로 실패하므로
+    # psycopg2 경로에서는 반드시 `Json` 만 사용한다. psycopg(v3) 는 `Jsonb` 를 사용한다.
     try:
-        from psycopg.types.json import Jsonb
+        from psycopg2.extras import Json as _PG2Json
+
+        return _PG2Json(value)
     except Exception:
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-    return Jsonb(value)
+        pass
+    try:
+        from psycopg.types.json import Jsonb as _PG3Jsonb
+
+        return _PG3Jsonb(value)
+    except Exception:
+        pass
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
