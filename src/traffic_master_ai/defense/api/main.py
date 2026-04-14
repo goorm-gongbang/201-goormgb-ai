@@ -455,6 +455,8 @@ async def ai_precheck(
     authorization: str | None = Header(default=None, alias="Authorization"),
     x_user_id: str | None = Header(default=None, alias="X-User-Id"),
 ) -> AiPrecheckResponse:
+    # Legacy precheck/Turnstile gate는 더 이상 runtime 차단 조건으로 사용하지 않는다.
+    # Frontend 호환성을 위해 endpoint는 유지하되 항상 allow로 응답한다.
     sid = _resolve_session_id(
         request.headers.get("X-Auth-Sid") or request.headers.get("X-Session-Id"),
         authorization,
@@ -467,38 +469,16 @@ async def ai_precheck(
         authorization=authorization,
     )
     _remember_runtime_user_id(session_id=sid, user_id=user_id, now_ms=now_ms)
-    passed = await _verify_turnstile_token(req.cf_token)
     snap = _get_or_create_snapshot(state_key, now_ms)
-    if passed:
-        next_snap = _reset_match_state_for_new_booking_attempt(
-            snap=snap,
-            now_ms=now_ms,
-            user_id=user_id,
-        ).model_copy(
-            update={
-                "turnstile_verified": True,
-                "turnstile_verified_at_ms": now_ms,
-            }
-        )
-        _reset_sid_level_vqa_state(
-            sid=sid,
-            now_ms=now_ms,
-            user_id=user_id,
-        )
-        _decision_engine.session_state.delete(state_key)
-        _decision_engine.session_state.delete(sid)
-    else:
-        next_snap = snap.model_copy(
-            update={
-                "turnstile_verified": False,
-                "turnstile_verified_at_ms": 0,
-                "updated_ts_ms": now_ms,
-                "user_id": user_id or snap.user_id,
-            }
-        )
+    next_snap = snap.model_copy(
+        update={
+            "updated_ts_ms": now_ms,
+            "user_id": user_id or snap.user_id,
+        }
+    )
     _state_store.upsert(state_key, next_snap)
-    PRECHECK_REQUESTS.labels(result="pass" if passed else "fail").inc()
-    return AiPrecheckResponse(allowed=passed)
+    PRECHECK_REQUESTS.labels(result="pass").inc()
+    return AiPrecheckResponse(allowed=True)
 
 
 @app.post("/ai/telemetry/ingest", response_model=AiTelemetryIngestResponse, tags=["telemetry"])
@@ -659,27 +639,6 @@ async def ai_evaluate(
     )
 
     event_type = req.event.event_type
-
-    if event_type == "QUEUE_ENTER" and not _precheck_is_valid(snap, now_ms):
-        return _build_evaluate_response(
-            background_tasks=background_tasks,
-            action="BLOCK",
-            user_id=user_id,
-            session_id=state_key,
-            trace_id=trace_id,
-            block_trigger="ai_evaluate_precheck_block",
-            stage=event_type,
-            request_path=req.event.request_path,
-            request_method=req.event.request_method,
-            target_event_type=req.event.event_type,
-            flow_state=_target_event_to_flow_state(req.event.event_type),
-            runtime_state=snap,
-            reason_code="PRECHECK_REQUIRED",
-            audit_payload={
-                "precheck_valid": False,
-                "decision_reason": "precheck_block",
-            },
-        )
 
     if event_type == "SEAT_ENTRY":
         if not snap.vqa_passed:
