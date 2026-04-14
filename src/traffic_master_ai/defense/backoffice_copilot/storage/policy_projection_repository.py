@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
 import time
+from dataclasses import dataclass, field
 from typing import Any, Protocol, Sequence, cast
 
 from ...d0_mvp.state.redis_client import RedisLike, build_runtime_redis_from_env
@@ -146,6 +146,7 @@ class PostgresStrictPolicyAuthorityService:
     projection_retry_policy: ProjectionRetryPolicy = field(
         default_factory=ProjectionRetryPolicy
     )
+    engine: Any | None = None
 
     @classmethod
     def from_env(
@@ -156,22 +157,31 @@ class PostgresStrictPolicyAuthorityService:
     ) -> "PostgresStrictPolicyAuthorityService":
         validate_control_plane_projection_env_for_prod()
         engine = build_postgres_engine_from_env()
-        runtime_redis = redis_client
-        if runtime_redis is None:
-            runtime_redis, _ = build_runtime_redis_from_env()
-        retry_config = load_projection_sync_config_from_env()
-        return cls(
-            version_repository=PostgresPolicyVersionRepository(engine),
-            rollout_state_repository=PostgresPolicyRolloutStateRepository(engine),
-            rollout_event_repository=PostgresPolicyRolloutEventRepository(engine),
-            optimization_run_repository=PostgresPolicyOptimizationRunRepository(engine),
-            projection_repository=RedisRuntimePolicyProjectionRepository(runtime_redis),
-            projection_retry_policy=projection_retry_policy
-            or ProjectionRetryPolicy(
-                max_attempts=retry_config.retry_max_attempts,
-                backoff_ms=retry_config.retry_backoff_ms,
-            ),
-        )
+        try:
+            runtime_redis = redis_client
+            if runtime_redis is None:
+                runtime_redis, _ = build_runtime_redis_from_env()
+            retry_config = load_projection_sync_config_from_env()
+            return cls(
+                version_repository=PostgresPolicyVersionRepository(engine),
+                rollout_state_repository=PostgresPolicyRolloutStateRepository(engine),
+                rollout_event_repository=PostgresPolicyRolloutEventRepository(engine),
+                optimization_run_repository=PostgresPolicyOptimizationRunRepository(engine),
+                projection_repository=RedisRuntimePolicyProjectionRepository(runtime_redis),
+                projection_retry_policy=projection_retry_policy
+                or ProjectionRetryPolicy(
+                    max_attempts=retry_config.retry_max_attempts,
+                    backoff_ms=retry_config.retry_backoff_ms,
+                ),
+                engine=engine,
+            )
+        except Exception:
+            engine.dispose()
+            raise
+
+    def dispose(self) -> None:
+        if self.engine is not None:
+            self.engine.dispose()
 
     def save_policy_version(
         self,
@@ -263,10 +273,13 @@ def run_runtime_projection_sync_from_env(
     """Operational sync entry point using shared TM_* env settings."""
 
     service = PostgresStrictPolicyAuthorityService.from_env()
-    return service.sync_runtime_projection(
-        rollout_id=rollout_id,
-        additional_policy_versions=additional_policy_versions,
-    )
+    try:
+        return service.sync_runtime_projection(
+            rollout_id=rollout_id,
+            additional_policy_versions=additional_policy_versions,
+        )
+    finally:
+        service.dispose()
 
 
 def run_runtime_projection_resync_from_env(
@@ -277,10 +290,13 @@ def run_runtime_projection_resync_from_env(
     """Operational resync entry point using shared TM_* env settings."""
 
     service = PostgresStrictPolicyAuthorityService.from_env()
-    return service.resync_runtime_projection(
-        rollout_id=rollout_id,
-        additional_policy_versions=additional_policy_versions,
-    )
+    try:
+        return service.resync_runtime_projection(
+            rollout_id=rollout_id,
+            additional_policy_versions=additional_policy_versions,
+        )
+    finally:
+        service.dispose()
 
 
 @dataclass(slots=True)
