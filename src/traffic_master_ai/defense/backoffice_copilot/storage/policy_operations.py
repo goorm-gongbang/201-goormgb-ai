@@ -133,6 +133,7 @@ def run_policy_bootstrap(argv: Sequence[str] | None = None) -> None:
     args = parser.parse_args(sys.argv[1:] if argv is None else list(argv))
     _configure_logging()
     started = time.monotonic()
+    repositories: _PostgresPolicyBootstrapRepositoryBundle | None = None
     try:
         repositories = _build_bootstrap_repositories_from_env()
         result = bootstrap_baseline_policy(
@@ -155,6 +156,9 @@ def run_policy_bootstrap(argv: Sequence[str] | None = None) -> None:
         _log_command_summary("policy_bootstrap_summary", summary)
         print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
         raise SystemExit(1) from exc
+    finally:
+        if repositories is not None:
+            _dispose_if_supported(repositories)
     action = "planned" if result.dry_run else "applied"
     print(
         f"{action} policy_bootstrap policy_version={result.policy_version} "
@@ -211,6 +215,7 @@ def run_policy_projection_resync(argv: Sequence[str] | None = None) -> None:
         rollout_id=args.rollout_id,
         policy_version=args.policy_version,
     )
+    service: PostgresStrictPolicyAuthorityService | None = None
     try:
         service = PostgresStrictPolicyAuthorityService.from_env()
         result = _run_policy_projection_resync(
@@ -230,6 +235,9 @@ def run_policy_projection_resync(argv: Sequence[str] | None = None) -> None:
         _log_command_summary("policy_projection_resync_summary", summary)
         print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
         raise SystemExit(1) from exc
+    finally:
+        if service is not None:
+            _dispose_if_supported(service)
     print(
         "applied policy_projection_resync "
         f"projected_policy_versions={','.join(result.projected_policy_versions)} "
@@ -292,9 +300,10 @@ def _run_policy_projection_resync(
     raise ValueError("projection resync target must be current, rollout_id, or policy_version.")
 
 
-def _build_bootstrap_repositories_from_env() -> PolicyBootstrapRepositoryBundle:
+def _build_bootstrap_repositories_from_env() -> _PostgresPolicyBootstrapRepositoryBundle:
     engine = build_postgres_engine_from_env()
     return _PostgresPolicyBootstrapRepositoryBundle(
+        engine=engine,
         version_repository=PostgresPolicyVersionRepository(engine),
         rollout_state_repository=PostgresPolicyRolloutStateRepository(engine),
     )
@@ -302,8 +311,18 @@ def _build_bootstrap_repositories_from_env() -> PolicyBootstrapRepositoryBundle:
 
 @dataclass(slots=True)
 class _PostgresPolicyBootstrapRepositoryBundle:
+    engine: Any
     version_repository: PolicyVersionRepository
     rollout_state_repository: PolicyRolloutStateRepository
+
+    def dispose(self) -> None:
+        self.engine.dispose()
+
+
+def _dispose_if_supported(resource: object) -> None:
+    dispose = getattr(resource, "dispose", None)
+    if callable(dispose):
+        dispose()
 
 
 def _build_baseline_policy_record(snapshot: PolicySnapshot) -> PolicyVersionRecord:

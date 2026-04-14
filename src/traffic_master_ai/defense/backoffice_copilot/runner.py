@@ -19,9 +19,10 @@ from . import (
     build_openai_review_adapter,
     build_openai_summary_adapter,
 )
+from .analysis.fallback import DecisionAuditRowProvider
 from .core.models import DefenseAuditEventRow, PostReviewRunRecord, PostReviewSessionResultRecord
 from .core.state import AnalysisInput
-from .ingest import load_analysis_input
+from .ingest import load_analysis_input, load_defense_audit_events
 from .storage import (
     BackofficeClickHouseReadModelInput,
     ClickHousePostReviewCandidateRow,
@@ -194,7 +195,8 @@ def execute_post_review(
 ) -> PostReviewCliResult:
     started = time.monotonic() if started_at_monotonic is None else started_at_monotonic
     LOGGER.info(
-        "post_review_start match_id=%s window_start_ms=%s window_end_ms=%s input_source=%s input_count=%s dry_run=%s",
+        "post_review_start match_id=%s window_start_ms=%s window_end_ms=%s "
+        "input_source=%s input_count=%s dry_run=%s",
         config.match_id,
         config.window_start_ms,
         config.window_end_ms,
@@ -223,58 +225,65 @@ def execute_post_review(
         _log_post_review_summary(config=config, result=result)
         return result
 
-    selected_repository = repository
-    if config.dry_run:
-        selected_repository = DryRunPostReviewWriteRepository()
-    elif selected_repository is None:
-        selected_repository = PostgresPostReviewWriteRepository(
-            engine=build_postgres_engine_from_env(),
-            conflict_policy=config.conflict_policy,
-        )
+    owned_engine = None
+    try:
+        selected_repository = repository
+        if config.dry_run:
+            selected_repository = DryRunPostReviewWriteRepository()
+        elif selected_repository is None:
+            owned_engine = build_postgres_engine_from_env()
+            selected_repository = PostgresPostReviewWriteRepository(
+                engine=owned_engine,
+                conflict_policy=config.conflict_policy,
+            )
 
-    review_adapter, summary_adapter = _build_llm_adapters_from_env(config.require_llm)
-    workflow = build_backoffice_copilot_workflow(
-        BackofficeCopilotWorkflowDependencies(
-            audit_events_jsonl_path=None,
-            analysis_input_provider=lambda _: analysis_input,
-            repository=selected_repository,
-            conflict_policy=config.conflict_policy,
-            llm_review_adapter=review_adapter,
-            summary_adapter=summary_adapter,
-            export_dir=config.export_dir,
-            session_analysis_max_workers=config.session_analysis_max_workers,
-            review_max_workers=config.review_max_workers,
-            raw_fallback_provider=None,
-            repository_ready=True,
+        raw_fallback_provider = _build_raw_fallback_provider(config)
+        review_adapter, summary_adapter = _build_llm_adapters_from_env(config.require_llm)
+        workflow = build_backoffice_copilot_workflow(
+            BackofficeCopilotWorkflowDependencies(
+                audit_events_jsonl_path=None,
+                analysis_input_provider=lambda _: analysis_input,
+                repository=selected_repository,
+                conflict_policy=config.conflict_policy,
+                llm_review_adapter=review_adapter,
+                summary_adapter=summary_adapter,
+                export_dir=config.export_dir,
+                session_analysis_max_workers=config.session_analysis_max_workers,
+                review_max_workers=config.review_max_workers,
+                raw_fallback_provider=raw_fallback_provider,
+                repository_ready=True,
+            )
         )
-    )
-    workflow_result = workflow.invoke(_run_input_from_config(config))
-    candidate_count = len(workflow_result.state.candidate_sessions)
-    output_count = len(workflow_result.state.post_review_session_result_rows)
-    suspicious_count = (
-        workflow_result.state.post_review_runs_row.suspicious_count
-        if workflow_result.state.post_review_runs_row is not None
-        else 0
-    )
-    result = PostReviewCliResult(
-        status="completed" if workflow_result.final_status != "FAILED" else "failed",
-        final_status=workflow_result.final_status,
-        match_id=config.match_id,
-        window_start_ms=config.window_start_ms,
-        window_end_ms=config.window_end_ms,
-        dry_run=config.dry_run,
-        input_source=input_source,
-        input_count=input_count,
-        candidate_count=candidate_count,
-        output_count=output_count,
-        suspicious_count=suspicious_count,
-        skipped_count=max(input_count - candidate_count, 0),
-        warning_count=len(workflow_result.state.warnings),
-        error_count=len(workflow_result.state.errors),
-        duration_ms=_duration_ms(started),
-    )
-    _log_post_review_summary(config=config, result=result)
-    return result
+        workflow_result = workflow.invoke(_run_input_from_config(config))
+        candidate_count = len(workflow_result.state.candidate_sessions)
+        output_count = len(workflow_result.state.post_review_session_result_rows)
+        suspicious_count = (
+            workflow_result.state.post_review_runs_row.suspicious_count
+            if workflow_result.state.post_review_runs_row is not None
+            else 0
+        )
+        result = PostReviewCliResult(
+            status="completed" if workflow_result.final_status != "FAILED" else "failed",
+            final_status=workflow_result.final_status,
+            match_id=config.match_id,
+            window_start_ms=config.window_start_ms,
+            window_end_ms=config.window_end_ms,
+            dry_run=config.dry_run,
+            input_source=input_source,
+            input_count=input_count,
+            candidate_count=candidate_count,
+            output_count=output_count,
+            suspicious_count=suspicious_count,
+            skipped_count=max(input_count - candidate_count, 0),
+            warning_count=len(workflow_result.state.warnings),
+            error_count=len(workflow_result.state.errors),
+            duration_ms=_duration_ms(started),
+        )
+        _log_post_review_summary(config=config, result=result)
+        return result
+    finally:
+        if owned_engine is not None:
+            owned_engine.dispose()
 
 
 def build_analysis_input_from_clickhouse_read_models(
@@ -300,7 +309,9 @@ def _candidate_row_to_audit_events(
 ) -> tuple[DefenseAuditEventRow, ...]:
     first_ts_ms = rollup.first_ts_ms if rollup is not None else candidate.first_ts_ms
     last_ts_ms = rollup.last_ts_ms if rollup is not None else candidate.last_ts_ms
-    latest_action = candidate.latest_action or (rollup.latest_action if rollup is not None else None)
+    latest_action = candidate.latest_action or (
+        rollup.latest_action if rollup is not None else None
+    )
     latest_tier = candidate.latest_risk_tier or (
         rollup.latest_risk_tier if rollup is not None else None
     )
@@ -311,7 +322,10 @@ def _candidate_row_to_audit_events(
         rollup.latest_policy_version if rollup is not None else None
     )
     latest_flow_state = rollup.latest_flow_state if rollup is not None else None
-    block_action_count = max(candidate.block_action_count, rollup.block_action_count if rollup else 0)
+    block_action_count = max(
+        candidate.block_action_count,
+        rollup.block_action_count if rollup else 0,
+    )
     throttle_action_count = max(
         candidate.throttle_action_count,
         rollup.throttle_action_count if rollup else 0,
@@ -364,14 +378,20 @@ def _candidate_row_to_audit_events(
     for index in range(max(challenge_issue_count - challenge_verified_count, 0)):
         events.append(
             DefenseAuditEventRow(
-                ts_ms=min(last_ts_ms, first_ts_ms + block_action_count + throttle_action_count + index),
+                ts_ms=min(
+                    last_ts_ms,
+                    first_ts_ms + block_action_count + throttle_action_count + index,
+                ),
                 trace_id=f"{candidate.session_id}:challenge:{index}",
                 session_id=candidate.session_id,
                 event_type="S3_CHALLENGE_RESULT",
                 payload={
                     **payload,
                     "challenge": {"result": "FAIL"},
-                    "result": {"status": "FAIL", "reasonCode": latest_reason_code or candidate.candidate_reason},
+                    "result": {
+                        "status": "FAIL",
+                        "reasonCode": latest_reason_code or candidate.candidate_reason,
+                    },
                 },
             )
         )
@@ -447,6 +467,35 @@ def _build_llm_adapters_from_env(require_llm: bool) -> tuple[object | None, obje
             timeout_ms=timeout_ms,
         ),
     )
+
+
+def _build_raw_fallback_provider(
+    config: PostReviewExecutionConfig,
+) -> DecisionAuditRowProvider | None:
+    if not config.use_raw_audit_fallback:
+        return None
+    if config.fixture_jsonl_path is None:
+        raise ValueError(
+            "--use-raw-audit-fallback requires --fixture-jsonl until a ClickHouse raw "
+            "audit fallback provider is available."
+        )
+    fixture_jsonl_path = config.fixture_jsonl_path
+
+    def _provider(
+        session_id: str,
+        window_start_ms: int,
+        window_end_ms: int,
+        limit: int,
+    ) -> Sequence[DefenseAuditEventRow]:
+        rows = load_defense_audit_events(
+            fixture_jsonl_path,
+            window_start_ms=window_start_ms,
+            window_end_ms=window_end_ms,
+            limit=limit,
+        )
+        return tuple(row for row in rows if row.session_id == session_id)
+
+    return _provider
 
 
 def _run_input_from_config(config: PostReviewExecutionConfig) -> PostReviewRunInput:

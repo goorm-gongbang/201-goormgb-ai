@@ -153,6 +153,36 @@ class _FakeRedisClient:
 class _RepositoryBundle:
     version_repository: _FakePolicyVersionRepository
     rollout_state_repository: _FakePolicyRolloutStateRepository
+    disposed: bool = False
+
+    def dispose(self) -> None:
+        self.disposed = True
+
+
+class _DisposableService:
+    def __init__(self, service: PostgresStrictPolicyAuthorityService) -> None:
+        self.service = service
+        self.disposed = False
+        self.version_repository = service.version_repository
+        self.rollout_state_repository = service.rollout_state_repository
+        self.rollout_event_repository = service.rollout_event_repository
+        self.optimization_run_repository = service.optimization_run_repository
+        self.projection_repository = service.projection_repository
+        self.projection_retry_policy = service.projection_retry_policy
+
+    def refresh_current_runtime_projection(self, *, additional_policy_versions=()):
+        return self.service.refresh_current_runtime_projection(
+            additional_policy_versions=additional_policy_versions
+        )
+
+    def resync_runtime_projection(self, *, rollout_id, additional_policy_versions=()):
+        return self.service.resync_runtime_projection(
+            rollout_id=rollout_id,
+            additional_policy_versions=additional_policy_versions,
+        )
+
+    def dispose(self) -> None:
+        self.disposed = True
 
 
 class PolicyOperationsCommandTests(unittest.TestCase):
@@ -249,15 +279,36 @@ class PolicyOperationsCommandTests(unittest.TestCase):
         self.assertEqual(summary["command"], "tm-ai-policy-bootstrap")
         self.assertEqual(summary["status"], "success")
         self.assertEqual(summary["output_count"], 2)
+        self.assertTrue(repositories.disposed)
+
+    def test_bootstrap_cli_disposes_repositories_after_failure(self) -> None:
+        repositories = _RepositoryBundle(
+            version_repository=_FailingPolicyVersionRepository(),
+            rollout_state_repository=_FakePolicyRolloutStateRepository(),
+        )
+        stdout = io.StringIO()
+
+        with patch(
+            "traffic_master_ai.defense.backoffice_copilot.storage.policy_operations."
+            "_build_bootstrap_repositories_from_env",
+            return_value=repositories,
+        ):
+            with patch("sys.argv", ["tm-ai-policy-bootstrap", "--dry-run"]):
+                with redirect_stdout(stdout):
+                    with self.assertRaises(SystemExit):
+                        run_policy_bootstrap()
+
+        self.assertTrue(repositories.disposed)
 
     def test_projection_resync_cli_defaults_to_current_active_rollout(self) -> None:
         service, redis_client, rollout_repository = _service_with_fake_repositories()
+        disposable_service = _DisposableService(service)
         stdout = io.StringIO()
 
         with patch(
             "traffic_master_ai.defense.backoffice_copilot.storage.policy_operations."
             "PostgresStrictPolicyAuthorityService.from_env",
-            return_value=service,
+            return_value=disposable_service,
         ):
             with patch("sys.argv", ["tm-ai-policy-projection-resync"]):
                 with redirect_stdout(stdout):
@@ -270,6 +321,7 @@ class PolicyOperationsCommandTests(unittest.TestCase):
         self.assertEqual(summary["command"], "tm-ai-policy-projection-resync")
         self.assertEqual(summary["scope"], "current")
         self.assertEqual(summary["status"], "success")
+        self.assertTrue(disposable_service.disposed)
 
     def test_projection_resync_cli_can_target_specific_rollout_or_policy_version(self) -> None:
         service, redis_client, _ = _service_with_fake_repositories()
@@ -321,12 +373,13 @@ class PolicyOperationsCommandTests(unittest.TestCase):
     def test_projection_resync_cli_surfaces_missing_current_rollout(self) -> None:
         service, _, _ = _service_with_fake_repositories()
         service.rollout_state_repository = _FakePolicyRolloutStateRepository()
+        disposable_service = _DisposableService(service)
         stdout = io.StringIO()
 
         with patch(
             "traffic_master_ai.defense.backoffice_copilot.storage.policy_operations."
             "PostgresStrictPolicyAuthorityService.from_env",
-            return_value=service,
+            return_value=disposable_service,
         ):
             with patch("sys.argv", ["tm-ai-policy-projection-resync", "--current"]):
                 with redirect_stdout(stdout):
@@ -338,6 +391,7 @@ class PolicyOperationsCommandTests(unittest.TestCase):
         self.assertEqual(summary["scope"], "current")
         self.assertEqual(summary["status"], "failed")
         self.assertIn("policy_rollout_state", summary["error"])
+        self.assertTrue(disposable_service.disposed)
 
 
 def _service_with_fake_repositories() -> tuple[

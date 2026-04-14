@@ -1,11 +1,18 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import json
+import tempfile
 import unittest
+from datetime import UTC, datetime
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from traffic_master_ai.defense.backoffice_copilot.core.models import DefenseAuditEventRow
-from traffic_master_ai.defense.backoffice_copilot.core.state import AnalysisInput, PostReviewRunInput
+from traffic_master_ai.defense.backoffice_copilot.core.state import (
+    AnalysisInput,
+    PostReviewRunInput,
+)
 from traffic_master_ai.defense.backoffice_copilot.runner import (
     PostReviewExecutionConfig,
     _config_from_args,
@@ -50,6 +57,29 @@ class _RecordingRepository:
 
     def save_bundle(self, run_record, session_records) -> None:
         self.calls.append(("save_bundle", run_record, tuple(session_records)))
+
+
+class _DisposableEngine:
+    def __init__(self) -> None:
+        self.disposed = False
+
+    def dispose(self) -> None:
+        self.disposed = True
+
+
+class _PostgresRepositoryStub:
+    def __init__(self, *, engine, conflict_policy) -> None:
+        self.engine = engine
+        self.conflict_policy = conflict_policy
+
+    def save_run(self, run_record) -> None:
+        del run_record
+
+    def save_session_results(self, session_records) -> None:
+        del session_records
+
+    def save_bundle(self, run_record, session_records) -> None:
+        del run_record, session_records
 
 
 def _run_input() -> PostReviewRunInput:
@@ -241,6 +271,117 @@ class BackofficeCopilotRunnerTests(unittest.TestCase):
         self.assertEqual(result.status, "completed")
         self.assertEqual(result.output_count, 1)
         self.assertTrue(result.dry_run)
+
+    def test_execute_post_review_disposes_owned_postgres_engine(self) -> None:
+        engine = _DisposableEngine()
+
+        with patch(
+            "traffic_master_ai.defense.backoffice_copilot.runner.build_postgres_engine_from_env",
+            return_value=engine,
+        ):
+            with patch(
+                "traffic_master_ai.defense.backoffice_copilot.runner."
+                "PostgresPostReviewWriteRepository",
+                _PostgresRepositoryStub,
+            ):
+                result = execute_post_review(
+                    config=PostReviewExecutionConfig(
+                        match_id="match-engine",
+                        window_start_ms=100,
+                        window_end_ms=200,
+                        review_max_workers=1,
+                        session_analysis_max_workers=1,
+                    ),
+                    analysis_input=_passing_analysis_input(),
+                    input_source="clickhouse_read_model",
+                    input_count=1,
+                )
+
+        self.assertEqual(result.status, "completed")
+        self.assertTrue(engine.disposed)
+
+    def test_execute_post_review_rejects_raw_fallback_without_fixture_provider(self) -> None:
+        with self.assertRaises(ValueError) as exc_info:
+            execute_post_review(
+                config=PostReviewExecutionConfig(
+                    match_id="match-raw-clickhouse",
+                    window_start_ms=100,
+                    window_end_ms=200,
+                    use_raw_audit_fallback=True,
+                    review_max_workers=1,
+                    session_analysis_max_workers=1,
+                ),
+                analysis_input=_passing_analysis_input(),
+                input_source="clickhouse_read_model",
+                input_count=1,
+                repository=_RecordingRepository(),
+            )
+
+        self.assertIn("--fixture-jsonl", str(exc_info.exception))
+
+    def test_execute_post_review_wires_fixture_raw_fallback_provider(self) -> None:
+        captured: dict[str, BackofficeCopilotWorkflowDependencies] = {}
+
+        def _fake_workflow_factory(dependencies):
+            captured["dependencies"] = dependencies
+
+            class _Workflow:
+                def invoke(self, run_input):
+                    del run_input
+                    return SimpleNamespace(
+                        final_status="SUCCESS",
+                        state=SimpleNamespace(
+                            candidate_sessions=[],
+                            post_review_session_result_rows=[],
+                            post_review_runs_row=None,
+                            warnings=[],
+                            errors=[],
+                        ),
+                    )
+
+            return _Workflow()
+
+        with tempfile.TemporaryDirectory() as directory:
+            fixture_path = Path(directory) / "audit.jsonl"
+            fixture_path.write_text(
+                json.dumps(
+                    {
+                        "ts_ms": 150,
+                        "trace_id": "trace-raw",
+                        "session_id": "sess-raw",
+                        "event_type": "DEF_ORCH_EXECUTED",
+                        "payload": {"latest_action": "BLOCK"},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch(
+                "traffic_master_ai.defense.backoffice_copilot.runner."
+                "build_backoffice_copilot_workflow",
+                _fake_workflow_factory,
+            ):
+                execute_post_review(
+                    config=PostReviewExecutionConfig(
+                        match_id="match-raw-fixture",
+                        window_start_ms=100,
+                        window_end_ms=200,
+                        use_raw_audit_fallback=True,
+                        fixture_jsonl_path=fixture_path,
+                    ),
+                    analysis_input=_passing_analysis_input(),
+                    input_source="fixture_jsonl",
+                    input_count=1,
+                    repository=_RecordingRepository(),
+                )
+
+            provider = captured["dependencies"].raw_fallback_provider
+            self.assertIsNotNone(provider)
+            assert provider is not None
+            rows = provider("sess-raw", 100, 200, 10)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0].session_id, "sess-raw")
 
 
 if __name__ == "__main__":
