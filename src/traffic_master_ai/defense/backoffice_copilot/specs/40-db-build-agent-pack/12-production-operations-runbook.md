@@ -260,6 +260,131 @@ PY
 - `policy_rollout_events`는 append-only다.
 - strict mode의 optimizer/admin write는 local store/direct Redis/file fallback이 아니라 위 surface를 통해 PostgreSQL authoritative write 후 Redis projection sync로 이어져야 한다.
 
+### 5.4 Post-Review 운영 CLI
+
+command:
+
+- `tm-ai-post-review`
+
+기본 입력:
+
+- ClickHouse `defense_session_rollups`
+- ClickHouse `defense_post_review_candidates_v1`
+
+기본 출력:
+
+- PostgreSQL `post_review_runs`
+- PostgreSQL `post_review_session_results`
+
+선택 옵션:
+
+- `--match-id`
+- `--window-start-ms`
+- `--window-end-ms`
+- `--window-seconds`
+
+운영 옵션:
+
+- `--limit`
+- `--dry-run`
+- `--conflict-policy upsert|fail_fast`
+- `--require-llm`
+- `--export-dir`
+
+local/dev 전용 옵션:
+
+- `--fixture-jsonl`
+- `--use-raw-audit-fallback`
+
+예시:
+
+```bash
+tm-ai-post-review \
+  --match-id match-20260414-0001 \
+  --window-start-ms 1776111600000 \
+  --window-end-ms 1776112200000 \
+  --limit 1000 \
+  --dry-run
+```
+
+동작 규칙:
+
+- 기본 실행은 fixture JSONL을 읽지 않는다.
+- fixture JSONL은 `--fixture-jsonl`을 명시한 local/dev 실행에서만 쓴다.
+- window를 명시하지 않으면 UTC 기준 현재 시각을 10분 단위로 내림하고, 그 직전 10분 구간을 사용한다.
+- 기본 window는 `[window_start_ms, window_end_ms]` 값으로 workflow에 전달된다.
+- `--match-id`를 명시하지 않으면 `post-review-<window_end_utc_yyyymmddhhmm>` 형식으로 생성한다.
+- 같은 기본 window를 재실행하면 같은 기본 `match_id`가 생성된다.
+- `--dry-run`은 ClickHouse 입력과 workflow를 실행하지만 PostgreSQL에는 쓰지 않는다.
+- 입력 candidate row가 0개면 status `no_input`으로 종료하고 PostgreSQL에 쓰지 않는다.
+- 같은 window 재실행의 idempotency key는 `match_id`다.
+- 기본 `--conflict-policy upsert`는 `post_review_runs.match_id`, `post_review_session_results(match_id, session_id)`를 overwrite한다.
+- `--conflict-policy fail_fast`는 같은 key 중복을 운영 오류로 surfaced 한다.
+- 실행 결과는 JSON stdout으로 `mode`, `status`, `input_count`, `candidate_count`, `output_count`, `skipped_count`, `warning_count`, `error_count`, `duration_ms`, `dry_run`을 남긴다.
+
+Discord / notification:
+
+- Discord payload builder, Discord webhook sender, Discord Secret, notification retry 설계는 이 command 범위가 아니다.
+- Discord 본문 authority는 후속 작업에서도 PostgreSQL `post_review_*`를 기준으로 둔다.
+
+### 5.5 command exit code / summary 계약
+
+공통 원칙:
+
+- 정상 성공, 정상 skip, `no_input`, `dry_run`은 exit code `0`이다.
+- 설정 누락, DB/Redis/ClickHouse 연결 실패, migration 전제조건 실패, workflow `FAILED`는 exit code `1`이다.
+- 각 command는 마지막 stdout 줄에 JSON summary를 출력한다.
+- 운영 로그는 `<command>_summary` 형태의 단일 summary event를 남긴다.
+
+summary 공통 필드:
+
+- `command`: 실행 command 이름
+- `mode`: `dry_run`, `apply`, `disabled`, `fixture_dry_run`, `fixture_apply`
+- `status`: `success`, `skip`, `no_input`, `dry_run`, `disabled`, `failed` 또는 worker 세부 status
+- `input_count`: 읽거나 평가한 대상 수
+- `output_count`: 쓰거나 반영한 대상 수
+- `skipped_count`: 정상적으로 건너뛴 대상 수
+- `error_count`: 실패 수
+- `duration_ms`: command 시작부터 summary 생성까지 걸린 시간
+- `dry_run`: write side effect 비활성 여부
+
+command별 정상 skip:
+
+- `tm-ai-policy-bootstrap`: 기존 policy/rollout row가 모두 있으면 `status=skip`, exit `0`
+- `tm-ai-policy-optimizer`: disabled, lock_missed, no_change, waiting, insufficient_data, cooldown, dry_run은 exit `0`
+- `tm-ai-post-review`: candidate row 0개는 `status=no_input`, exit `0`, PostgreSQL write 없음
+
+command별 fail-fast:
+
+- `tm-ai-storage-migrate`: `TM_PG_URL` 누락, SQL file 누락, DDL 실행 실패
+- `tm-ai-policy-bootstrap`: `TM_PG_URL` 누락, `policy_versions`/`policy_rollout_state` table 부재, seed read/write 실패
+- `tm-ai-policy-projection-resync`: `TM_PG_URL`/`TM_REDIS_URL` 누락, current rollout row 부재, policy row 부재, Redis apply 실패
+- `tm-ai-policy-optimizer`: prod 필수 env 누락, unsafe fallback env, `TM_CLICKHOUSE_URL` 누락, invalid numeric env
+- `tm-ai-post-review`: ClickHouse read 실패, PostgreSQL write 실패, `--require-llm` 상태에서 LLM key 누락, workflow `FAILED`
+
+### 5.6 ArgoCD 자동 배포 순서
+
+최종 자동화 순서:
+
+1. ArgoCD PreSync Job 1: `tm-ai-storage-migrate`
+2. ArgoCD PreSync Job 2: `tm-ai-policy-bootstrap`
+3. ArgoCD PreSync Job 3: `tm-ai-policy-projection-resync --current`
+4. `ai-defense` Deployment rollout
+5. `tm-ai-policy-optimizer` CronJob
+6. `tm-ai-post-review` CronJob
+
+운영 계약:
+
+- 사람이 수동 one-shot Job을 치는 배포 절차로 만들지 않는다.
+- PreSync Job 3개는 ArgoCD sync 내부 단계로 숨긴다.
+- PreSync 실패 시 이후 Deployment와 CronJob rollout은 진행하지 않는다.
+- SQL 수동 적용은 요청하지 않고 AI image command가 DDL, bootstrap, projection resync를 책임진다.
+- optimizer와 post-review는 새 generic chart보다 기존 `ai-etl` CronJob 패턴 복제를 우선 검토한다.
+
+세부 인프라 전달 계약:
+
+- [18-argocd-presync-infra-handoff.md](/Users/shadowmoon/Desktop/실무프로젝트/201-goormgb-ai-1/src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/18-argocd-presync-infra-handoff.md)
+
 ---
 
 ## 6. migration / bootstrap / cutover / rollback
@@ -267,6 +392,8 @@ PY
 ### 6.1 migration 순서
 
 1. PostgreSQL DDL 적용
+   - command: `tm-ai-storage-migrate`
+   - scope: PostgreSQL DDL only
    - `001_post_review_tables.sql`
    - `002_postgresql_policy_control_plane_tables.sql`
 2. ClickHouse DDL 적용
@@ -277,9 +404,12 @@ PY
 
 ### 6.2 bootstrap 순서
 
-1. PostgreSQL `policy_versions`에 base policy document 저장
-2. PostgreSQL `policy_rollout_state`에 current rollout row 저장
-3. `PostgresStrictPolicyAuthorityService.resync_runtime_projection()` 실행
+1. `tm-ai-policy-bootstrap --dry-run`으로 seed 계획 확인
+2. `tm-ai-policy-bootstrap`으로 PostgreSQL seed 반영
+   - `policy_versions`에 baseline policy document가 없으면 생성
+   - `policy_rollout_state`에 대상 `rollout_id` row가 없으면 생성
+   - 기존 row가 있으면 overwrite하지 않고 skip
+3. `tm-ai-policy-projection-resync --current`로 Redis projection 반영
 4. Redis key 3종 확인
    - `tm:decision-policy:version:{policyVersion}`
    - `tm:decision-policy:rollout-state`
@@ -288,6 +418,13 @@ PY
 
 주의:
 
+- schema migration, bootstrap, Redis projection resync는 같은 command에 묶지 않는다.
+- `tm-ai-policy-bootstrap`은 PostgreSQL seed만 수행하고 Redis projection을 쓰지 않는다.
+- `tm-ai-policy-projection-resync` 기본 범위는 active rollout row이며, 특정 `rollout_id` 또는 특정 `policy_version`만 지정할 수 있다.
+- 전체 table scan 기반 full resync는 현재 운영 command 범위가 아니다.
+- migration이 안 된 상태에서 bootstrap을 실행하면 PostgreSQL table 부재 오류를 `status=failed`, exit `1`로 surfaced 한다.
+- active/latest rollout row가 없을 때 resync는 `status=failed`, exit `1`로 종료한다.
+- PG/Redis env 누락은 command 시작 단계에서 fail-fast 한다.
 - prod에서는 baseline bootstrap direct write를 주경로로 사용하지 않는다.
 - 정상 bootstrap source는 PostgreSQL authoritative rows다.
 
@@ -351,19 +488,302 @@ PY
 3. projection sync나 rollout promotion을 이어서 진행하지 않는다
 4. 같은 write call을 재시도하거나 admin/operator input을 보정한다
 
+### 7.5 Post-Review 실행 실패
+
+1. stdout JSON의 `status`, `final_status`, `warning_count`, `error_count`를 확인한다.
+2. `input_source=clickhouse_read_model`이면 `TM_CLICKHOUSE_URL`과 ClickHouse read model table/view 존재를 먼저 확인한다.
+3. `TM_PG_URL` 누락 또는 SQLAlchemy import 실패는 write 경로 문제로 분리한다.
+4. `no_input`은 정상 no-op이다. 같은 window에 candidate row가 존재해야 하는 상황이면 ClickHouse rollup/candidate 생성 경로를 확인한다.
+5. `fail_fast` conflict 오류는 같은 `match_id` 재실행인지 먼저 확인한다.
+6. Discord 미전송은 이 command의 장애가 아니다.
+
 ---
 
-## 8. 현재 남는 운영 gap
+## 8. runtime / optimizer env contract
+
+### 8.1 ai-defense runtime 필수 env
+
+prod strict runtime:
+
+- `TM_ENV=prod`
+- `TM_REDIS_URL`
+- `TM_ROLLOUT_SALT`
+- `TM_POLICY_ALLOW_LOCAL_FALLBACK=false`
+- `TM_ALLOW_IN_MEMORY_REDIS=false`
+
+PostgreSQL authoritative projection:
+
+- `TM_PG_URL`
+- `TM_REDIS_URL`
+- `TM_PROJECTION_RETRY_MAX_ATTEMPTS`
+- `TM_PROJECTION_RETRY_BACKOFF_MS`
+
+runtime freshness:
+
+- `TM_POLICY_PROJECTION_MAX_STALENESS_MS`
+- 기본값은 300000ms
+- 값이 설정되면 stale projection은 strict runtime에서 fail-fast 계열 오류로 다룬다.
+
+fallback 기준:
+
+- prod에서는 file policy fallback과 in-memory Redis fallback을 허용하지 않는다.
+- CI/local에서는 명시적으로 허용된 경우에만 fallback을 쓴다.
+- projection reconciler는 strict authority, `TM_PG_URL`, `TM_REDIS_URL`, Redis backend 조건이 모두 맞을 때만 활성화된다.
+
+### 8.2 tm-ai-policy-optimizer 실행 계약
+
+command:
+
+- `tm-ai-policy-optimizer`
+
+skip 조건:
+
+- `TM_POLICY_OPTIMIZER_ENABLED=false` 또는 미설정이면 status `disabled`로 종료한다.
+
+fail-fast 조건:
+
+- `TM_POLICY_OPTIMIZER_DRY_RUN=false`인데 `TM_POLICY_OPTIMIZER_APPLY_ENABLED=true`가 아님
+- prod에서 `TM_PG_URL`, `TM_REDIS_URL`, `TM_ROLLOUT_SALT` 누락
+- prod에서 `TM_POLICY_ALLOW_LOCAL_FALLBACK=true`
+- prod에서 `TM_ALLOW_IN_MEMORY_REDIS=true`
+- `TM_CLICKHOUSE_URL` 누락
+- strict authority mode에서 `TM_PG_URL` 누락
+- active rollout state 부재
+- Redis projection missing/stale/mismatch
+- mutation 후 authoritative state와 Redis projection post-check 불일치
+- invalid numeric env
+
+dry-run 조건:
+
+- `TM_POLICY_OPTIMIZER_DRY_RUN=true`
+- Redis lock은 사용한다.
+- baseline bootstrap, canary start, rollout expand, rollback은 수행하지 않는다.
+- active rollout이 없으면 metrics read까지만 수행한다.
+- active rollout이 있으면 guardrail read/evaluate까지만 수행하고 결과를 `wouldStatus`로 출력한다.
+
+apply 조건:
+
+- `TM_POLICY_OPTIMIZER_ENABLED=true`
+- `TM_POLICY_OPTIMIZER_DRY_RUN=false`
+- `TM_POLICY_OPTIMIZER_APPLY_ENABLED=true`
+- Redis lock 획득 성공
+- strict authority와 storage env 검증 성공
+- active rollout state 존재
+- PostgreSQL authoritative state와 Redis projection 일치
+- proposal 또는 rollout guardrail 조건 충족
+
+auto-apply 허용 mutation:
+
+- canary start: baseline `FULL` rollout에서 proposal이 있고 precondition/post-check가 모두 통과할 때 허용
+- rollout expand: `CANARY` 또는 `EXPAND` stage가 경과했고 guardrail rollback 조건이 없을 때 허용
+- rollback: `CANARY` 또는 `EXPAND` stage에서 guardrail rollback 조건이 발생했을 때 허용
+
+apply 금지 상태:
+
+- `apply_blocked`: apply gate 누락
+- `no_active_rollout`: active rollout 없음
+- `no_candidate_or_no_baseline`: stage에 필요한 base/candidate policy version 누락
+- `projection_not_ready`: Redis projection missing/stale/mismatch
+- `metrics_read_failed`: ClickHouse metrics read 실패
+- `insufficient_data`: guardrail 비교 데이터 부족
+- `rollout_waiting`, `rollback_cooling_down`, `rollout_cooling_down`: 시간 조건 미충족
+
+post-check 검증:
+
+- mutation 이후 PostgreSQL rollout state를 다시 읽는다.
+- Redis `tm:decision-policy:rollout-state`를 다시 읽는다.
+- stage, base policy version, candidate policy version, ratio, updated_at_ms가 authoritative state와 일치해야 한다.
+- Redis version index에 필요한 base/candidate policy version이 있어야 한다.
+- Redis policy version key가 필요한 base/candidate version마다 있어야 한다.
+- `projection_refreshed_at_ms`가 존재하고 양수여야 한다.
+- post-check 실패는 `status=failed`, exit `1`이다.
+
+상태 출력:
+
+- `apply_blocked`
+- `disabled`
+- `failed`
+- `lock_missed`
+- `metrics_read_failed`
+- `no_active_rollout`
+- `no_candidate_or_no_baseline`
+- `no_change`
+- `projection_not_ready`
+- `proposal_applied`
+- `rollout_waiting`
+- `insufficient_data`
+- `rollout_expanded`
+- `rolled_back`
+- `rollback_cooling_down`
+- `rollout_cooling_down`
+- `dry_run`
+
+summary 해석:
+
+- `disabled`: 정상 skip, exit `0`
+- `lock_missed`: 다른 worker가 실행 중인 정상 skip, exit `0`
+- `no_change`: proposal 없음, exit `0`
+- `rollout_waiting`: canary/expand window 미도달, exit `0`
+- `insufficient_data`: guardrail 비교 데이터 부족, exit `0`
+- `rollback_cooling_down`, `rollout_cooling_down`: cooldown 중, exit `0`
+- `dry_run`: mutation 없이 metrics/guardrail 평가만 수행, exit `0`
+- `proposal_applied`, `rollout_expanded`, `rolled_back`: apply side effect 발생, exit `0`
+- `apply_blocked`, `no_active_rollout`, `no_candidate_or_no_baseline`, `projection_not_ready`, `metrics_read_failed`, `failed`: exit `1`
+
+summary 추가 필드:
+
+- `apply_enabled`: `TM_POLICY_OPTIMIZER_APPLY_ENABLED` 반영 여부
+- `guardrail_result`: rollout guardrail 평가 결과
+- `attempted_action`: 시도한 mutation
+- `applied_action`: 실제 수행한 mutation
+- `verification_status`: `success`, `failed`, `not_checked`
+
+기본값:
+
+- `TM_POLICY_OPTIMIZER_WINDOW_SECONDS=600`
+- `TM_POLICY_OPTIMIZER_CANARY_RATIO=0.05`
+- `TM_POLICY_OPTIMIZER_MIN_APPLY_COOLDOWN_SECONDS=300`
+- `TM_POLICY_OPTIMIZER_ROLLOUT_ID=offline-optimizer-default`
+- `TM_POLICY_OPTIMIZER_LOCK_TTL_SECONDS=300`
+
+### 8.3 Helm에 전달할 최소 env 목록
+
+ai-defense Deployment:
+
+- `TM_ENV`
+- `TM_REDIS_URL`
+- `TM_ROLLOUT_SALT`
+- `TM_POLICY_ALLOW_LOCAL_FALLBACK=false`
+- `TM_ALLOW_IN_MEMORY_REDIS=false`
+- `TM_POLICY_PROJECTION_MAX_STALENESS_MS`
+- `TM_PG_URL`
+- `TM_PROJECTION_RETRY_MAX_ATTEMPTS`
+- `TM_PROJECTION_RETRY_BACKOFF_MS`
+
+ai-policy-optimizer CronJob:
+
+- `TM_POLICY_OPTIMIZER_ENABLED=true`
+- `TM_POLICY_OPTIMIZER_DRY_RUN`
+- `TM_POLICY_OPTIMIZER_APPLY_ENABLED`
+- `TM_PG_URL`
+- `TM_REDIS_URL`
+- `TM_CLICKHOUSE_URL`
+- `TM_ROLLOUT_SALT`
+- `TM_POLICY_ALLOW_LOCAL_FALLBACK=false`
+- `TM_ALLOW_IN_MEMORY_REDIS=false`
+
+선택 env:
+
+- `TM_POLICY_OPTIMIZER_BOOTSTRAP_BASELINE`
+- `TM_POLICY_OPTIMIZER_WINDOW_SECONDS`
+- `TM_POLICY_OPTIMIZER_CANARY_RATIO`
+- `TM_POLICY_OPTIMIZER_MIN_APPLY_COOLDOWN_SECONDS`
+- `TM_POLICY_OPTIMIZER_ROLLOUT_ID`
+- `TM_POLICY_OPTIMIZER_LOCK_TTL_SECONDS`
+- `TM_CLICKHOUSE_AUDIT_TABLE`
+- `TM_CLICKHOUSE_INGEST_TIMEOUT_MS`
+- `TM_PROJECTION_RETRY_MAX_ATTEMPTS`
+- `TM_PROJECTION_RETRY_BACKOFF_MS`
+
+tm-ai-post-review CronJob:
+
+- `TM_CLICKHOUSE_URL`
+- `TM_PG_URL`
+
+선택 env:
+
+- `TM_OFFLINE_LLM_API_KEY`
+- `OPENAI_API_KEY`
+- `TM_OFFLINE_LLM_MODEL`
+- `TM_OFFLINE_LLM_ENDPOINT` 또는 `OPENAI_BASE_URL`
+- `TM_OFFLINE_LLM_TIMEOUT_MS`
+
+LLM key 조건:
+
+- 기본 CronJob command에는 `--require-llm`을 붙이지 않는다.
+- `--require-llm`을 붙이는 운영 모드에서만 `TM_OFFLINE_LLM_API_KEY` 또는 `OPENAI_API_KEY`가 필수다.
+
+기본 schedule 계약:
+
+- `tm-ai-post-review`는 window/match_id 자동 계산이 있으므로 CronJob command에 시간 인자를 넣지 않아도 된다.
+- 기본 window는 UTC 10분 bucket 기준 직전 10분이다.
+- 같은 bucket 재실행은 같은 `match_id`로 idempotent upsert 된다.
+
+secret key 후보:
+
+- `TM_PG_URL`
+- `TM_REDIS_URL`
+- `TM_CLICKHOUSE_URL`
+- `TM_OFFLINE_LLM_API_KEY`
+- `OPENAI_API_KEY`
+- `LANGSMITH_API_KEY`
+
+협의 보류:
+
+- OpenAI / LangSmith key를 어느 Secret에 둘지는 인프라/보안 후속 협의에서 결정한다.
+- managed Redis TLS URL 형식과 Secret 위치는 303 레포 작업에서 확정한다.
+
+배포 방식 후속안:
+
+- 기본안은 기존 `ai-etl` chart 복제 수준의 `ai-policy-optimizer` chart 추가다.
+- generic cronjob chart 설계와 command override 일반화는 기본안이 아니다.
+
+---
+
+## 9. 운영 smoke command
+
+목적:
+
+- 실제 CronJob 등록 전에 command/env/전제조건을 201 코드 기준으로 확인한다.
+- 이 절차는 managed PostgreSQL/Redis/ClickHouse 실제 smoke를 대체하지 않는다.
+
+순서:
+
+```bash
+tm-ai-storage-migrate --dry-run
+tm-ai-policy-bootstrap --dry-run
+tm-ai-policy-projection-resync --current
+TM_POLICY_OPTIMIZER_ENABLED=true TM_POLICY_OPTIMIZER_DRY_RUN=true tm-ai-policy-optimizer
+TM_POLICY_OPTIMIZER_ENABLED=true TM_POLICY_OPTIMIZER_DRY_RUN=false TM_POLICY_OPTIMIZER_APPLY_ENABLED=true tm-ai-policy-optimizer
+tm-ai-post-review --dry-run
+```
+
+확인 기준:
+
+- 각 command 마지막 stdout 줄이 JSON summary다.
+- `tm-ai-storage-migrate --dry-run`은 `status=dry_run`, `target=postgres_ddl`, `output_count=2`다.
+- `tm-ai-policy-bootstrap --dry-run`은 `status=dry_run`이고 PostgreSQL write가 없다.
+- `tm-ai-policy-projection-resync --current`는 active rollout row가 없으면 `status=failed`로 종료한다.
+- optimizer dry-run은 mutation 없이 `status=dry_run` 또는 lock/skip status로 종료한다.
+- optimizer apply smoke는 staging/real storage에서만 수행하고 `apply_enabled=true`, `attempted_action`, `applied_action`, `verification_status`를 확인한다.
+- `TM_POLICY_OPTIMIZER_DRY_RUN=false`인데 `TM_POLICY_OPTIMIZER_APPLY_ENABLED=true`가 없으면 `status=apply_blocked`, exit `1`이어야 한다.
+- `tm-ai-post-review --dry-run`은 window/match_id를 자동 생성한다.
+- Post-Review candidate row가 0개면 `status=no_input`, `output_count=0`, exit `0`, PostgreSQL write 없음이 정상이다.
+
+자동 생성 확인:
+
+```bash
+tm-ai-post-review --dry-run
+```
+
+- `window_end_ms`는 UTC 현재 시각을 10분 단위로 내림한 값이다.
+- `window_start_ms = window_end_ms - 600000`이다.
+- `match_id = post-review-<window_end_utc_yyyymmddhhmm>`이다.
+
+---
+
+## 10. 현재 남는 운영 gap
 
 1. background worker / scheduler / lag alerting은 아직 없다.
 2. real PostgreSQL / Redis / ClickHouse infra-backed integration smoke는 아직 없다.
 3. ClickHouse processed-key ledger와 archive mark-processed orchestration은 아직 없다.
+4. Discord payload builder, webhook sender, Secret, retry/idempotency는 backlog다.
 
-이 3가지는 운영 안전장치 이후 다음 phase에서 다뤄야 한다.
+이 4가지는 운영 안전장치 이후 다음 phase에서 다뤄야 한다.
 
 ---
 
-## 9. 확인 파일
+## 11. 확인 파일
 
 - `src/traffic_master_ai/defense/storage_env.py`
 - `src/traffic_master_ai/defense/api/etl_worker.py`

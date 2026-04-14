@@ -8,6 +8,8 @@
   - DB 구축 task별 결과와 다음 task 입력을 누적하는 전용 로그
 - [11-final-drift-review-and-handoff.md](/Users/shadowmoon/201-goormgb-ai-1/src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/11-final-drift-review-and-handoff.md)
   - Task 8~17 결과를 축별로 정리한 최종 drift / handoff 문서
+- [18-argocd-presync-infra-handoff.md](/Users/shadowmoon/Desktop/실무프로젝트/201-goormgb-ai-1/src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/18-argocd-presync-infra-handoff.md)
+  - ArgoCD PreSync 3단계, ai-defense Deployment, optimizer/post-review CronJob 자동화 전달 계약
 
 ## 1. 목표 구조 문서
 
@@ -73,6 +75,8 @@
 
 ## 5. 인프라 handover 문서
 
+- [18-argocd-presync-infra-handoff.md](/Users/shadowmoon/Desktop/실무프로젝트/201-goormgb-ai-1/src/traffic_master_ai/defense/backoffice_copilot/specs/40-db-build-agent-pack/18-argocd-presync-infra-handoff.md)
+  - AI Defense background component 자동 배포 순서와 인프라팀 전달용 실행 계약
 - [cloud_team_handover_cicd_deployment.md](/Users/shadowmoon/201-goormgb-ai-1/spec/cloud_team_handover_cicd_deployment.md)
 - [cloud_team_handover_backend_ssot.md](/Users/shadowmoon/201-goormgb-ai-1/spec/cloud_team_handover_backend_ssot.md)
 - [cloud_team_handover_backend_frontend.md](/Users/shadowmoon/201-goormgb-ai-1/spec/cloud_team_handover_backend_frontend.md)

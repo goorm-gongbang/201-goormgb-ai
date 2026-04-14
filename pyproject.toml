@@ -50,6 +50,9 @@ defense_api = [
 [project.scripts]
 tm-ai-etl = "traffic_master_ai.defense.api.etl_worker:run_etl"
 tm-ai-policy-optimizer = "traffic_master_ai.defense.d0_mvp.optimizer.worker:run_policy_optimizer"
+tm-ai-policy-bootstrap = "traffic_master_ai.defense.backoffice_copilot.storage.policy_operations:run_policy_bootstrap"
+tm-ai-policy-projection-resync = "traffic_master_ai.defense.backoffice_copilot.storage.policy_operations:run_policy_projection_resync"
+tm-ai-post-review = "traffic_master_ai.defense.backoffice_copilot.runner:run_post_review"
 tm-ai-storage-migrate = "traffic_master_ai.defense.backoffice_copilot.storage.migration:run_storage_migration"
 
 [tool.hatch.build.targets.wheel]

@@ -29,6 +29,11 @@ DEFAULT_ETL_PROCESSED_LEDGER_TTL_SECONDS = 2592000
 RECOMMENDED_ETL_PROCESSED_LEDGER_TTL_SECONDS = 2592000
 DEFAULT_PROJECTION_RETRY_MAX_ATTEMPTS = 2
 DEFAULT_PROJECTION_RETRY_BACKOFF_MS = 50
+DEFAULT_POLICY_OPTIMIZER_WINDOW_SECONDS = 600
+DEFAULT_POLICY_OPTIMIZER_CANARY_RATIO = 0.05
+DEFAULT_POLICY_OPTIMIZER_MIN_APPLY_COOLDOWN_SECONDS = 300
+DEFAULT_POLICY_OPTIMIZER_ROLLOUT_ID = "offline-optimizer-default"
+DEFAULT_POLICY_OPTIMIZER_LOCK_TTL_SECONDS = 300
 
 
 class StorageOperationalConfigError(ValueError):
@@ -128,6 +133,19 @@ class ProjectionSyncConfig:
 
     retry_max_attempts: int = DEFAULT_PROJECTION_RETRY_MAX_ATTEMPTS
     retry_backoff_ms: int = DEFAULT_PROJECTION_RETRY_BACKOFF_MS
+
+
+@dataclass(slots=True, frozen=True)
+class PolicyOptimizerConfig:
+    enabled: bool = False
+    dry_run: bool = False
+    apply_enabled: bool = False
+    bootstrap_baseline: bool = False
+    window_seconds: int = DEFAULT_POLICY_OPTIMIZER_WINDOW_SECONDS
+    canary_ratio: float = DEFAULT_POLICY_OPTIMIZER_CANARY_RATIO
+    min_apply_cooldown_seconds: int = DEFAULT_POLICY_OPTIMIZER_MIN_APPLY_COOLDOWN_SECONDS
+    rollout_id: str = DEFAULT_POLICY_OPTIMIZER_ROLLOUT_ID
+    lock_ttl_seconds: int = DEFAULT_POLICY_OPTIMIZER_LOCK_TTL_SECONDS
 
 
 @dataclass(slots=True, frozen=True)
@@ -309,6 +327,45 @@ def load_projection_sync_config_from_env() -> ProjectionSyncConfig:
     )
 
 
+def load_policy_optimizer_config_from_env() -> PolicyOptimizerConfig:
+    return PolicyOptimizerConfig(
+        enabled=_clean_bool(os.getenv("TM_POLICY_OPTIMIZER_ENABLED"), default=False),
+        dry_run=_clean_bool(os.getenv("TM_POLICY_OPTIMIZER_DRY_RUN"), default=False),
+        apply_enabled=_clean_bool(
+            os.getenv("TM_POLICY_OPTIMIZER_APPLY_ENABLED"),
+            default=False,
+        ),
+        bootstrap_baseline=_clean_bool(
+            os.getenv("TM_POLICY_OPTIMIZER_BOOTSTRAP_BASELINE"),
+            default=False,
+        ),
+        window_seconds=_clean_positive_int(
+            os.getenv("TM_POLICY_OPTIMIZER_WINDOW_SECONDS"),
+            default=DEFAULT_POLICY_OPTIMIZER_WINDOW_SECONDS,
+            env_name="TM_POLICY_OPTIMIZER_WINDOW_SECONDS",
+        ),
+        canary_ratio=_clean_ratio(
+            os.getenv("TM_POLICY_OPTIMIZER_CANARY_RATIO"),
+            default=DEFAULT_POLICY_OPTIMIZER_CANARY_RATIO,
+            env_name="TM_POLICY_OPTIMIZER_CANARY_RATIO",
+        ),
+        min_apply_cooldown_seconds=_clean_positive_int(
+            os.getenv("TM_POLICY_OPTIMIZER_MIN_APPLY_COOLDOWN_SECONDS"),
+            default=DEFAULT_POLICY_OPTIMIZER_MIN_APPLY_COOLDOWN_SECONDS,
+            env_name="TM_POLICY_OPTIMIZER_MIN_APPLY_COOLDOWN_SECONDS",
+        ),
+        rollout_id=_clean_text(
+            os.getenv("TM_POLICY_OPTIMIZER_ROLLOUT_ID"),
+            default=DEFAULT_POLICY_OPTIMIZER_ROLLOUT_ID,
+        ),
+        lock_ttl_seconds=_clean_positive_int(
+            os.getenv("TM_POLICY_OPTIMIZER_LOCK_TTL_SECONDS"),
+            default=DEFAULT_POLICY_OPTIMIZER_LOCK_TTL_SECONDS,
+            env_name="TM_POLICY_OPTIMIZER_LOCK_TTL_SECONDS",
+        ),
+    )
+
+
 def load_etl_worker_config_from_env() -> ETLWorkerConfig:
     """Load the current ETL worker's storage config bundle from env."""
 
@@ -414,6 +471,19 @@ def _clean_positive_int(raw: str | None, *, default: int, env_name: str) -> int:
     value = _clean_int(raw, default=default, env_name=env_name)
     if value <= 0:
         raise ValueError(f"{env_name} must be a positive integer.")
+    return value
+
+
+def _clean_ratio(raw: str | None, *, default: float, env_name: str) -> float:
+    cleaned = _clean_optional_text(raw)
+    if cleaned is None:
+        return default
+    try:
+        value = float(cleaned)
+    except ValueError as exc:
+        raise ValueError(f"{env_name} must be greater than 0 and less than or equal to 1.") from exc
+    if value <= 0.0 or value > 1.0:
+        raise ValueError(f"{env_name} must be greater than 0 and less than or equal to 1.")
     return value
 
 
