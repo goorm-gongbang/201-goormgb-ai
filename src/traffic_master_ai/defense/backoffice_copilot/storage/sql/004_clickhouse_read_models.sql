@@ -1,10 +1,12 @@
 -- Engine: ClickHouse
 -- Canonical source: specs/40-db-build-agent-pack/06-rollup-candidate-minimum-contract.md
--- Note: these read models use fixed 5-minute windows via VIEWs so they can be queried immediately from defense_audit_events without waiting for extra MV/backfill orchestration.
+-- Note: defense_session_rollups and defense_post_review_candidates_v1 use 10-minute windows (600,000ms) matching tm-ai-post-review's default window.
+-- Note: defense_match_rollups retains 5-minute windows for its own independent granularity.
+-- Note: these read models use regular VIEWs so they can be queried immediately from defense_audit_events without waiting for extra MV/backfill orchestration.
 -- Note: defense_match_rollups only includes rows where a conservative match_id can be derived from request path or sid:matchId state-key shape. Missing/ambiguous match_id remains an explicit gap.
 
-CREATE VIEW IF NOT EXISTS defense_session_rollups AS
-WITH 300000 AS window_ms
+CREATE OR REPLACE VIEW defense_session_rollups AS
+WITH 600000 AS window_ms
 SELECT
     intDiv(ts_ms, window_ms) * window_ms AS window_start_ms,
     (intDiv(ts_ms, window_ms) * window_ms) + window_ms AS window_end_ms,
@@ -28,7 +30,7 @@ GROUP BY
     session_id;
 
 
-CREATE VIEW IF NOT EXISTS defense_match_rollups AS
+CREATE OR REPLACE VIEW defense_match_rollups AS
 WITH 300000 AS window_ms
 SELECT
     window_start_ms,
@@ -82,7 +84,7 @@ GROUP BY
     match_id;
 
 
-CREATE VIEW IF NOT EXISTS defense_post_review_candidates_v1 AS
+CREATE OR REPLACE VIEW defense_post_review_candidates_v1 AS
 SELECT
     window_start_ms,
     window_end_ms,
