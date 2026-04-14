@@ -713,8 +713,25 @@ def _coerce_postgres_param_value(value: object) -> object:
 
 
 def _wrap_jsonb(value: object) -> object:
+    # SQLAlchemy 는 URL scheme 에 따라 psycopg2 / psycopg(v3) 중 하나만 사용하므로,
+    # 그에 맞는 어댑터로 감싸야 adapter 등록 충돌(`can't adapt type 'Jsonb'`)을 피할 수 있다.
+    # 운영 TM_PG_URL(`postgresql://...`)은 psycopg2 를 기본으로 쓰므로 psycopg2 계열을 우선 시도한다.
     try:
-        from psycopg.types.json import Jsonb
+        from psycopg2.extras import Jsonb as _PG2Jsonb
+
+        return _PG2Jsonb(value)
     except Exception:
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-    return Jsonb(value)
+        pass
+    try:
+        from psycopg2.extras import Json as _PG2Json
+
+        return _PG2Json(value)
+    except Exception:
+        pass
+    try:
+        from psycopg.types.json import Jsonb as _PG3Jsonb
+
+        return _PG3Jsonb(value)
+    except Exception:
+        pass
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
