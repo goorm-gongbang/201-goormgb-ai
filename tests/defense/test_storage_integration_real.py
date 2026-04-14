@@ -241,6 +241,11 @@ class RealStorageIntegrationSmokeTest(unittest.TestCase):
         ts_ms = 1712400000000
         window_start_ms = ts_ms - (ts_ms % 600000)
         window_end_ms = window_start_ms + 600000
+        # defense_match_rollups는 post-review 경로와 무관한 독립 5분 집계다.
+        # defense_session_rollups / defense_post_review_candidates_v1(10분)과 window 크기가 다르므로
+        # 별도 변수로 조회한다.
+        match_window_start_ms = ts_ms - (ts_ms % 300000)
+        match_window_end_ms = match_window_start_ms + 300000
         archive_key = "ai-defense/audit/2026/04/06/storage_real_smoke.jsonl"
         payload = {
             "ts_ms": ts_ms,
@@ -289,8 +294,8 @@ class RealStorageIntegrationSmokeTest(unittest.TestCase):
         )
         match_rows = match_repo.read_match_rollups(
             ClickHouseMatchRollupQuery(
-                window_start_ms=window_start_ms,
-                window_end_ms=window_end_ms,
+                window_start_ms=match_window_start_ms,
+                window_end_ms=match_window_end_ms,
             )
         )
 

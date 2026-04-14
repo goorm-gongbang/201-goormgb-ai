@@ -30,7 +30,7 @@ GROUP BY
     session_id;
 
 
-CREATE VIEW IF NOT EXISTS defense_match_rollups AS
+CREATE OR REPLACE VIEW defense_match_rollups AS
 WITH 300000 AS window_ms
 SELECT
     window_start_ms,
