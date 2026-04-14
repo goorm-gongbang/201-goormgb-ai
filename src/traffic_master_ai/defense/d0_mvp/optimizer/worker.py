@@ -23,8 +23,11 @@ from ...backoffice_copilot.storage import (
     serialize_redis_projected_rollout_state,
 )
 from ...storage_env import (
+    DEFAULT_POLICY_OPTIMIZER_LOCK_TTL_SECONDS,
+    DEFAULT_POLICY_OPTIMIZER_ROLLOUT_ID,
     StorageOperationalConfigError,
     load_clickhouse_storage_config_from_env,
+    load_policy_optimizer_config_from_env,
     load_postgres_storage_config_from_env,
     load_runtime_policy_config_from_env,
     validate_control_plane_projection_env_for_prod,
@@ -39,28 +42,38 @@ from .pipeline import OfflineOptimizer
 logger = logging.getLogger(__name__)
 
 POLICY_OPTIMIZER_LOCK_KEY = "tm:policy-optimizer:lock"
-POLICY_OPTIMIZER_ROLLOUT_ID = "offline-optimizer-default"
-DEFAULT_POLICY_OPTIMIZER_LOCK_TTL_SECONDS = 300
+POLICY_OPTIMIZER_ROLLOUT_ID = DEFAULT_POLICY_OPTIMIZER_ROLLOUT_ID
 _RELEASE_LOCK_SCRIPT = (
     "if redis.call('get', KEYS[1]) == ARGV[1] "
     "then return redis.call('del', KEYS[1]) else return 0 end"
 )
 
 PolicyOptimizerWorkerStatus = Literal[
+    "apply_blocked",
     "disabled",
+    "failed",
     "insufficient_data",
     "lock_missed",
+    "metrics_read_failed",
+    "no_active_rollout",
+    "no_candidate_or_no_baseline",
     "no_change",
+    "projection_not_ready",
     "proposal_applied",
     "rolled_back",
     "rollout_expanded",
     "rollout_waiting",
     "rollback_cooling_down",
     "rollout_cooling_down",
+    "dry_run",
 ]
 
 
 class PolicyOptimizerConfigurationError(StorageOperationalConfigError):
+    pass
+
+
+class PolicyOptimizerPostCheckError(RuntimeError):
     pass
 
 
@@ -159,6 +172,8 @@ class PolicyOptimizerWorker:
     bootstrap_baseline: bool = False
     bootstrap_authority: PolicyBootstrapAuthority | None = None
     rollout_id: str = POLICY_OPTIMIZER_ROLLOUT_ID
+    dry_run: bool = False
+    apply_enabled: bool = False
 
     @classmethod
     def from_env(cls) -> PolicyOptimizerWorker:
@@ -170,14 +185,13 @@ class PolicyOptimizerWorker:
         policy_loader = PolicyLoader.from_env(
             store=_build_policy_store(redis_client),
         )
-        config = _load_worker_state_machine_config_from_env()
+        config = load_policy_optimizer_config_from_env()
         metrics_repository = _build_metrics_repository()
         authority_service = _build_authority_service(
             redis_client=redis_client,
             strict_authority=policy_loader.strict_authority,
         )
-        bootstrap_baseline = _load_bootstrap_baseline_from_env()
-        if bootstrap_baseline and authority_service is None:
+        if config.bootstrap_baseline and authority_service is None:
             raise PolicyOptimizerConfigurationError(
                 "TM_POLICY_OPTIMIZER_BOOTSTRAP_BASELINE requires strict policy authority."
             )
@@ -191,14 +205,16 @@ class PolicyOptimizerWorker:
         return cls(
             redis=redis_client,
             optimizer=optimizer,
-            lock_ttl_seconds=_load_lock_ttl_seconds_from_env(),
+            lock_ttl_seconds=config.lock_ttl_seconds,
             guardrail_repository=metrics_repository,
             window_seconds=config.window_seconds,
             canary_ratio=config.canary_ratio,
             min_apply_cooldown_seconds=config.min_apply_cooldown_seconds,
-            bootstrap_baseline=bootstrap_baseline,
+            bootstrap_baseline=config.bootstrap_baseline,
             bootstrap_authority=authority_service,
             rollout_id=config.rollout_id,
+            dry_run=config.dry_run,
+            apply_enabled=config.apply_enabled,
         )
 
     def run_once(self) -> PolicyOptimizerWorkerResult:
@@ -209,10 +225,90 @@ class PolicyOptimizerWorker:
                 detail={"lockKey": self.lock_key},
             )
         try:
+            if self.dry_run:
+                return self._dry_run_once()
+            if not self.apply_enabled:
+                return PolicyOptimizerWorkerResult(
+                    status="apply_blocked",
+                    detail={
+                        "reason": "TM_POLICY_OPTIMIZER_APPLY_ENABLED must be true when TM_POLICY_OPTIMIZER_DRY_RUN=false.",
+                        "applyEnabled": False,
+                        "attemptedAction": None,
+                        "appliedAction": None,
+                        "verificationStatus": "not_checked",
+                    },
+                )
             self._bootstrap_baseline_if_enabled()
+            precondition = self._check_apply_preconditions()
+            if precondition is not None:
+                return precondition
             return self._reconcile_once()
         finally:
             _release_redis_lock(self.redis, self.lock_key, token)
+
+    def _dry_run_once(self) -> PolicyOptimizerWorkerResult:
+        current = self.optimizer.current_rollout_state()
+        if current is None:
+            metrics = self.optimizer.collect_metrics(window_seconds=self.window_seconds)
+            return PolicyOptimizerWorkerResult(
+                status="dry_run",
+                detail={
+                    "wouldStatus": "collect_metrics_only",
+                    "windowSeconds": self.window_seconds,
+                    "metricKeys": sorted(str(key) for key in metrics.keys()),
+                    "applyEnabled": False,
+                    "bootstrapSkipped": self.bootstrap_baseline,
+                },
+            )
+        stage = str(current.get("stage", "")).upper()
+        if stage in {"CANARY", "EXPAND"}:
+            if not _is_rollout_stage_elapsed(current):
+                return PolicyOptimizerWorkerResult(
+                    status="dry_run",
+                    detail={
+                        "wouldStatus": "rollout_waiting",
+                        "stage": stage,
+                        "applyEnabled": False,
+                    },
+                )
+            deltas = self._read_rollout_guardrail_deltas(current)
+            if deltas is None:
+                return PolicyOptimizerWorkerResult(
+                    status="dry_run",
+                    detail={
+                        "wouldStatus": "insufficient_data",
+                        "stage": stage,
+                        "applyEnabled": False,
+                    },
+                )
+            guardrail_result = self.optimizer.evaluate_guardrails(deltas)
+            if bool(guardrail_result.get("shouldRollback")):
+                return PolicyOptimizerWorkerResult(
+                    status="dry_run",
+                    detail={
+                        "wouldStatus": "rolled_back",
+                        "stage": stage,
+                        "reasons": guardrail_result.get("reasons", []),
+                        "applyEnabled": False,
+                    },
+                )
+            return PolicyOptimizerWorkerResult(
+                status="dry_run",
+                detail={
+                    "wouldStatus": "rollout_expanded",
+                    "stage": stage,
+                    "stepIndex": _next_expand_step_index(current),
+                    "applyEnabled": False,
+                },
+            )
+        return PolicyOptimizerWorkerResult(
+            status="dry_run",
+            detail={
+                "wouldStatus": "no_mutation",
+                "stage": stage,
+                "applyEnabled": False,
+            },
+        )
 
     def _bootstrap_baseline_if_enabled(self) -> None:
         if not self.bootstrap_baseline:
@@ -260,28 +356,82 @@ class PolicyOptimizerWorker:
 
     def _reconcile_once(self) -> PolicyOptimizerWorkerResult:
         current = self.optimizer.current_rollout_state()
-        if current is not None:
-            active_result = self._reconcile_active_rollout(current)
-            if active_result is not None:
-                return active_result
+        if current is None:
+            return PolicyOptimizerWorkerResult(
+                status="no_active_rollout",
+                detail={
+                    "reason": "active rollout state is required before auto-apply.",
+                    "applyEnabled": self.apply_enabled,
+                    "attemptedAction": None,
+                    "appliedAction": None,
+                    "verificationStatus": "not_checked",
+                },
+            )
+        active_result = self._reconcile_active_rollout(current)
+        if active_result is not None:
+            return active_result
+        return self._start_new_canary()
 
-        run_result = self.optimizer.run_once(window_seconds=self.window_seconds)
+    def _start_new_canary(self) -> PolicyOptimizerWorkerResult:
+        try:
+            run_result = self.optimizer.run_once(window_seconds=self.window_seconds)
+        except Exception as exc:
+            return PolicyOptimizerWorkerResult(
+                status="metrics_read_failed",
+                detail={
+                    "reason": str(exc),
+                    "errorType": type(exc).__name__,
+                    "applyEnabled": self.apply_enabled,
+                    "attemptedAction": "canary_start",
+                    "appliedAction": None,
+                    "verificationStatus": "not_checked",
+                },
+            )
         proposal = run_result.get("proposal")
         if not isinstance(proposal, dict):
             return PolicyOptimizerWorkerResult(
                 status="no_change",
-                detail={"metricsSnapshotId": run_result.get("metricsSnapshotId")},
+                detail={
+                    "metricsSnapshotId": run_result.get("metricsSnapshotId"),
+                    "applyEnabled": self.apply_enabled,
+                    "attemptedAction": None,
+                    "appliedAction": None,
+                    "verificationStatus": "not_checked",
+                },
             )
 
+        before_projection = _read_projected_rollout_state(self.redis)
         canary_result = self.optimizer.start_canary(
             proposal=proposal,
             ratio=self.canary_ratio,
         )
+        try:
+            verification = self._verify_apply_post_check(
+                attempted_action="canary_start",
+                expected_stage="CANARY",
+                before_projection=before_projection,
+            )
+        except PolicyOptimizerPostCheckError as exc:
+            return PolicyOptimizerWorkerResult(
+                status="failed",
+                detail={
+                    "reason": str(exc),
+                    "applyEnabled": self.apply_enabled,
+                    "attemptedAction": "canary_start",
+                    "appliedAction": "canary_start",
+                    "verificationStatus": "failed",
+                },
+            )
         return PolicyOptimizerWorkerResult(
             status="proposal_applied",
             detail={
                 "metricsSnapshotId": run_result.get("metricsSnapshotId"),
                 "candidatePolicyVersion": canary_result.get("candidatePolicyVersion"),
+                "applyEnabled": self.apply_enabled,
+                "attemptedAction": "canary_start",
+                "appliedAction": "canary_start",
+                "verificationStatus": "success",
+                "verification": verification,
             },
         )
 
@@ -297,7 +447,13 @@ class PolicyOptimizerWorker:
             ):
                 return PolicyOptimizerWorkerResult(
                     status="rollback_cooling_down",
-                    detail={"stage": stage},
+                    detail={
+                        "stage": stage,
+                        "applyEnabled": self.apply_enabled,
+                        "attemptedAction": None,
+                        "appliedAction": None,
+                        "verificationStatus": "not_checked",
+                    },
                 )
             return None
         if stage == "FULL" and current.get("expand_step_index") is not None:
@@ -307,33 +463,126 @@ class PolicyOptimizerWorker:
             ):
                 return PolicyOptimizerWorkerResult(
                     status="rollout_cooling_down",
-                    detail={"stage": stage},
+                    detail={
+                        "stage": stage,
+                        "applyEnabled": self.apply_enabled,
+                        "attemptedAction": None,
+                        "appliedAction": None,
+                        "verificationStatus": "not_checked",
+                    },
                 )
             return None
         if stage not in {"CANARY", "EXPAND"}:
             return None
+        if not _has_required_rollout_versions(current):
+            return PolicyOptimizerWorkerResult(
+                status="no_candidate_or_no_baseline",
+                detail={
+                    "stage": stage,
+                    "reason": "active rollout is missing base or candidate policy version.",
+                    "applyEnabled": self.apply_enabled,
+                    "attemptedAction": None,
+                    "appliedAction": None,
+                    "verificationStatus": "not_checked",
+                },
+            )
         if not _is_rollout_stage_elapsed(current):
             return PolicyOptimizerWorkerResult(
                 status="rollout_waiting",
-                detail={"stage": stage},
+                detail={
+                    "stage": stage,
+                    "applyEnabled": self.apply_enabled,
+                    "attemptedAction": None,
+                    "appliedAction": None,
+                    "verificationStatus": "not_checked",
+                },
             )
-        guardrail_result = self._evaluate_rollout_guardrails(current)
+        try:
+            guardrail_result = self._evaluate_rollout_guardrails(current)
+        except Exception as exc:
+            return PolicyOptimizerWorkerResult(
+                status="metrics_read_failed",
+                detail={
+                    "stage": stage,
+                    "reason": str(exc),
+                    "errorType": type(exc).__name__,
+                    "applyEnabled": self.apply_enabled,
+                    "attemptedAction": None,
+                    "appliedAction": None,
+                    "verificationStatus": "not_checked",
+                },
+            )
         if guardrail_result is None:
             return PolicyOptimizerWorkerResult(
                 status="insufficient_data",
-                detail={"stage": stage},
+                detail={
+                    "stage": stage,
+                    "applyEnabled": self.apply_enabled,
+                    "attemptedAction": None,
+                    "appliedAction": None,
+                    "verificationStatus": "not_checked",
+                },
             )
+        before_projection = _read_projected_rollout_state(self.redis)
         if bool(guardrail_result.get("shouldRollback")):
             rollback_result = self.optimizer.rollback(reason="guardrail")
+            try:
+                verification = self._verify_apply_post_check(
+                    attempted_action="rollback",
+                    expected_stage="ROLLED_BACK",
+                    before_projection=before_projection,
+                )
+            except PolicyOptimizerPostCheckError as exc:
+                return PolicyOptimizerWorkerResult(
+                    status="failed",
+                    detail={
+                        "stage": rollback_result.get("stage"),
+                        "reasons": guardrail_result.get("reasons", []),
+                        "guardrailResult": guardrail_result,
+                        "reason": str(exc),
+                        "applyEnabled": self.apply_enabled,
+                        "attemptedAction": "rollback",
+                        "appliedAction": "rollback",
+                        "verificationStatus": "failed",
+                    },
+                )
             return PolicyOptimizerWorkerResult(
                 status="rolled_back",
                 detail={
                     "stage": rollback_result.get("stage"),
                     "reasons": guardrail_result.get("reasons", []),
+                    "guardrailResult": guardrail_result,
+                    "applyEnabled": self.apply_enabled,
+                    "attemptedAction": "rollback",
+                    "appliedAction": "rollback",
+                    "verificationStatus": "success",
+                    "verification": verification,
                 },
             )
         step_index = _next_expand_step_index(current)
         expanded = self.optimizer.expand_rollout(step_index=step_index)
+        try:
+            verification = self._verify_apply_post_check(
+                attempted_action="rollout_expand",
+                expected_stage=str(expanded.get("stage") or ""),
+                before_projection=before_projection,
+            )
+        except PolicyOptimizerPostCheckError as exc:
+            return PolicyOptimizerWorkerResult(
+                status="failed",
+                detail={
+                    "stage": expanded.get("stage"),
+                    "stepIndex": expanded.get("expand_step_index"),
+                    "basePolicyVersion": expanded.get("base_policy_version"),
+                    "candidatePolicyVersion": expanded.get("candidate_policy_version"),
+                    "guardrailResult": guardrail_result,
+                    "reason": str(exc),
+                    "applyEnabled": self.apply_enabled,
+                    "attemptedAction": "rollout_expand",
+                    "appliedAction": "rollout_expand",
+                    "verificationStatus": "failed",
+                },
+            )
         return PolicyOptimizerWorkerResult(
             status="rollout_expanded",
             detail={
@@ -341,6 +590,12 @@ class PolicyOptimizerWorker:
                 "stepIndex": expanded.get("expand_step_index"),
                 "basePolicyVersion": expanded.get("base_policy_version"),
                 "candidatePolicyVersion": expanded.get("candidate_policy_version"),
+                "guardrailResult": guardrail_result,
+                "applyEnabled": self.apply_enabled,
+                "attemptedAction": "rollout_expand",
+                "appliedAction": "rollout_expand",
+                "verificationStatus": "success",
+                "verification": verification,
             },
         )
 
@@ -380,22 +635,255 @@ class PolicyOptimizerWorker:
             candidate_policy_version=candidate_policy_version,
         )
 
+    def _check_apply_preconditions(self) -> PolicyOptimizerWorkerResult | None:
+        if self.bootstrap_authority is None:
+            return PolicyOptimizerWorkerResult(
+                status="projection_not_ready",
+                detail={
+                    "reason": "strict PostgreSQL authority service is required for auto-apply.",
+                    "applyEnabled": self.apply_enabled,
+                    "attemptedAction": None,
+                    "appliedAction": None,
+                    "verificationStatus": "not_checked",
+                },
+            )
+        current = self.optimizer.current_rollout_state()
+        if current is None:
+            return PolicyOptimizerWorkerResult(
+                status="no_active_rollout",
+                detail={
+                    "reason": "active rollout state is required before auto-apply.",
+                    "applyEnabled": self.apply_enabled,
+                    "attemptedAction": None,
+                    "appliedAction": None,
+                    "verificationStatus": "not_checked",
+                },
+            )
+        if not _has_required_rollout_versions(current):
+            return PolicyOptimizerWorkerResult(
+                status="no_candidate_or_no_baseline",
+                detail={
+                    "stage": current.get("stage"),
+                    "reason": "active rollout is missing base or candidate policy version.",
+                    "applyEnabled": self.apply_enabled,
+                    "attemptedAction": None,
+                    "appliedAction": None,
+                    "verificationStatus": "not_checked",
+                },
+            )
+        try:
+            verification = self._verify_projection_matches_authoritative(
+                current,
+                before_projection=None,
+            )
+        except PolicyOptimizerPostCheckError as exc:
+            return PolicyOptimizerWorkerResult(
+                status="projection_not_ready",
+                detail={
+                    "stage": current.get("stage"),
+                    "reason": str(exc),
+                    "applyEnabled": self.apply_enabled,
+                    "attemptedAction": None,
+                    "appliedAction": None,
+                    "verificationStatus": "failed",
+                },
+            )
+        if not verification["projected_policy_versions"]:
+            return PolicyOptimizerWorkerResult(
+                status="projection_not_ready",
+                detail={
+                    "stage": current.get("stage"),
+                    "reason": "Redis projection version index is empty.",
+                    "applyEnabled": self.apply_enabled,
+                    "attemptedAction": None,
+                    "appliedAction": None,
+                    "verificationStatus": "failed",
+                },
+            )
+        return None
+
+    def _verify_apply_post_check(
+        self,
+        *,
+        attempted_action: str,
+        expected_stage: str,
+        before_projection: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        current = self.optimizer.current_rollout_state()
+        if current is None:
+            raise PolicyOptimizerPostCheckError(
+                f"{attempted_action} verification failed: authoritative rollout state missing."
+            )
+        actual_stage = str(current.get("stage") or "").upper()
+        if expected_stage and actual_stage != expected_stage.upper():
+            raise PolicyOptimizerPostCheckError(
+                f"{attempted_action} verification failed: expected stage {expected_stage}, got {actual_stage}."
+            )
+        return self._verify_projection_matches_authoritative(
+            current,
+            before_projection=before_projection,
+        )
+
+    def _verify_projection_matches_authoritative(
+        self,
+        current: Mapping[str, Any],
+        *,
+        before_projection: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        rollout_projection = _read_projected_rollout_state(self.redis)
+        if not isinstance(rollout_projection, Mapping):
+            raise PolicyOptimizerPostCheckError("Redis rollout projection is missing or invalid.")
+        _assert_projection_field(
+            rollout_projection,
+            current,
+            field="stage",
+        )
+        _assert_projection_field(
+            rollout_projection,
+            current,
+            field="base_policy_version",
+        )
+        _assert_projection_field(
+            rollout_projection,
+            current,
+            field="candidate_policy_version",
+        )
+        _assert_projection_float_field(
+            rollout_projection,
+            current,
+            field="ratio",
+        )
+        _assert_projection_int_field(
+            rollout_projection,
+            current,
+            field="updated_at_ms",
+        )
+        refreshed_at = _clean_int_value(
+            rollout_projection.get("projection_refreshed_at_ms")
+        )
+        if refreshed_at <= 0:
+            raise PolicyOptimizerPostCheckError(
+                "Redis rollout projection is missing projection_refreshed_at_ms."
+            )
+        if before_projection is not None:
+            before_refreshed_at = _clean_int_value(
+                before_projection.get("projection_refreshed_at_ms")
+            )
+            if refreshed_at < before_refreshed_at:
+                raise PolicyOptimizerPostCheckError(
+                    "Redis rollout projection refreshed timestamp moved backwards."
+                )
+        required_versions = _required_projection_versions(current)
+        version_index = _read_projected_version_index(self.redis)
+        missing_index_versions = [
+            version for version in required_versions if version not in version_index
+        ]
+        if missing_index_versions:
+            raise PolicyOptimizerPostCheckError(
+                "Redis version index is missing projected policy versions: "
+                + ", ".join(missing_index_versions)
+            )
+        missing_policy_keys = [
+            version
+            for version in required_versions
+            if _read_json(self.redis.get(f"{POLICY_VERSION_KEY_PREFIX}{version}")) is None
+        ]
+        if missing_policy_keys:
+            raise PolicyOptimizerPostCheckError(
+                "Redis policy projection keys are missing: "
+                + ", ".join(missing_policy_keys)
+            )
+        return {
+            "rolloutId": self.rollout_id,
+            "stage": rollout_projection.get("stage"),
+            "basePolicyVersion": rollout_projection.get("base_policy_version"),
+            "candidatePolicyVersion": rollout_projection.get("candidate_policy_version"),
+            "projectionRefreshedAtMs": refreshed_at,
+            "projected_policy_versions": required_versions,
+        }
+
 
 def run_policy_optimizer() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
+    started = time.monotonic()
     if not _load_optimizer_enabled_from_env():
+        summary = _build_policy_optimizer_summary(
+            mode="disabled",
+            status="disabled",
+            detail={"reason": "TM_POLICY_OPTIMIZER_ENABLED is false or unset."},
+            started_at_monotonic=started,
+        )
+        _log_policy_optimizer_summary(summary)
         print("Policy optimizer disabled.")
+        print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
         return
+    if _optimizer_mode_from_env() == "apply" and not _load_optimizer_apply_enabled_from_env():
+        summary = _build_policy_optimizer_summary(
+            mode="apply",
+            status="apply_blocked",
+            detail={
+                "reason": "TM_POLICY_OPTIMIZER_APPLY_ENABLED must be true when TM_POLICY_OPTIMIZER_DRY_RUN=false.",
+                "applyEnabled": False,
+                "attemptedAction": None,
+                "appliedAction": None,
+                "verificationStatus": "not_checked",
+            },
+            started_at_monotonic=started,
+        )
+        _log_policy_optimizer_summary(summary)
+        print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+        raise SystemExit(1)
 
     try:
         result = PolicyOptimizerWorker.from_env().run_once()
     except PolicyOptimizerConfigurationError as exc:
-        logger.error("Policy optimizer configuration invalid: %s", exc)
-        raise SystemExit(str(exc)) from exc
+        summary = _build_policy_optimizer_summary(
+            mode=_optimizer_mode_from_env(),
+            status="failed",
+            detail={},
+            started_at_monotonic=started,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        _log_policy_optimizer_summary(summary)
+        print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+        raise SystemExit(1) from exc
     except StorageOperationalConfigError as exc:
-        logger.error("Policy optimizer storage configuration invalid: %s", exc)
-        raise SystemExit(str(exc)) from exc
+        summary = _build_policy_optimizer_summary(
+            mode=_optimizer_mode_from_env(),
+            status="failed",
+            detail={},
+            started_at_monotonic=started,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        _log_policy_optimizer_summary(summary)
+        print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+        raise SystemExit(1) from exc
+    except Exception as exc:
+        summary = _build_policy_optimizer_summary(
+            mode=_optimizer_mode_from_env(),
+            status="failed",
+            detail={},
+            started_at_monotonic=started,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        _log_policy_optimizer_summary(summary)
+        print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+        raise SystemExit(1) from exc
 
-    print(f"Policy optimizer completed. status={result.status}")
+    summary = _build_policy_optimizer_summary(
+        mode="dry_run" if result.status == "dry_run" or _optimizer_mode_from_env() == "dry_run" else "apply",
+        status=result.status,
+        detail=result.detail,
+        started_at_monotonic=started,
+    )
+    _log_policy_optimizer_summary(summary)
+    print(
+        "Policy optimizer completed. "
+        f"status={result.status} detail={json.dumps(result.detail, sort_keys=True)}"
+    )
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    if _policy_optimizer_status_exits_nonzero(result.status):
+        raise SystemExit(1)
 
 
 def _validate_optimizer_storage_env() -> None:
@@ -457,6 +945,101 @@ def _build_authority_service(
 
 def _load_optimizer_enabled_from_env() -> bool:
     return _clean_bool(os.getenv("TM_POLICY_OPTIMIZER_ENABLED"), default=False)
+
+
+def _optimizer_mode_from_env() -> str:
+    return "dry_run" if _clean_bool(os.getenv("TM_POLICY_OPTIMIZER_DRY_RUN"), default=False) else "apply"
+
+
+def _load_optimizer_apply_enabled_from_env() -> bool:
+    return _clean_bool(os.getenv("TM_POLICY_OPTIMIZER_APPLY_ENABLED"), default=False)
+
+
+def _build_policy_optimizer_summary(
+    *,
+    mode: str,
+    status: str,
+    detail: Mapping[str, Any],
+    started_at_monotonic: float,
+    error: str | None = None,
+) -> dict[str, Any]:
+    output_count = 0
+    skipped_count = 0
+    if status in {
+        "disabled",
+        "lock_missed",
+        "no_change",
+        "rollout_waiting",
+        "insufficient_data",
+        "rollback_cooling_down",
+        "rollout_cooling_down",
+        "dry_run",
+    }:
+        skipped_count = 1
+    if status in {"proposal_applied", "rollout_expanded", "rolled_back"}:
+        output_count = 1
+    summary: dict[str, Any] = {
+        "command": "tm-ai-policy-optimizer",
+        "mode": mode,
+        "status": "failed" if error is not None else status,
+        "rollout_id": detail.get("rolloutId") or os.getenv("TM_POLICY_OPTIMIZER_ROLLOUT_ID") or POLICY_OPTIMIZER_ROLLOUT_ID,
+        "input_count": 1,
+        "output_count": output_count,
+        "skipped_count": skipped_count,
+        "error_count": (
+            1
+            if error is not None or _policy_optimizer_status_exits_nonzero(status)
+            else 0
+        ),
+        "duration_ms": max(int((time.monotonic() - started_at_monotonic) * 1000), 0),
+        "dry_run": mode == "dry_run",
+        "apply_enabled": bool(
+            detail.get("applyEnabled", _load_optimizer_apply_enabled_from_env())
+        ),
+        "guardrail_result": detail.get("guardrailResult"),
+        "attempted_action": detail.get("attemptedAction"),
+        "applied_action": detail.get("appliedAction"),
+        "verification_status": detail.get(
+            "verificationStatus",
+            "not_checked" if error is None else "failed",
+        ),
+        "detail": dict(detail),
+    }
+    if error is not None:
+        summary["error"] = error
+    return summary
+
+
+def _log_policy_optimizer_summary(summary: Mapping[str, Any]) -> None:
+    logger.info(
+        "policy_optimizer_summary mode=%s status=%s rollout_id=%s input_count=%s "
+        "output_count=%s skipped_count=%s error_count=%s duration_ms=%s dry_run=%s "
+        "apply_enabled=%s attempted_action=%s applied_action=%s verification_status=%s",
+        summary["mode"],
+        summary["status"],
+        summary["rollout_id"],
+        summary["input_count"],
+        summary["output_count"],
+        summary["skipped_count"],
+        summary["error_count"],
+        summary["duration_ms"],
+        summary["dry_run"],
+        summary["apply_enabled"],
+        summary["attempted_action"],
+        summary["applied_action"],
+        summary["verification_status"],
+    )
+
+
+def _policy_optimizer_status_exits_nonzero(status: str) -> bool:
+    return status in {
+        "apply_blocked",
+        "failed",
+        "metrics_read_failed",
+        "no_active_rollout",
+        "no_candidate_or_no_baseline",
+        "projection_not_ready",
+    }
 
 
 def _load_bootstrap_baseline_from_env() -> bool:
@@ -651,6 +1234,93 @@ def _needs_projection_resync(
             return True
     version_index = _read_json(redis.get(POLICY_VERSION_INDEX_KEY))
     return not isinstance(version_index, list) or policy_record.policy_version not in version_index
+
+
+def _has_required_rollout_versions(state: Mapping[str, Any]) -> bool:
+    stage = str(state.get("stage") or "").upper()
+    base_policy_version = str(state.get("base_policy_version") or "").strip()
+    candidate_policy_version = str(
+        state.get("candidate_policy_version") or ""
+    ).strip()
+    if not base_policy_version:
+        return False
+    if stage in {"CANARY", "EXPAND"} and not candidate_policy_version:
+        return False
+    return True
+
+
+def _required_projection_versions(state: Mapping[str, Any]) -> tuple[str, ...]:
+    versions: list[str] = []
+    for value in (
+        state.get("base_policy_version"),
+        state.get("candidate_policy_version"),
+    ):
+        version = str(value or "").strip()
+        if version and version not in versions:
+            versions.append(version)
+    return tuple(versions)
+
+
+def _read_projected_rollout_state(redis: RedisLike) -> Mapping[str, Any] | None:
+    parsed = _read_json(redis.get(POLICY_ROLLOUT_STATE_KEY))
+    if isinstance(parsed, Mapping):
+        return parsed
+    return None
+
+
+def _read_projected_version_index(redis: RedisLike) -> tuple[str, ...]:
+    parsed = _read_json(redis.get(POLICY_VERSION_INDEX_KEY))
+    if not isinstance(parsed, list):
+        return ()
+    return tuple(value for value in parsed if isinstance(value, str) and value)
+
+
+def _assert_projection_field(
+    projection: Mapping[str, Any],
+    authoritative: Mapping[str, Any],
+    *,
+    field: str,
+) -> None:
+    if projection.get(field) != authoritative.get(field):
+        raise PolicyOptimizerPostCheckError(
+            f"Redis projection field mismatch for {field}: "
+            f"expected {authoritative.get(field)!r}, got {projection.get(field)!r}."
+        )
+
+
+def _assert_projection_int_field(
+    projection: Mapping[str, Any],
+    authoritative: Mapping[str, Any],
+    *,
+    field: str,
+) -> None:
+    if _clean_int_value(projection.get(field)) != _clean_int_value(
+        authoritative.get(field)
+    ):
+        raise PolicyOptimizerPostCheckError(
+            f"Redis projection field mismatch for {field}: "
+            f"expected {authoritative.get(field)!r}, got {projection.get(field)!r}."
+        )
+
+
+def _assert_projection_float_field(
+    projection: Mapping[str, Any],
+    authoritative: Mapping[str, Any],
+    *,
+    field: str,
+) -> None:
+    try:
+        projected_value = float(projection.get(field))
+        authoritative_value = float(authoritative.get(field))
+    except (TypeError, ValueError) as exc:
+        raise PolicyOptimizerPostCheckError(
+            f"Redis projection field mismatch for {field}: non-numeric value."
+        ) from exc
+    if abs(projected_value - authoritative_value) > 0.00001:
+        raise PolicyOptimizerPostCheckError(
+            f"Redis projection field mismatch for {field}: "
+            f"expected {authoritative_value!r}, got {projected_value!r}."
+        )
 
 
 def _read_json(raw: Any) -> Any:

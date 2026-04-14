@@ -25,6 +25,11 @@ from traffic_master_ai.defense.storage_env import (
     DEFAULT_DEFENSE_AUDIT_LOG_PATH,
     DEFAULT_ETL_PROCESSED_LEDGER_TTL_SECONDS,
     DEFAULT_POLICY_CACHE_SECONDS,
+    DEFAULT_POLICY_OPTIMIZER_CANARY_RATIO,
+    DEFAULT_POLICY_OPTIMIZER_LOCK_TTL_SECONDS,
+    DEFAULT_POLICY_OPTIMIZER_MIN_APPLY_COOLDOWN_SECONDS,
+    DEFAULT_POLICY_OPTIMIZER_ROLLOUT_ID,
+    DEFAULT_POLICY_OPTIMIZER_WINDOW_SECONDS,
     DEFAULT_POLICY_PROJECTION_MAX_STALENESS_MS,
     DEFAULT_POLICY_STORE_PATH,
     DEFAULT_S3_ARCHIVE_INTERVAL_SECONDS,
@@ -43,6 +48,7 @@ from traffic_master_ai.defense.storage_env import (
     RECOMMENDED_STAGING_S3_ARCHIVE_INTERVAL_SECONDS,
     S3ArchiveConfig,
     load_clickhouse_storage_config_from_env,
+    load_policy_optimizer_config_from_env,
     load_projection_sync_config_from_env,
     load_audit_log_config_from_env,
     load_etl_processed_ledger_config_from_env,
@@ -62,6 +68,7 @@ class StorageEnvConfigTests(unittest.TestCase):
             runtime_policy_config = load_runtime_policy_config_from_env()
             clickhouse_config = load_clickhouse_storage_config_from_env()
             ledger_config = load_etl_processed_ledger_config_from_env()
+            optimizer_config = load_policy_optimizer_config_from_env()
 
         self.assertIsNone(s3_config.bucket)
         self.assertEqual(s3_config.prefix, DEFAULT_S3_PREFIX)
@@ -77,6 +84,7 @@ class StorageEnvConfigTests(unittest.TestCase):
         )
         self.assertEqual(clickhouse_config.audit_table, DEFAULT_CLICKHOUSE_AUDIT_TABLE)
         self.assertIsNone(clickhouse_config.url)
+        self.assertFalse(optimizer_config.apply_enabled)
         self.assertEqual(DEFAULT_S3_ARCHIVE_INTERVAL_SECONDS, RECOMMENDED_PROD_S3_ARCHIVE_INTERVAL_SECONDS)
         self.assertEqual(
             clickhouse_config.ingest_batch_size,
@@ -105,6 +113,20 @@ class StorageEnvConfigTests(unittest.TestCase):
         self.assertEqual(
             ledger_config.ttl_seconds,
             DEFAULT_ETL_PROCESSED_LEDGER_TTL_SECONDS,
+        )
+        self.assertFalse(optimizer_config.enabled)
+        self.assertFalse(optimizer_config.dry_run)
+        self.assertFalse(optimizer_config.bootstrap_baseline)
+        self.assertEqual(optimizer_config.window_seconds, DEFAULT_POLICY_OPTIMIZER_WINDOW_SECONDS)
+        self.assertEqual(optimizer_config.canary_ratio, DEFAULT_POLICY_OPTIMIZER_CANARY_RATIO)
+        self.assertEqual(
+            optimizer_config.min_apply_cooldown_seconds,
+            DEFAULT_POLICY_OPTIMIZER_MIN_APPLY_COOLDOWN_SECONDS,
+        )
+        self.assertEqual(optimizer_config.rollout_id, DEFAULT_POLICY_OPTIMIZER_ROLLOUT_ID)
+        self.assertEqual(
+            optimizer_config.lock_ttl_seconds,
+            DEFAULT_POLICY_OPTIMIZER_LOCK_TTL_SECONDS,
         )
         self.assertEqual(
             DEFAULT_ETL_PROCESSED_LEDGER_TTL_SECONDS,
@@ -256,18 +278,37 @@ class StorageEnvConfigTests(unittest.TestCase):
                 "TM_ETL_PROCESSED_LEDGER_TTL_SECONDS": "86400",
                 "TM_PROJECTION_RETRY_MAX_ATTEMPTS": "4",
                 "TM_PROJECTION_RETRY_BACKOFF_MS": "80",
+                "TM_POLICY_OPTIMIZER_ENABLED": "true",
+                "TM_POLICY_OPTIMIZER_DRY_RUN": "true",
+                "TM_POLICY_OPTIMIZER_APPLY_ENABLED": "true",
+                "TM_POLICY_OPTIMIZER_BOOTSTRAP_BASELINE": "true",
+                "TM_POLICY_OPTIMIZER_WINDOW_SECONDS": "900",
+                "TM_POLICY_OPTIMIZER_CANARY_RATIO": "0.1",
+                "TM_POLICY_OPTIMIZER_MIN_APPLY_COOLDOWN_SECONDS": "120",
+                "TM_POLICY_OPTIMIZER_ROLLOUT_ID": "rollout-ops",
+                "TM_POLICY_OPTIMIZER_LOCK_TTL_SECONDS": "180",
             },
             clear=True,
         ):
             clickhouse_config = load_clickhouse_storage_config_from_env()
             ledger_config = load_etl_processed_ledger_config_from_env()
             projection_config = load_projection_sync_config_from_env()
+            optimizer_config = load_policy_optimizer_config_from_env()
 
         self.assertEqual(clickhouse_config.write_retry_max_attempts, 5)
         self.assertEqual(clickhouse_config.write_retry_backoff_ms, 250)
         self.assertEqual(ledger_config.ttl_seconds, 86400)
         self.assertEqual(projection_config.retry_max_attempts, 4)
         self.assertEqual(projection_config.retry_backoff_ms, 80)
+        self.assertTrue(optimizer_config.enabled)
+        self.assertTrue(optimizer_config.dry_run)
+        self.assertTrue(optimizer_config.apply_enabled)
+        self.assertTrue(optimizer_config.bootstrap_baseline)
+        self.assertEqual(optimizer_config.window_seconds, 900)
+        self.assertEqual(optimizer_config.canary_ratio, 0.1)
+        self.assertEqual(optimizer_config.min_apply_cooldown_seconds, 120)
+        self.assertEqual(optimizer_config.rollout_id, "rollout-ops")
+        self.assertEqual(optimizer_config.lock_ttl_seconds, 180)
 
     def test_runtime_loader_and_local_observability_surfaces_read_env_paths(self) -> None:
         tmp_dir = Path("/tmp/tm-task14-config-test")

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Callable
 
 from ..analysis import DecisionAuditRowProvider
 from ..analysis.candidates import build_candidate_selection
@@ -12,7 +13,7 @@ from ..analysis.fallback import DEFAULT_RAW_FALLBACK_LIMIT
 from ..analysis.session_analysis import build_session_analysis_list
 from ..core.issues import PipelineIssue
 from ..core.models import RunStatus
-from ..core.state import PostReviewGraphState, PostReviewRunInput
+from ..core.state import AnalysisInput, PostReviewGraphState, PostReviewRunInput
 from ..ingest import load_analysis_input
 from ..output import BackendRequestAdapter, OutputStageResult, build_export_artifacts, execute_output_stage
 from ..review.executor import LlmReviewAdapter, execute_session_reviews
@@ -25,9 +26,10 @@ from ..validation import ResolvedValidationOutcome, ValidationContext, resolve_r
 class BackofficeCopilotWorkflowDependencies:
     """External resources and adapters needed by the fixed six-node workflow."""
 
-    audit_events_jsonl_path: str | Path
+    audit_events_jsonl_path: str | Path | None
     repository: PostReviewWriteRepository
     conflict_policy: PkConflictPolicy | str
+    analysis_input_provider: Callable[[PostReviewRunInput], AnalysisInput] | None = None
     raw_fallback_provider: DecisionAuditRowProvider | None = None
     llm_review_adapter: LlmReviewAdapter | None = None
     summary_adapter: WindowSummaryAdapter | None = None
@@ -54,9 +56,15 @@ def node_1_input_collection(
 ) -> NodeExecutionResult:
     """Node 1. Load raw audit input only."""
 
+    run_input = _to_run_input(state)
+    if dependencies.analysis_input_provider is not None:
+        state.analysis_input = dependencies.analysis_input_provider(run_input)
+        return NodeExecutionResult(state=state)
+    if dependencies.audit_events_jsonl_path is None:
+        raise ValueError("audit_events_jsonl_path is required when analysis_input_provider is unset.")
     state.analysis_input = load_analysis_input(
         dependencies.audit_events_jsonl_path,
-        run_input=_to_run_input(state),
+        run_input=run_input,
     )
     return NodeExecutionResult(state=state)
 
