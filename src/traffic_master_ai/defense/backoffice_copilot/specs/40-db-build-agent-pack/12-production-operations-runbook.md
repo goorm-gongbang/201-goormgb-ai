@@ -356,29 +356,73 @@ command별 정상 skip:
 
 command별 fail-fast:
 
+- `tm-ai-clickhouse-migrate`: `TM_CLICKHOUSE_URL` 누락, `004_clickhouse_read_models.sql` 파일 누락, HTTP DDL 실행 실패
 - `tm-ai-storage-migrate`: `TM_PG_URL` 누락, SQL file 누락, DDL 실행 실패
 - `tm-ai-policy-bootstrap`: `TM_PG_URL` 누락, `policy_versions`/`policy_rollout_state` table 부재, seed read/write 실패
 - `tm-ai-policy-projection-resync`: `TM_PG_URL`/`TM_REDIS_URL` 누락, current rollout row 부재, policy row 부재, Redis apply 실패
 - `tm-ai-policy-optimizer`: prod 필수 env 누락, unsafe fallback env, `TM_CLICKHOUSE_URL` 누락, invalid numeric env
 - `tm-ai-post-review`: ClickHouse read 실패, PostgreSQL write 실패, `--require-llm` 상태에서 LLM key 누락, workflow `FAILED`
 
-### 5.6 ArgoCD 자동 배포 순서
+### 5.6.0 ClickHouse DDL migrate (PreSync 0)
 
-최종 자동화 순서:
+command:
 
-1. ArgoCD PreSync Job 1: `tm-ai-storage-migrate`
-2. ArgoCD PreSync Job 2: `tm-ai-policy-bootstrap`
-3. ArgoCD PreSync Job 3: `tm-ai-policy-projection-resync --current`
-4. `ai-defense` Deployment rollout
-5. `tm-ai-policy-optimizer` CronJob
-6. `tm-ai-post-review` CronJob
+- `tm-ai-clickhouse-migrate`
+
+목적:
+
+- ClickHouse read model VIEW DDL을 ArgoCD sync마다 자동 적용한다.
+- `/docker-entrypoint-initdb.d` init script는 PVC가 유지된 환경에서 재실행되지 않으므로,
+  VIEW 정의 변경은 이 command를 통해서만 운영 ClickHouse에 반영된다.
+- `CREATE OR REPLACE VIEW`를 사용하므로 매번 실행해도 idempotent하다.
+
+적용 범위 (`004_clickhouse_read_models.sql`):
+
+1. `defense_session_rollups` — **CRITICAL**: 5분→10분 window mismatch 수정 (staging `no_input` 원인)
+2. `defense_match_rollups` — 독립 5분 집계, 전체 DDL sync 일관성
+3. `defense_post_review_candidates_v1` — `defense_session_rollups` 참조, window 자동 상속
+
+| 항목 | 계약 |
+|---|---|
+| command | `tm-ai-clickhouse-migrate` |
+| 필수 env | `TM_CLICKHOUSE_URL` |
+| 불필요 env | `TM_PG_URL`, `TM_REDIS_URL`, `TM_ROLLOUT_SALT`, `TM_POLICY_*`, `TM_PROJECTION_*`, S3/AWS |
+| serviceAccount | `ai-defense` 재사용 가능 (ClickHouse는 클러스터 내부 HTTP, IAM 불필요) |
+| dry-run | `tm-ai-clickhouse-migrate --dry-run` |
+| exit `0` | DDL 적용 성공 또는 dry-run plan 성공 |
+| exit `1` | `TM_CLICKHOUSE_URL` 누락, SQL 파일 누락, HTTP 실패 |
+| summary status | `success`, `dry_run`, `failed` |
+| target | `clickhouse_ddl` |
+| 재실행 가능 여부 | 가능. `CREATE OR REPLACE VIEW`는 매 ArgoCD sync 안전 |
+| 선행 조건 | ClickHouse Pod 기동 완료 (clickhouse StatefulSet sync-wave 1 이후) |
+
+staging `no_input` 원인 및 재발 방지:
+
+- 원인: `defense_session_rollups` VIEW가 `WITH 300000 AS window_ms` (5분)으로 생성되었으나,
+  `tm-ai-post-review`는 `DEFAULT_POST_REVIEW_WINDOW_SECONDS=600` (10분) window로 exact-match 조회한다.
+  `window_end_ms - window_start_ms = 300000`인 row는 600000ms window WHERE 절에 한 건도 매칭되지 않는다.
+- 해결: `tm-ai-clickhouse-migrate`가 `WITH 600000 AS window_ms`로 VIEW를 교체한다.
+- 재발 방지: `test_session_rollup_uses_600000ms_window` 회귀 테스트가 상시 검증한다.
+
+### 5.7 ArgoCD 자동 배포 순서
+
+최종 자동화 순서 (수동 SQL 실행 없음):
+
+1. ArgoCD PreSync Job 0: `tm-ai-clickhouse-migrate` — ClickHouse VIEW DDL 자동 적용
+2. ArgoCD PreSync Job 1: `tm-ai-storage-migrate` — PostgreSQL DDL 자동 적용
+3. ArgoCD PreSync Job 2: `tm-ai-policy-bootstrap` — baseline policy / rollout seed
+4. ArgoCD PreSync Job 3: `tm-ai-policy-projection-resync --current` — Redis projection 반영
+5. `ai-defense` Deployment rollout
+6. `tm-ai-policy-optimizer` CronJob
+7. `tm-ai-post-review` CronJob
 
 운영 계약:
 
 - 사람이 수동 one-shot Job을 치는 배포 절차로 만들지 않는다.
-- PreSync Job 3개는 ArgoCD sync 내부 단계로 숨긴다.
+- PreSync Job 4개는 ArgoCD sync 내부 단계로 숨긴다.
 - PreSync 실패 시 이후 Deployment와 CronJob rollout은 진행하지 않는다.
-- SQL 수동 적용은 요청하지 않고 AI image command가 DDL, bootstrap, projection resync를 책임진다.
+- SQL/DDL 수동 적용은 요청하지 않고 AI image command가 모든 DDL, bootstrap, projection resync를 책임진다.
+- ClickHouse VIEW 변경은 `004_clickhouse_read_models.sql` 수정 → 이미지 빌드 → ArgoCD sync로 자동 반영된다.
 - optimizer와 post-review는 새 generic chart보다 기존 `ai-etl` CronJob 패턴 복제를 우선 검토한다.
 
 세부 인프라 전달 계약:
@@ -391,16 +435,26 @@ command별 fail-fast:
 
 ### 6.1 migration 순서
 
-1. PostgreSQL DDL 적용
-   - command: `tm-ai-storage-migrate`
+ArgoCD PreSync를 통한 완전 자동화 경로 (운영 표준):
+
+1. ClickHouse DDL 자동 적용
+   - command: `tm-ai-clickhouse-migrate` (PreSync syncWave: `-1`)
+   - scope: `004_clickhouse_read_models.sql` — 3개 VIEW (`CREATE OR REPLACE VIEW`)
+   - `defense_session_rollups` (10분 window), `defense_match_rollups` (5분), `defense_post_review_candidates_v1`
+2. PostgreSQL DDL 자동 적용
+   - command: `tm-ai-storage-migrate` (PreSync syncWave: `0`)
    - scope: PostgreSQL DDL only
    - `001_post_review_tables.sql`
    - `002_postgresql_policy_control_plane_tables.sql`
-2. ClickHouse DDL 적용
-   - `003_clickhouse_defense_audit_events.sql`
-   - read model이 필요한 경우 `004_clickhouse_read_models.sql`
 3. application deploy 전 prod env 검증
 4. authoritative seed data 반영
+
+비고:
+- ClickHouse `defense_audit_events` 기반 테이블 (`003_clickhouse_defense_audit_events.sql`)은
+  `CREATE TABLE IF NOT EXISTS`로 정의되어 있으며, ClickHouse StatefulSet 초기화 시 init script로 적용된다.
+  이 테이블은 PreSync migrate 범위에 포함하지 않는다 (PVC가 있으면 init script도 실행되지 않으므로,
+  신규 클러스터에서만 init script 경로가 유효하다).
+- 수동 SQL 실행은 장애 fallback 절차이며 운영 표준이 아니다.
 
 ### 6.2 bootstrap 순서
 

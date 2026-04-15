@@ -54,6 +54,7 @@ tm-ai-policy-bootstrap = "traffic_master_ai.defense.backoffice_copilot.storage.p
 tm-ai-policy-projection-resync = "traffic_master_ai.defense.backoffice_copilot.storage.policy_operations:run_policy_projection_resync"
 tm-ai-post-review = "traffic_master_ai.defense.backoffice_copilot.runner:run_post_review"
 tm-ai-storage-migrate = "traffic_master_ai.defense.backoffice_copilot.storage.migration:run_storage_migration"
+tm-ai-clickhouse-migrate = "traffic_master_ai.defense.backoffice_copilot.storage.clickhouse_migrate:run_clickhouse_migrate"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/traffic_master_ai"]
