@@ -20,6 +20,7 @@
 
 | 순서 | 단계 | 실행 주체 | 목적 | 다음 단계 진행 조건 |
 |---|---|---|---|---|
+| 0 | ArgoCD PreSync Job 0 | `tm-ai-clickhouse-migrate` | ClickHouse VIEW DDL 자동 적용 | exit `0` |
 | 1 | ArgoCD PreSync Job 1 | `tm-ai-storage-migrate` | PostgreSQL DDL 적용 | exit `0` |
 | 2 | ArgoCD PreSync Job 2 | `tm-ai-policy-bootstrap` | baseline policy / rollout seed | exit `0` |
 | 3 | ArgoCD PreSync Job 3 | `tm-ai-policy-projection-resync --current` | PostgreSQL current rollout을 Redis runtime projection에 반영 | exit `0` |
@@ -30,9 +31,11 @@
 최종안:
 
 - 사람이 one-shot Job을 수동으로 치지 않는다.
-- ArgoCD sync 시 PreSync Job 3개가 순서대로 실행된다.
+- 수동 SQL 실행은 운영 절차가 아닌 장애 fallback에만 허용한다.
+- ArgoCD sync 시 PreSync Job 4개가 순서대로 실행된다.
 - PreSync 실패 시 Deployment와 CronJob rollout은 진행하지 않는다.
 - PreSync 성공 뒤 `ai-defense` Deployment와 background CronJob이 붙는다.
+- ClickHouse VIEW 변경은 `004_clickhouse_read_models.sql` 수정 → 이미지 빌드 → ArgoCD sync로 자동 반영된다.
 
 ## 2. 공통 원칙
 
@@ -45,21 +48,76 @@
 
 ArgoCD Hook 권장:
 
-- PreSync Job 3개에 `argocd.argoproj.io/hook: PreSync`를 둔다.
-- 3개 Job에는 순서 보장을 위해 sync wave를 둔다.
+- PreSync Job 4개에 `argocd.argoproj.io/hook: PreSync`를 둔다.
+- 4개 Job에는 순서 보장을 위해 sync wave를 둔다.
 - 권장 wave:
-  - storage migrate: `-30`
-  - policy bootstrap: `-20`
-  - policy projection resync: `-10`
-- Hook delete policy는 성공 Job 누적을 피하기 위해 `HookSucceeded`를 기본으로 검토한다.
+  - **clickhouse migrate: `-1`** (신규)
+  - storage migrate: `0`
+  - policy bootstrap: `1`
+  - policy projection resync: `2`
+- Hook delete policy는 성공 Job 누적을 피하기 위해 `BeforeHookCreation`을 기본으로 검토한다.
 - 실패 Job 로그 확인이 필요하면 환경별로 `HookFailed` 보존 여부를 선택한다.
 
 Job 공통 권장값:
 
 - `restartPolicy: Never`
-- `backoffLimit: 1`
-- `activeDeadlineSeconds`: 300 이상
+- `backoffLimit: 0`
 - `ttlSecondsAfterFinished`: 환경 정책에 맞춰 설정
+
+## 2-A. PreSync Job 0: clickhouse migrate (신규)
+
+| 항목 | 계약 |
+|---|---|
+| command | `tm-ai-clickhouse-migrate` |
+| 목적 | ClickHouse VIEW DDL 자동 적용 (`defense_session_rollups`, `defense_match_rollups`, `defense_post_review_candidates_v1`) |
+| 필수 env | `TM_CLICKHOUSE_URL` (top-level env에 이미 포함, 자동 상속) |
+| 불필요 env | `TM_PG_URL`, `TM_REDIS_URL`, `TM_ROLLOUT_SALT`, `TM_POLICY_*`, `TM_PROJECTION_*`, S3/AWS |
+| extraEnv 추가 불필요 | `TM_CLICKHOUSE_URL`은 `$.Values.env` top-level에 이미 존재 |
+| serviceAccount | `ai-defense` 재사용 가능 (ClickHouse는 클러스터 내부 HTTP, IRSA 권한 불필요) |
+| syncWave 권장 | `-1` |
+| dry-run | `tm-ai-clickhouse-migrate --dry-run` |
+| exit `0` | DDL 적용 성공 또는 dry-run plan 성공 |
+| exit `1` | `TM_CLICKHOUSE_URL` 누락, `004_clickhouse_read_models.sql` 파일 누락, HTTP 4xx/5xx |
+| summary status | `success`, `dry_run`, `failed` |
+| target | `clickhouse_ddl` |
+| 재실행 가능 여부 | 가능. `CREATE OR REPLACE VIEW`는 매 sync 안전 |
+| backoffLimit | `0` |
+| 선행 조건 | ClickHouse Pod 기동 완료 |
+
+303 `values-ai-defense.yaml` presyncJobs 추가 예시:
+
+```yaml
+presyncJobs:
+  - name: tm-ai-clickhouse-migrate      # 신규 추가
+    syncWave: "-1"
+    command:
+      - tm-ai-clickhouse-migrate
+  - name: tm-ai-storage-migrate
+    syncWave: "0"
+    command:
+      - tm-ai-storage-migrate
+  - name: tm-ai-policy-bootstrap
+    syncWave: "1"
+    command:
+      - tm-ai-policy-bootstrap
+  - name: tm-ai-policy-projection-resync
+    syncWave: "2"
+    command:
+      - tm-ai-policy-projection-resync
+      - --current
+```
+
+이미지 / env / SA / nodeSelector는 기존 presyncJobs와 동일하게 자동 상속된다.
+`extraEnv`는 별도로 추가할 필요 없다.
+
+303 configmap.yaml 권장 수정 (장기 일관성):
+
+기존 303 ClickHouse init script (`002_defense_session_rollups.sql`)의 내용도 맞춰두는 것이
+신규 클러스터 초기화 시 일관성을 보장한다. 현재 staging의 즉시 반영 경로는 PreSync이며,
+configmap 수정은 신규 환경 대비 작업이다.
+
+- `WITH 300000 AS window_ms` → `WITH 600000 AS window_ms` (session rollup)
+- `CREATE VIEW IF NOT EXISTS` → `CREATE OR REPLACE VIEW` (모든 VIEW)
 
 ## 3. PreSync Job 1: storage migrate
 
@@ -373,18 +431,21 @@ tm-ai-post-review --dry-run
 지금 넘길 항목:
 
 - 새 AI image tag 반영
-- ArgoCD PreSync 3단계 wiring
+- **ArgoCD PreSync 4단계 wiring** (clickhouse-migrate 포함, 기존 3개 + 신규 1개)
 - `ai-defense` Deployment env 추가
 - `tm-ai-policy-optimizer` CronJob 추가
 - `tm-ai-post-review` CronJob 추가
+- 303 `configmap.yaml` 장기 일관성 수정 (303 담당, 신규 클러스터 대비)
 
 인프라 구현 요청:
 
-- PreSync 3개 Job을 ArgoCD sync 안에 숨긴다.
+- PreSync 4개 Job을 ArgoCD sync 안에 숨긴다.
 - 사람이 수동 one-shot Job을 치는 배포 절차로 만들지 않는다.
+- 수동 SQL/DDL 실행은 장애 fallback으로만 허용, 운영 절차에서 제거한다.
 - PreSync 실패 시 Deployment/CronJob rollout이 멈추게 한다.
 - 기존 `ai-etl` chart/pattern 복제를 우선 검토한다.
 - Secret은 기존 secret/config에 key 추가가 가능한지 먼저 검토한다.
+- `tm-ai-clickhouse-migrate`는 top-level env 상속만으로 동작하며 별도 Secret/env 추가 불필요.
 
 ## 12. 아직 넘기지 않을 항목
 
@@ -409,32 +470,47 @@ tm-ai-post-review --dry-run
 제목:
 
 ```text
-AI Defense background components ArgoCD PreSync / CronJob wiring 요청
+AI Defense ArgoCD PreSync / CronJob wiring 요청 (ClickHouse DDL migrate 포함)
 ```
 
 본문:
 
 ```text
 AI Defense 신규 이미지 기준으로 background 운영 command 계약이 201 레포에서 닫혔습니다.
+ClickHouse VIEW DDL 자동 반영 command(tm-ai-clickhouse-migrate)가 신규 추가되어 PreSync 체인에 편입됩니다.
 303 Helm/ArgoCD 쪽에서는 수동 one-shot Job이 아니라 ArgoCD sync 시 자동 선행 작업이 실행되도록 반영 부탁드립니다.
 
 요청 배포 순서:
-1. PreSync Job: tm-ai-storage-migrate
-2. PreSync Job: tm-ai-policy-bootstrap
-3. PreSync Job: tm-ai-policy-projection-resync --current
+0. PreSync Job: tm-ai-clickhouse-migrate  (신규, syncWave: -1)
+1. PreSync Job: tm-ai-storage-migrate     (syncWave: 0)
+2. PreSync Job: tm-ai-policy-bootstrap    (syncWave: 1)
+3. PreSync Job: tm-ai-policy-projection-resync --current  (syncWave: 2)
 4. ai-defense Deployment rollout
 5. tm-ai-policy-optimizer CronJob
 6. tm-ai-post-review CronJob
 
 PreSync 실패 시 이후 Deployment/CronJob rollout은 진행하지 않게 해주세요.
 PreSync Job은 사람이 수동 실행하는 운영 절차가 아니라 ArgoCD sync 내부 단계로 숨기는 방향이 최종안입니다.
+수동 SQL/DDL 실행은 장애 fallback에만 허용하고 운영 절차에서 제거합니다.
 
 공통 확인:
 - 각 command 마지막 stdout 줄은 JSON summary입니다.
 - status=failed는 exit 1입니다.
 - success/skip/dry_run/no_input/optimizer skip 계열은 exit 0입니다.
 
+tm-ai-clickhouse-migrate (신규 PreSync Job):
+- command: tm-ai-clickhouse-migrate
+- syncWave: -1 (storage migrate보다 먼저)
+- 필수 env: TM_CLICKHOUSE_URL (top-level env에 이미 있음, extraEnv 추가 불필요)
+- 불필요 env: TM_PG_URL, TM_REDIS_URL, TM_ROLLOUT_SALT, TM_POLICY_*, TM_PROJECTION_*, S3/AWS
+- serviceAccount: ai-defense 재사용 가능 (ClickHouse는 클러스터 내부 HTTP, IAM 불필요)
+- backoffLimit: 0
+- dry-run: tm-ai-clickhouse-migrate --dry-run
+- 재실행: CREATE OR REPLACE VIEW이므로 매 sync 안전
+- 실패 조건: TM_CLICKHOUSE_URL 누락, SQL 파일 누락, HTTP 4xx/5xx → exit 1
+
 PreSync 필수 env:
+- tm-ai-clickhouse-migrate: TM_CLICKHOUSE_URL (자동 상속, 추가 불필요)
 - tm-ai-storage-migrate: TM_PG_URL
 - tm-ai-policy-bootstrap: TM_PG_URL
 - tm-ai-policy-projection-resync --current: TM_PG_URL, TM_REDIS_URL
@@ -456,7 +532,7 @@ optimizer CronJob:
 - mutation 후 PG/Redis post-check 실패는 status=failed, exit 1입니다.
 - concurrencyPolicy: Forbid
 - restartPolicy: Never
-- backoffLimit: 1
+- backoffLimit: 0
 
 post-review CronJob:
 - command: tm-ai-post-review
@@ -465,12 +541,17 @@ post-review CronJob:
 - candidate row가 없으면 status=no_input, exit 0, PostgreSQL write 없음이 정상입니다.
 - concurrencyPolicy: Forbid
 - restartPolicy: Never
-- backoffLimit: 1
+- backoffLimit: 0
+
+303 configmap 권장 수정 (신규 클러스터 일관성, 현재 staging 반영 경로는 PreSync):
+- 002_defense_session_rollups.sql: WITH 300000 → WITH 600000 AS window_ms
+- 모든 VIEW: CREATE VIEW IF NOT EXISTS → CREATE OR REPLACE VIEW
 
 최소화 원칙:
 - 새 generic chart 설계보다 기존 ai-etl CronJob 패턴 복제를 우선 검토해주세요.
 - 새 Secret 종류를 만들기보다 기존 secret/config에 필요한 key 추가가 가능한지 먼저 확인해주세요.
-- SQL 수동 적용은 요청하지 않습니다. AI image command가 migration/bootstrap/resync를 책임집니다.
+- tm-ai-clickhouse-migrate는 기존 top-level env 상속만으로 동작합니다. 별도 Secret/env 추가 불필요합니다.
+- SQL/DDL 수동 적용은 요청하지 않습니다. AI image command가 모든 DDL, bootstrap, resync를 책임집니다.
 
 이번 범위에서 제외:
 - Discord sender / Discord Secret
