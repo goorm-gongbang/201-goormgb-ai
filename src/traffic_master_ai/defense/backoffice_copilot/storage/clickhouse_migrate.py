@@ -56,7 +56,15 @@ def _parse_ddl_statements(sql_text: str) -> tuple[str, ...]:
     Splits on semicolons and filters out segments that contain no real SQL
     (empty, or containing only comment lines starting with '--').
     Comment lines within a statement are preserved so ClickHouse handles them.
+
+    Limitation: semicolon-based splitting is unsafe if SQL contains semicolons
+    inside string literals or dollar-quoted blocks.  This is acceptable for the
+    controlled 004_clickhouse_read_models.sql file (pure VIEW definitions with no
+    embedded string literals), but would need a proper SQL tokeniser for general
+    use.  A DDL-keyword guard below ensures any future misparse produces a loud
+    failure rather than a silent malformed query.
     """
+    _DDL_KEYWORDS = frozenset({"CREATE", "DROP", "ALTER", "TRUNCATE", "RENAME"})
     statements: list[str] = []
     for raw_segment in sql_text.split(";"):
         segment = raw_segment.strip()
@@ -67,8 +75,18 @@ def _parse_ddl_statements(sql_text: str) -> tuple[str, ...]:
             for line in segment.splitlines()
             if line.strip() and not line.strip().startswith("--")
         ]
-        if non_comment_lines:
-            statements.append(segment)
+        if not non_comment_lines:
+            continue
+        first_token = non_comment_lines[0].strip().split()[0].upper()
+        if first_token not in _DDL_KEYWORDS:
+            raise RuntimeError(
+                f"Unexpected SQL token after semicolon split "
+                f"(first_token={first_token!r}). "
+                "This likely means a semicolon inside a string literal was "
+                "split incorrectly. Review 004_clickhouse_read_models.sql "
+                "for embedded semicolons."
+            )
+        statements.append(segment)
     return tuple(statements)
 
 
@@ -209,8 +227,7 @@ def run_clickhouse_migrate(argv: Sequence[str] | None = None) -> None:
 
 def _stmt_preview(stmt: str, max_len: int = 80) -> str:
     """Return a single-line preview of a statement for logging."""
-    flat = " ".join(stmt.split())
-    return flat[:max_len] if len(flat) <= max_len else flat[:max_len]
+    return " ".join(stmt.split())[:max_len]
 
 
 def _build_migrate_summary(

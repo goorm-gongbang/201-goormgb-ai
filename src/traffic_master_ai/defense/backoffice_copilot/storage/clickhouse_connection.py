@@ -285,15 +285,23 @@ def execute_clickhouse_ddl(
     statement: str,
     timeout_seconds: float = 30.0,
 ) -> None:
-    """Execute a single ClickHouse DDL statement via HTTP POST.
+    """Execute a single ClickHouse DDL statement via HTTP POST body.
+
+    The SQL is sent in the POST body (not as a URL query parameter) to avoid
+    HTTP 414 Request-URI Too Large errors on complex VIEW definitions.
+    Only the optional ``database`` parameter is kept in the URL query string.
 
     Suitable for CREATE OR REPLACE VIEW and CREATE TABLE IF NOT EXISTS.
     DDL responses have an empty body on success; non-2xx raises RuntimeError.
     """
     endpoint = _parse_clickhouse_endpoint(url)
+    params: list[tuple[str, str]] = []
+    if endpoint.database:
+        params.append(("database", endpoint.database))
+    ddl_url = f"{endpoint.http_url}?{urlencode(params)}" if params else endpoint.http_url
     request = Request(
-        url=_build_clickhouse_http_query_url(endpoint, statement),
-        data=b"",
+        url=ddl_url,
+        data=statement.encode("utf-8"),
         method="POST",
         headers={"Content-Type": "text/plain; charset=utf-8"},
     )

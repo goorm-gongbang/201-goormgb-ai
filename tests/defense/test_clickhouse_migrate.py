@@ -119,6 +119,12 @@ class ParseDdlStatementsTests(unittest.TestCase):
         stmts = _parse_ddl_statements(sql)
         self.assertEqual(len(stmts), 1)
 
+    def test_non_ddl_token_raises_runtime_error(self) -> None:
+        """Misparse producing a non-DDL statement must raise, not execute silently."""
+        sql = "CREATE OR REPLACE VIEW a AS SELECT 1; SELECT 2"
+        with self.assertRaises(RuntimeError, msg="non-DDL first token must raise RuntimeError"):
+            _parse_ddl_statements(sql)
+
 
 # ---------------------------------------------------------------------------
 # 10-minute window regression prevention
@@ -250,11 +256,14 @@ class ApplyDdlHttpTests(unittest.TestCase):
             self.assertIn("database", query)
             self.assertEqual(query["database"], ["ai_defense"])
 
-    def test_apply_sends_query_param_with_create_or_replace(self) -> None:
+    def test_apply_sends_ddl_in_post_body(self) -> None:
+        """DDL must be in POST body (not URL query param) to avoid HTTP 414."""
         apply_clickhouse_ddl_migrations(clickhouse_url=self._url())
         for req in _RecordingDdlHandler.requests:
-            query_param = req["query"].get("query", [""])[0].upper()
-            self.assertIn("CREATE OR REPLACE VIEW", query_param)
+            # SQL is in the POST body
+            self.assertIn("CREATE OR REPLACE VIEW", req["body"].upper())
+            # SQL must NOT be in the URL query param
+            self.assertNotIn("query", req["query"])
 
     def test_apply_fails_on_http_error(self) -> None:
         _RecordingDdlHandler.response_status = 500
@@ -376,7 +385,8 @@ class ExecuteClickhouseDdlTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._server.shutdown()
 
-    def test_ddl_reaches_server(self) -> None:
+    def test_ddl_reaches_server_via_post_body(self) -> None:
+        """DDL statement is sent in POST body, not in URL query param."""
         from traffic_master_ai.defense.backoffice_copilot.storage.clickhouse_connection import (
             execute_clickhouse_ddl,
         )
@@ -386,7 +396,9 @@ class ExecuteClickhouseDdlTests(unittest.TestCase):
         execute_clickhouse_ddl(url=url, statement=stmt)
         self.assertEqual(len(_RecordingDdlHandler.requests), 1)
         req = _RecordingDdlHandler.requests[0]
-        self.assertIn("CREATE OR REPLACE VIEW v AS SELECT 1", req["query"]["query"][0])
+        # SQL in body, not URL params
+        self.assertIn("CREATE OR REPLACE VIEW v AS SELECT 1", req["body"])
+        self.assertNotIn("query", req["query"])
 
     def test_ddl_raises_on_4xx(self) -> None:
         from traffic_master_ai.defense.backoffice_copilot.storage.clickhouse_connection import (
