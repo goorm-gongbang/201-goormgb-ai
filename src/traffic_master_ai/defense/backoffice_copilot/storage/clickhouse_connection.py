@@ -7,6 +7,7 @@ import json
 from typing import cast
 from typing import Any, Mapping, Protocol, Sequence
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from ...storage_env import (
@@ -276,6 +277,50 @@ def _build_clickhouse_http_query_url(endpoint: _ParsedClickHouseEndpoint, query:
     if endpoint.database:
         params.append(("database", endpoint.database))
     return f"{endpoint.http_url}?{urlencode(params)}"
+
+
+def execute_clickhouse_ddl(
+    *,
+    url: str,
+    statement: str,
+    timeout_seconds: float = 30.0,
+) -> None:
+    """Execute a single ClickHouse DDL statement via HTTP POST body.
+
+    The SQL is sent in the POST body (not as a URL query parameter) to avoid
+    HTTP 414 Request-URI Too Large errors on complex VIEW definitions.
+    Only the optional ``database`` parameter is kept in the URL query string.
+
+    Suitable for CREATE OR REPLACE VIEW and CREATE TABLE IF NOT EXISTS.
+    DDL responses have an empty body on success; non-2xx raises RuntimeError.
+    """
+    endpoint = _parse_clickhouse_endpoint(url)
+    params: list[tuple[str, str]] = []
+    if endpoint.database:
+        params.append(("database", endpoint.database))
+    ddl_url = f"{endpoint.http_url}?{urlencode(params)}" if params else endpoint.http_url
+    request = Request(
+        url=ddl_url,
+        data=statement.encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "text/plain; charset=utf-8"},
+    )
+    if endpoint.username is not None:
+        request.add_header(
+            "Authorization",
+            _build_basic_auth_header(
+                username=endpoint.username,
+                password=endpoint.password or "",
+            ),
+        )
+    try:
+        with urlopen(request, timeout=timeout_seconds) as response:
+            response.read()
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"ClickHouse DDL execution failed (status={exc.code}, body={body})."
+        ) from exc
 
 
 def _build_basic_auth_header(*, username: str, password: str) -> str:
