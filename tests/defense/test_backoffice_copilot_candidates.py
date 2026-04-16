@@ -3,8 +3,40 @@ from __future__ import annotations
 import unittest
 
 from traffic_master_ai.defense.backoffice_copilot.analysis import build_candidate_selection
+from traffic_master_ai.defense.backoffice_copilot.analysis.candidates import is_candidate_session
 from traffic_master_ai.defense.backoffice_copilot.core.models import DefenseAuditEventRow, SessionSummary
 from traffic_master_ai.defense.backoffice_copilot.core.state import AnalysisInput
+
+
+def _make_summary(
+    *,
+    session_id: str = "sess-x",
+    seen_t1: bool = False,
+    seen_t2: bool = False,
+    block_event_count: int = 0,
+    throttle_event_count: int = 0,
+    vqa_fail_count: int = 0,
+    challenge_issue_count: int = 0,
+    challenge_verified_count: int = 0,
+    latest_action: str = "NONE",
+    latest_tier: str = "T0",
+    terminal_outcome: str = "NOT_BLOCKED",
+) -> SessionSummary:
+    """Minimal SessionSummary factory for is_candidate_session unit tests."""
+    return SessionSummary(
+        session_id=session_id,
+        seen_t1=seen_t1,
+        seen_t2=seen_t2,
+        block_event_count=block_event_count,
+        vqa_fail_count=vqa_fail_count,
+        throttle_event_count=throttle_event_count,
+        latest_flow_state="F2",
+        latest_action=latest_action,
+        latest_tier=latest_tier,
+        terminal_outcome=terminal_outcome,
+        challenge_issue_count=challenge_issue_count,
+        challenge_verified_count=challenge_verified_count,
+    )
 
 
 class CandidateSelectionTests(unittest.TestCase):
@@ -146,11 +178,14 @@ class WideningCandidateSelectionTests(unittest.TestCase):
 
     @staticmethod
     def _make_throttle_only_events(session_id: str) -> tuple:
-        """Session that was throttled but shows no T1/T2 tier stamp."""
-        return (
+        """Session throttled 4 times with no T1/T2 tier stamp.
+
+        4 events satisfies the has_throttle_context threshold (>= 4).
+        """
+        return tuple(
             DefenseAuditEventRow(
-                ts_ms=200,
-                trace_id="t-throttle-1",
+                ts_ms=200 + i * 10,
+                trace_id=f"t-throttle-{i}",
                 session_id=session_id,
                 event_type="DEF_THROTTLE_APPLIED",
                 payload={
@@ -158,7 +193,8 @@ class WideningCandidateSelectionTests(unittest.TestCase):
                     "serverDecision": {"riskTier": "T0", "action": "THROTTLE"},
                     "terminal_outcome": "NOT_BLOCKED",
                 },
-            ),
+            )
+            for i in range(4)
         )
 
     @staticmethod
@@ -227,7 +263,7 @@ class WideningCandidateSelectionTests(unittest.TestCase):
     # ------------------------------------------------------------------
 
     def test_throttle_only_session_is_candidate(self) -> None:
-        """A session that was throttled (no T1/T2 stamp) should now be a candidate."""
+        """A session throttled 4+ times (no T1/T2 stamp) should be a candidate."""
         events = self._make_throttle_only_events("sess-throttle-only")
         analysis_input = AnalysisInput(
             defense_audit_events=events,
@@ -349,6 +385,156 @@ class WideningCandidateSelectionTests(unittest.TestCase):
 
         candidate_ids = [s.session_id for s in selection.candidate_sessions]
         self.assertIn("sess-original", candidate_ids)
+
+
+class CandidateGatingTests(unittest.TestCase):
+    """Unit tests for is_candidate_session() covering each inclusion/exclusion axis.
+
+    Tests use _make_summary() directly to isolate the gating logic from
+    the event-interpretation pipeline.  The 8 cases below are the minimum
+    acceptance criteria specified in the candidate gating spec.
+    """
+
+    # ------------------------------------------------------------------
+    # Inclusion — tier signal (original path, must still work)
+    # ------------------------------------------------------------------
+
+    def test_seen_t1_qualifies_as_candidate(self) -> None:
+        """seen_t1=True satisfies has_tier_signal."""
+        summary = _make_summary(seen_t1=True)
+        self.assertTrue(is_candidate_session(summary))
+
+    def test_seen_t2_qualifies_as_candidate(self) -> None:
+        """seen_t2=True satisfies has_tier_signal."""
+        summary = _make_summary(seen_t2=True)
+        self.assertTrue(is_candidate_session(summary))
+
+    # ------------------------------------------------------------------
+    # Inclusion — throttle context (>= 4 events required)
+    # ------------------------------------------------------------------
+
+    def test_four_throttle_events_qualifies_as_candidate(self) -> None:
+        """throttle_event_count >= 4 satisfies has_throttle_context even without T1/T2."""
+        summary = _make_summary(throttle_event_count=4)
+        self.assertTrue(is_candidate_session(summary))
+
+    def test_three_throttle_events_does_not_qualify(self) -> None:
+        """throttle_event_count == 3 is below threshold and must NOT qualify alone."""
+        summary = _make_summary(throttle_event_count=3)
+        self.assertFalse(is_candidate_session(summary))
+
+    # ------------------------------------------------------------------
+    # Inclusion — challenge context
+    # ------------------------------------------------------------------
+
+    def test_challenge_issue_count_qualifies_as_candidate(self) -> None:
+        """challenge_issue_count >= 1 satisfies has_challenge_context."""
+        summary = _make_summary(challenge_issue_count=1)
+        self.assertTrue(is_candidate_session(summary))
+
+    def test_challenge_verified_count_qualifies_as_candidate(self) -> None:
+        """challenge_verified_count >= 1 satisfies has_challenge_context."""
+        summary = _make_summary(challenge_verified_count=1)
+        self.assertTrue(is_candidate_session(summary))
+
+    def test_vqa_fail_count_qualifies_as_candidate(self) -> None:
+        """vqa_fail_count >= 1 satisfies has_challenge_context."""
+        summary = _make_summary(vqa_fail_count=1)
+        self.assertTrue(is_candidate_session(summary))
+
+    # ------------------------------------------------------------------
+    # Exclusion — safety invariants must never be bypassed
+    # ------------------------------------------------------------------
+
+    def test_latest_action_block_excluded(self) -> None:
+        """latest_action == BLOCK must always be excluded, even with challenge context."""
+        summary = _make_summary(
+            latest_action="BLOCK",
+            challenge_issue_count=1,
+            vqa_fail_count=1,
+            throttle_event_count=4,
+        )
+        self.assertFalse(is_candidate_session(summary))
+
+    def test_latest_tier_t3_excluded(self) -> None:
+        """latest_tier == T3 must always be excluded, even with challenge context."""
+        summary = _make_summary(
+            latest_tier="T3",
+            challenge_issue_count=1,
+            vqa_fail_count=1,
+            throttle_event_count=4,
+        )
+        self.assertFalse(is_candidate_session(summary))
+
+    def test_terminal_outcome_blocked_excluded(self) -> None:
+        """terminal_outcome == BLOCKED must always be excluded."""
+        summary = _make_summary(
+            terminal_outcome="BLOCKED",
+            seen_t1=True,
+            challenge_issue_count=2,
+        )
+        self.assertFalse(is_candidate_session(summary))
+
+    def test_block_event_count_excluded(self) -> None:
+        """block_event_count > 0 must always be excluded, even with T1/T2 seen."""
+        summary = _make_summary(
+            block_event_count=1,
+            seen_t1=True,
+            seen_t2=True,
+            throttle_event_count=4,
+        )
+        self.assertFalse(is_candidate_session(summary))
+
+    def test_no_signal_at_all_not_a_candidate(self) -> None:
+        """A session with zero signals and no exclusion must not be a candidate."""
+        summary = _make_summary()
+        self.assertFalse(is_candidate_session(summary))
+
+    # ------------------------------------------------------------------
+    # Integration: CHALLENGE_ISSUED / CHALLENGE_VERIFIED event counting
+    # ------------------------------------------------------------------
+
+    def test_challenge_issued_event_counted_as_challenge_issue(self) -> None:
+        """CHALLENGE_ISSUED events must be counted into challenge_issue_count."""
+        analysis_input = AnalysisInput(
+            defense_audit_events=(
+                DefenseAuditEventRow(
+                    ts_ms=100,
+                    trace_id="ci-1",
+                    session_id="sess-challenge-issued",
+                    event_type="CHALLENGE_ISSUED",
+                    payload={"flowState": "F4M", "serverDecision": {"riskTier": "T0", "action": "NONE"}},
+                ),
+            ),
+            raw_audit_available=False,
+        )
+        selection = build_candidate_selection(analysis_input)
+
+        candidate_ids = [s.session_id for s in selection.candidate_sessions]
+        self.assertIn("sess-challenge-issued", candidate_ids)
+        summary = next(s for s in selection.session_summaries if s.session_id == "sess-challenge-issued")
+        self.assertEqual(summary.challenge_issue_count, 1)
+
+    def test_challenge_verified_event_counted_as_challenge_verified(self) -> None:
+        """CHALLENGE_VERIFIED events must be counted into challenge_verified_count."""
+        analysis_input = AnalysisInput(
+            defense_audit_events=(
+                DefenseAuditEventRow(
+                    ts_ms=200,
+                    trace_id="cv-1",
+                    session_id="sess-challenge-verified",
+                    event_type="CHALLENGE_VERIFIED",
+                    payload={"flowState": "F4M", "serverDecision": {"riskTier": "T0", "action": "NONE"}},
+                ),
+            ),
+            raw_audit_available=False,
+        )
+        selection = build_candidate_selection(analysis_input)
+
+        candidate_ids = [s.session_id for s in selection.candidate_sessions]
+        self.assertIn("sess-challenge-verified", candidate_ids)
+        summary = next(s for s in selection.session_summaries if s.session_id == "sess-challenge-verified")
+        self.assertEqual(summary.challenge_verified_count, 1)
 
 
 if __name__ == "__main__":

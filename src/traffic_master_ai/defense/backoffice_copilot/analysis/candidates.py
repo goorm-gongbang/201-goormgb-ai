@@ -83,41 +83,55 @@ def is_candidate_session(summary: SessionSummary) -> bool:
     - latest risk tier is T3 (already handled at the highest severity)
     - session terminated as BLOCKED
 
-    Inclusion requires at least one signal of interest:
-    1. Tier signal: T1 or T2 was observed during the session, OR
-    2. Protection-context signal: the defense system already applied a throttle
-       or the session had a challenge failure — both indicate the session was
-       flagged by runtime even when tier data in the audit log is sparse.
+    Inclusion requires at least one of three signals:
 
-    This widens candidate coverage so that sessions where runtime acted
-    (throttle / challenge) but tier fields are missing or ambiguous are still
-    reviewed by the LLM, increasing candidate_count without loosening
-    the safety exclusions.
+    1. Tier signal — T1 or T2 was observed during the session.
+       Classic path: the EWMA risk score crossed a tier boundary and was
+       stamped in the audit log.
+
+    2. Throttle context — the runtime applied 4+ throttle events.
+       A single transient throttle can happen at T1 without strong botlikeness;
+       4+ repeated throttles indicate the risk model stayed elevated across
+       several requests, making LLM review worthwhile even without an explicit
+       T2 stamp.
+
+    3. Challenge context — at least one challenge was issued, verified, or
+       failed (vqa_fail).  Any challenge interaction shows the runtime already
+       escalated past normal throttling and engaged the active defence layer;
+       these sessions are high-priority candidates regardless of tier stamps.
+
+    The three inclusion signals are deliberately independent so that sessions
+    can qualify through any single axis.  The safety exclusions above are
+    always checked first and cannot be overridden.
     """
-    # --- safety exclusions (always applied first) ---
-    if summary.block_event_count > 0:
-        return False
-    if summary.latest_action == "BLOCK":
-        return False
-    if summary.latest_tier == "T3":
-        return False
-    if summary.terminal_outcome == "BLOCKED":
+    # --- safety exclusions (always applied first, non-negotiable) ---
+    has_exclusion_condition = (
+        summary.block_event_count > 0
+        or summary.latest_action == "BLOCK"
+        or summary.latest_tier == "T3"
+        or summary.terminal_outcome == "BLOCKED"
+    )
+    if has_exclusion_condition:
         return False
 
-    # --- inclusion: tier signal (original path) ---
+    # --- inclusion signal 1: tier evidence ---
     has_tier_signal = summary.seen_t1 or summary.seen_t2
 
-    # --- inclusion: protection-context signal (widened path) ---
-    # A session that was throttled or failed a challenge has already been
-    # identified as risky by the runtime engine; it deserves LLM review
-    # regardless of whether a T1/T2 tier stamp is present in the audit window.
-    has_protection_context = (
-        summary.throttle_event_count >= 1
+    # --- inclusion signal 2: repeated throttle context ---
+    # Threshold >=4 filters out incidental single-event throttles at T1 and
+    # targets sessions where the runtime consistently rated the session as risky.
+    has_throttle_context = summary.throttle_event_count >= 4
+
+    # --- inclusion signal 3: challenge context ---
+    # Any challenge interaction (issue, verify, or fail) means the active
+    # defence layer was already triggered; these sessions always warrant review.
+    has_challenge_context = (
+        summary.challenge_issue_count >= 1
+        or summary.challenge_verified_count >= 1
         or summary.vqa_fail_count >= 1
-        or summary.latest_action == "THROTTLE"
     )
 
-    return has_tier_signal or has_protection_context
+    return has_tier_signal or has_throttle_context or has_challenge_context
 
 
 def _summarize_session(
@@ -130,6 +144,8 @@ def _summarize_session(
     block_event_count = 0
     vqa_fail_count = 0
     throttle_event_count = 0
+    challenge_issue_count = 0
+    challenge_verified_count = 0
     latest_flow_state = _DEFAULT_FLOW_STATE
     latest_action = _DEFAULT_ACTION
     latest_tier = _DEFAULT_TIER
@@ -149,6 +165,10 @@ def _summarize_session(
             throttle_event_count += 1
         if interpreted.row.event_type == "S3_CHALLENGE_RESULT" and _is_vqa_fail(interpreted):
             vqa_fail_count += 1
+        if interpreted.row.event_type == "CHALLENGE_ISSUED":
+            challenge_issue_count += 1
+        if interpreted.row.event_type == "CHALLENGE_VERIFIED":
+            challenge_verified_count += 1
 
         if interpreted.usage == "UNUSED":
             continue
@@ -177,6 +197,8 @@ def _summarize_session(
         latest_action=latest_action,
         latest_tier=latest_tier,
         terminal_outcome=terminal_outcome,
+        challenge_issue_count=challenge_issue_count,
+        challenge_verified_count=challenge_verified_count,
     )
 
 

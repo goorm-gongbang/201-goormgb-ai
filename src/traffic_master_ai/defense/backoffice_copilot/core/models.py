@@ -42,6 +42,8 @@ class SessionSummary:
     latest_action: str
     latest_tier: str
     terminal_outcome: str
+    challenge_issue_count: int = 0
+    challenge_verified_count: int = 0
 
 
 @dataclass(slots=True)
