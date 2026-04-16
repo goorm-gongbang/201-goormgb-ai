@@ -249,8 +249,7 @@ def _extract_create_table_columns(sql: str, table_name: str) -> frozenset[str]:
     import re
 
     # Match the CREATE TABLE block for the given table
-    pattern = rf"CREATE TABLE IF NOT EXISTS {re.escape(table_name)} \(\n(.*?)(?:\n\);|\n    CONSTRAINT|\n    PRIMARY KEY \()"
-    match = re.search(pattern, sql, re.DOTALL)
+    pattern = rf"CREATE TABLE\s+(?:IF NOT EXISTS\s+)?{re.escape(table_name)}\s*\(\n(.*?)(?:\n\);|\n\s+CONSTRAINT|\n\s+PRIMARY KEY \()"
     if match is None:
         # Try without IF NOT EXISTS
         pattern = rf"CREATE TABLE {re.escape(table_name)} \(\n(.*?)(?:\n\);|\n    CONSTRAINT|\n    PRIMARY KEY \()"
