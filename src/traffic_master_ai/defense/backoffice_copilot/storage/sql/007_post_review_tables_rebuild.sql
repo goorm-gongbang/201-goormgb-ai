@@ -58,11 +58,15 @@ BEGIN
     IF EXISTS (
         SELECT 1
         FROM information_schema.columns
-        WHERE table_schema = 'public'
+        WHERE table_schema = current_schema()
           AND table_name   = 'post_review_runs'
           AND column_name  = 'id'
           AND data_type    = 'bigint'
     ) THEN
+        -- Safety check: avoid data loss if the table is not empty
+        IF EXISTS (SELECT 1 FROM post_review_runs LIMIT 1) THEN
+            RAISE EXCEPTION 'post_review_tables_rebuild: old schema detected but data exists. Aborting to prevent data loss.';
+        END IF;
         RAISE NOTICE 'post_review_tables_rebuild: old schema detected (id BIGSERIAL PK). Dropping and recreating.';
         -- Drop session_results first to remove the FK dependency
         DROP TABLE IF EXISTS post_review_session_results CASCADE;
