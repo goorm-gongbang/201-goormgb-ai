@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Callable, Mapping, Sequence
+
+LOGGER = logging.getLogger(__name__)
 
 from ..core.issues import PipelineIssue
 from ..core.models import SessionAnalysis, SessionReviewResult
@@ -47,6 +50,13 @@ def generate_summary_text(
     )
 
     if summary_adapter is None:
+        LOGGER.warning(
+            "post_review_summary_fallback_applied match_id=%s window_start_ms=%s "
+            "window_end_ms=%s fallback_reason=adapter_missing fallback_mode=template degraded=true",
+            match_id,
+            window_start_ms,
+            window_end_ms,
+        )
         return SummaryGenerationResult(
             summary_text=build_fallback_summary_text(summary_input),
             warnings=(
@@ -63,6 +73,14 @@ def generate_summary_text(
         summary_text = parse_summary_text(raw_output)
     except Exception as exc:
         fallback_reason = _classify_summary_failure(exc)
+        LOGGER.warning(
+            "post_review_summary_fallback_applied match_id=%s window_start_ms=%s "
+            "window_end_ms=%s fallback_reason=%s fallback_mode=template degraded=true",
+            match_id,
+            window_start_ms,
+            window_end_ms,
+            fallback_reason,
+        )
         return SummaryGenerationResult(
             summary_text=build_fallback_summary_text(summary_input),
             warnings=(

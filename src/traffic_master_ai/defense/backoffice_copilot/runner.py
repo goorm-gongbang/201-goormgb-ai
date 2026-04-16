@@ -79,6 +79,16 @@ class PostReviewCliResult:
     warning_count: int
     error_count: int
     duration_ms: int
+    # Observability fields
+    failure_stage: str | None = None
+    error_code: str | None = None
+    degraded: bool = False
+    llm_used: bool = False
+    fallback_used: bool = False
+    db_persist_attempted: bool = False
+    db_persist_succeeded: bool = False
+    warning_codes: tuple[str, ...] = ()
+    error_codes: tuple[str, ...] = ()
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False, sort_keys=True)
@@ -238,7 +248,12 @@ def execute_post_review(
             )
 
         raw_fallback_provider = _build_raw_fallback_provider(config)
-        review_adapter, summary_adapter = _build_llm_adapters_from_env(config.require_llm)
+        review_adapter, summary_adapter, llm_used = _build_llm_adapters_from_env(
+            config.require_llm,
+            match_id=config.match_id,
+            window_start_ms=config.window_start_ms,
+            window_end_ms=config.window_end_ms,
+        )
         workflow = build_backoffice_copilot_workflow(
             BackofficeCopilotWorkflowDependencies(
                 audit_events_jsonl_path=None,
@@ -262,6 +277,19 @@ def execute_post_review(
             if workflow_result.state.post_review_runs_row is not None
             else 0
         )
+        warning_codes = tuple(w.code for w in workflow_result.state.warnings)
+        error_codes = tuple(e.code for e in workflow_result.state.errors)
+        fallback_used = any(
+            code in ("llm_review_fallback_applied", "window_summary_fallback_applied")
+            for code in warning_codes
+        )
+        degraded = fallback_used or (not llm_used and candidate_count > 0)
+        failure_stage = (
+            _derive_failure_stage(workflow_result.state.errors)
+            if workflow_result.final_status == "FAILED"
+            else None
+        )
+        error_code = error_codes[0] if error_codes else None
         result = PostReviewCliResult(
             status="completed" if workflow_result.final_status != "FAILED" else "failed",
             final_status=workflow_result.final_status,
@@ -278,6 +306,15 @@ def execute_post_review(
             warning_count=len(workflow_result.state.warnings),
             error_count=len(workflow_result.state.errors),
             duration_ms=_duration_ms(started),
+            failure_stage=failure_stage,
+            error_code=error_code,
+            degraded=degraded,
+            llm_used=llm_used,
+            fallback_used=fallback_used,
+            db_persist_attempted=workflow_result.state.db_persist_attempted,
+            db_persist_succeeded=workflow_result.state.db_persist_succeeded,
+            warning_codes=warning_codes,
+            error_codes=error_codes,
         )
         _log_post_review_summary(config=config, result=result)
         return result
@@ -439,13 +476,29 @@ def _load_clickhouse_read_model_input(
     )
 
 
-def _build_llm_adapters_from_env(require_llm: bool) -> tuple[object | None, object | None]:
+def _build_llm_adapters_from_env(
+    require_llm: bool,
+    *,
+    match_id: str = "unknown",
+    window_start_ms: int = 0,
+    window_end_ms: int = 0,
+) -> tuple[object | None, object | None, bool]:
+    """Return (review_adapter, summary_adapter, llm_configured).
+
+    llm_configured=False means both adapters are None and deterministic fallback will be used.
+    """
     api_key = os.getenv("TM_OFFLINE_LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
     if not api_key:
         if require_llm:
             raise ValueError("TM_OFFLINE_LLM_API_KEY or OPENAI_API_KEY is required.")
-        LOGGER.warning("post_review_llm_adapter_missing fallback=deterministic")
-        return None, None
+        LOGGER.warning(
+            "post_review_llm_adapter_missing match_id=%s window_start_ms=%s "
+            "window_end_ms=%s fallback=deterministic fallback_reason=api_key_missing degraded=true",
+            match_id,
+            window_start_ms,
+            window_end_ms,
+        )
+        return None, None, False
 
     model = os.getenv("TM_OFFLINE_LLM_MODEL", DEFAULT_OFFLINE_LLM_MODEL)
     endpoint = os.getenv("OPENAI_BASE_URL") or os.getenv("TM_OFFLINE_LLM_ENDPOINT")
@@ -466,6 +519,7 @@ def _build_llm_adapters_from_env(require_llm: bool) -> tuple[object | None, obje
             endpoint=endpoint,
             timeout_ms=timeout_ms,
         ),
+        True,
     )
 
 
@@ -527,6 +581,41 @@ def build_default_post_review_match_id(window_end_ms: int) -> str:
     return f"post-review-{window_end.strftime('%Y%m%d%H%M')}"
 
 
+def _derive_failure_stage(errors: list) -> str | None:
+    """Map the first error code / node name to a pipeline stage label."""
+    _NODE_TO_STAGE: dict[str, str] = {
+        "node_1_input_collection": "input_load",
+        "node_2_candidate_selection": "candidate_select",
+        "node_3_session_analysis": "session_review",
+        "node_4_review": "session_review",
+        "node_5_summary": "summary_generate",
+        "node_6_output_delivery": "output_persist",
+    }
+    _CODE_TO_STAGE: dict[str, str] = {
+        "clickhouse_read_failed": "input_load",
+        "candidate_selection_failed": "candidate_select",
+        "llm_review_failed": "session_review",
+        "summary_generation_failed": "summary_generate",
+        "output_build_failed": "output_build",
+        "db_persistence_failed": "output_persist",
+        "run_status_persistence_failed": "output_persist",
+        "backend_delivery_failed": "output_persist",
+        "validation_failed": "output_persist",
+    }
+    for error in errors:
+        if error.code == "workflow_node_failed":
+            node_name = error.context.get("node_name", "")
+            stage = _NODE_TO_STAGE.get(node_name)
+            if stage:
+                return stage
+        stage = _CODE_TO_STAGE.get(error.code)
+        if stage:
+            return stage
+    if errors:
+        return "unknown"
+    return None
+
+
 def _duration_ms(started_at_monotonic: float) -> int:
     return max(int((time.monotonic() - started_at_monotonic) * 1000), 0)
 
@@ -544,8 +633,12 @@ def _log_post_review_summary(
 ) -> None:
     LOGGER.info(
         "post_review_summary mode=%s status=%s match_id=%s window_start_ms=%s "
-        "window_end_ms=%s input_source=%s input_count=%s output_count=%s "
-        "skipped_count=%s error_count=%s duration_ms=%s dry_run=%s",
+        "window_end_ms=%s input_source=%s input_count=%s candidate_count=%s "
+        "output_count=%s skipped_count=%s warning_count=%s error_count=%s "
+        "duration_ms=%s dry_run=%s "
+        "llm_used=%s fallback_used=%s degraded=%s "
+        "db_persist_attempted=%s db_persist_succeeded=%s "
+        "failure_stage=%s error_code=%s",
         _post_review_mode(config),
         result.status,
         result.match_id,
@@ -553,11 +646,20 @@ def _log_post_review_summary(
         result.window_end_ms,
         result.input_source,
         result.input_count,
+        result.candidate_count,
         result.output_count,
         result.skipped_count,
+        result.warning_count,
         result.error_count,
         result.duration_ms,
         result.dry_run,
+        result.llm_used,
+        result.fallback_used,
+        result.degraded,
+        result.db_persist_attempted,
+        result.db_persist_succeeded,
+        result.failure_stage,
+        result.error_code,
     )
 
 
