@@ -134,5 +134,115 @@ class BackofficeCopilotStorageTests(unittest.TestCase):
             serialize_session_result_record(invalid_session_record)
 
 
+def _extract_insert_columns(insert_sql: str) -> frozenset[str]:
+    """Parse column names from INSERT INTO table (...) VALUES block."""
+    match = re.search(r"INSERT INTO \w+ \(\n(.*?)\) VALUES", insert_sql, re.DOTALL)
+    assert match is not None, f"Could not parse INSERT SQL columns: {insert_sql[:80]}"
+    return frozenset(
+        col.strip().rstrip(",")
+        for col in match.group(1).splitlines()
+        if col.strip()
+    )
+
+
+class SaveContractTests(unittest.TestCase):
+    """Verify that the serializers, INSERT SQL, and DDL stay in sync.
+
+    These tests break intentionally if a new column is added to the code
+    but not wired into the SQL (or vice versa), preventing schema drift
+    from silently returning.
+    """
+
+    def test_serialize_run_record_keys_match_insert_sql_columns(self) -> None:
+        """serialize_run_record() output keys must exactly equal _INSERT_RUN_SQL column list."""
+        from traffic_master_ai.defense.backoffice_copilot.storage.repository import (
+            _INSERT_RUN_SQL,
+        )
+
+        params = serialize_run_record(_run_record())
+        sql_columns = _extract_insert_columns(_INSERT_RUN_SQL)
+
+        self.assertEqual(frozenset(params.keys()), sql_columns)
+
+    def test_serialize_session_result_record_keys_match_insert_sql_columns(self) -> None:
+        """serialize_session_result_record() output keys must exactly equal _INSERT_SESSION_RESULT_SQL column list."""
+        from traffic_master_ai.defense.backoffice_copilot.storage.repository import (
+            _INSERT_SESSION_RESULT_SQL,
+        )
+
+        params = serialize_session_result_record(_session_record())
+        sql_columns = _extract_insert_columns(_INSERT_SESSION_RESULT_SQL)
+
+        self.assertEqual(frozenset(params.keys()), sql_columns)
+
+    def test_run_record_insert_and_upsert_sql_have_identical_column_lists(self) -> None:
+        """INSERT and UPSERT SQL for post_review_runs must address the same columns."""
+        from traffic_master_ai.defense.backoffice_copilot.storage.repository import (
+            _INSERT_RUN_SQL,
+            _UPSERT_RUN_SQL,
+        )
+
+        self.assertEqual(
+            _extract_insert_columns(_INSERT_RUN_SQL),
+            _extract_insert_columns(_UPSERT_RUN_SQL),
+        )
+
+    def test_session_result_insert_and_upsert_sql_have_identical_column_lists(self) -> None:
+        """INSERT and UPSERT SQL for post_review_session_results must address the same columns."""
+        from traffic_master_ai.defense.backoffice_copilot.storage.repository import (
+            _INSERT_SESSION_RESULT_SQL,
+            _UPSERT_SESSION_RESULT_SQL,
+        )
+
+        self.assertEqual(
+            _extract_insert_columns(_INSERT_SESSION_RESULT_SQL),
+            _extract_insert_columns(_UPSERT_SESSION_RESULT_SQL),
+        )
+
+    def test_save_bundle_executes_both_run_and_session_in_one_transaction(self) -> None:
+        """save_bundle() must open exactly one transaction and execute both the run and session writes."""
+        from unittest.mock import patch
+        from traffic_master_ai.defense.backoffice_copilot.storage.repository import (
+            PostgresPostReviewWriteRepository,
+            PkConflictPolicy,
+        )
+
+        execute_calls: list[frozenset[str]] = []
+
+        def _fake_execute(_self_repo: object, _connection: object, _sql_text: str, params: dict) -> None:
+            execute_calls.append(frozenset(params.keys()))
+
+        class _FakeTxn:
+            def __enter__(self) -> object:
+                return object()
+
+            def __exit__(self, *_: object) -> bool:
+                return False
+
+        class _FakeEngine:
+            begin_count = 0
+
+            def begin(self) -> _FakeTxn:
+                self.__class__.begin_count += 1
+                return _FakeTxn()
+
+        engine = _FakeEngine()
+        repo = PostgresPostReviewWriteRepository(engine=engine, conflict_policy=PkConflictPolicy.UPSERT)
+
+        with patch.object(PostgresPostReviewWriteRepository, "_execute", _fake_execute):
+            repo.save_bundle(_run_record(), [_session_record()])
+
+        # Exactly one transaction opened — both writes share the same BEGIN/COMMIT
+        self.assertEqual(_FakeEngine.begin_count, 1)
+        # Two _execute calls: one for the run row, one for the session row
+        self.assertEqual(len(execute_calls), 2)
+        # First call carries run record params, second carries session result params
+        run_params, session_params = execute_calls
+        self.assertIn("candidate_count", run_params)
+        self.assertIn("summary_text_json", run_params)
+        self.assertIn("session_analysis_json", session_params)
+        self.assertIn("backend_delivery_status", session_params)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
+import os
+import socket
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
@@ -16,6 +18,16 @@ from ..storage_env import load_audit_log_config_from_env, load_s3_archive_config
 from .models import EvaluateRequest, EvaluateResponse, RuntimeStateSnapshot
 
 logger = logging.getLogger(__name__)
+
+_HOSTNAME = socket.gethostname()
+
+
+def _path_context(path: Path) -> str:
+    try:
+        st = path.stat()
+        return f"pid={os.getpid()} host={_HOSTNAME} inode={st.st_ino} size={st.st_size}"
+    except OSError:
+        return f"pid={os.getpid()} host={_HOSTNAME} inode=? size=missing"
 
 
 class DefenseDecisionAuditLogger:
@@ -172,13 +184,28 @@ class S3Uploader:
         # Key format: {prefix}/YYYY/MM/DD/{filename}
         now = datetime.now(UTC)
         key = f"{self.prefix}/{now.strftime('%Y/%m/%d')}/{local_path.name}"
-        
+        attempt_id = uuid.uuid4().hex[:12]
+        ctx = _path_context(local_path)
+
         try:
             self._s3.upload_file(str(local_path), self.bucket, key)
-            logger.info("Successfully uploaded %s to s3://%s/%s", local_path.name, self.bucket, key)
+            logger.info(
+                "Successfully uploaded %s to s3://%s/%s attempt=%s %s",
+                local_path.name, self.bucket, key, attempt_id, ctx,
+            )
             return True
+        except FileNotFoundError as exc:
+            # Lost the race — another worker/replica already unlinked this file.
+            logger.warning(
+                "Skipping upload of %s; file disappeared mid-flight (%s) attempt=%s %s",
+                local_path.name, exc, attempt_id, ctx,
+            )
+            return False
         except Exception as exc:
-            logger.error("Failed to upload %s to S3: %s", local_path.name, exc)
+            logger.error(
+                "Failed to upload %s to S3: %s attempt=%s %s",
+                local_path.name, exc, attempt_id, ctx,
+            )
             return False
 
 
@@ -186,23 +213,37 @@ def rotate_and_upload_audit_log(
     logger_instance: DefenseDecisionAuditLogger,
     uploader: S3Uploader,
 ) -> None:
-    """Rotates the current log file and uploads the old one to S3."""
-    source_path = logger_instance.file_path
-    if not source_path.exists() or source_path.stat().st_size == 0:
-        return
+    """Rotates the current log file and uploads the old one to S3.
 
+    The rotated filename embeds pid and a random suffix so two processes
+    that share the audit directory cannot produce colliding filenames.
+    """
+    source_path = logger_instance.file_path
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-    rotated_path = source_path.with_name(f"{source_path.stem}_{timestamp}{source_path.suffix}")
+    unique = f"{timestamp}_{os.getpid()}_{uuid.uuid4().hex[:8]}"
+    rotated_path = source_path.with_name(
+        f"{source_path.stem}_{unique}{source_path.suffix}"
+    )
 
     try:
-        # Atomic rename to avoid losing logs during upload
+        # Take exclusive ownership of the source file via atomic rename.
+        # Re-check existence under the lock so a concurrent rotator that
+        # already renamed the file does not cause a FileNotFoundError here.
         with logger_instance._lock:
-            source_path.rename(rotated_path)
-        
+            try:
+                if source_path.stat().st_size == 0:
+                    return
+                source_path.rename(rotated_path)
+            except FileNotFoundError:
+                return
+
         if uploader.upload_file(rotated_path):
-            rotated_path.unlink()  # Delete local copy after successful upload
+            rotated_path.unlink(missing_ok=True)
     except Exception as exc:
-        logger.error("Audit log rotation failed: %s", exc)
+        logger.error(
+            "Audit log rotation failed: %s rotated=%s %s",
+            exc, rotated_path.name, _path_context(rotated_path),
+        )
 
 
 def list_pending_rotated_audit_logs(
@@ -226,7 +267,14 @@ def upload_pending_rotated_audit_logs(
     uploaded_paths: list[Path] = []
     for rotated_path in list_pending_rotated_audit_logs(logger_instance):
         if uploader.upload_file(rotated_path):
-            rotated_path.unlink()
+            try:
+                rotated_path.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning(
+                    "unlink after upload failed: %s (%s) %s",
+                    rotated_path.name, exc, _path_context(rotated_path),
+                )
+                continue
             uploaded_paths.append(rotated_path)
     return tuple(uploaded_paths)
 
@@ -237,4 +285,3 @@ def flush_audit_log_to_archive(
 ) -> None:
     upload_pending_rotated_audit_logs(logger_instance, uploader)
     rotate_and_upload_audit_log(logger_instance, uploader)
-    upload_pending_rotated_audit_logs(logger_instance, uploader)
