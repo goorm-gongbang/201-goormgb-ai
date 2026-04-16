@@ -446,6 +446,8 @@ ArgoCD PreSync를 통한 완전 자동화 경로 (운영 표준):
    - scope: PostgreSQL DDL only
    - `001_post_review_tables.sql`
    - `002_postgresql_policy_control_plane_tables.sql`
+   - `005_post_review_runs_schema_drift.sql`
+   - `006_post_review_session_results_schema_drift.sql`
 3. application deploy 전 prod env 검증
 4. authoritative seed data 반영
 
@@ -805,7 +807,7 @@ tm-ai-post-review --dry-run
 확인 기준:
 
 - 각 command 마지막 stdout 줄이 JSON summary다.
-- `tm-ai-storage-migrate --dry-run`은 `status=dry_run`, `target=postgres_ddl`, `output_count=2`다.
+- `tm-ai-storage-migrate --dry-run`은 `status=dry_run`, `target=postgres_ddl`, `output_count=4`다.
 - `tm-ai-policy-bootstrap --dry-run`은 `status=dry_run`이고 PostgreSQL write가 없다.
 - `tm-ai-policy-projection-resync --current`는 active rollout row가 없으면 `status=failed`로 종료한다.
 - optimizer dry-run은 mutation 없이 `status=dry_run` 또는 lock/skip status로 종료한다.
@@ -941,7 +943,67 @@ tm-ai-post-review --dry-run
 
 ---
 
-## 12. 확인 파일
+## 12. Post-Review Persistence Schema Drift 대응
+
+### 12.1 발생 원인
+
+`CREATE TABLE IF NOT EXISTS`는 테이블이 이미 존재하면 no-op이다.
+기존 환경에서 `post_review_runs` 또는 `post_review_session_results` 테이블이 생성된 이후
+코드에 새 컬럼이 추가된 경우, 기존 migration SQL만으로는 컬럼이 추가되지 않는다.
+
+확인된 drift 목록:
+
+| 테이블 | 누락 컬럼 | 증상 |
+|--------|-----------|------|
+| `post_review_runs` | `candidate_count`, `suspicious_count`, `summary_text_json` | `column does not exist` — `save_bundle()` INSERT 실패 |
+| `post_review_session_results` | `evidence_summary`, `session_analysis_json`, `backend_delivery_status` | `column does not exist` — `save_bundle()` INSERT 실패 |
+
+### 12.2 수정 파일
+
+| 파일 | 대상 테이블 | 내용 |
+|------|-------------|------|
+| `005_post_review_runs_schema_drift.sql` | `post_review_runs` | 누락 컬럼 추가 → COALESCE 단일 UPDATE 백필 → NOT NULL 강제 → CHECK 제약 추가 |
+| `006_post_review_session_results_schema_drift.sql` | `post_review_session_results` | 누락 컬럼 추가 → COALESCE 단일 UPDATE 백필 → NOT NULL 강제 → CHECK 제약 추가 |
+
+### 12.3 idempotency 보장
+
+- `ADD COLUMN IF NOT EXISTS`: 이미 있으면 no-op
+- COALESCE 단일 UPDATE: 이미 NOT NULL 값이 있는 행에는 영향 없음 (`NULL OR NULL OR NULL` 조건이 false)
+- `ALTER COLUMN ... SET NOT NULL`: PostgreSQL은 이미 NOT NULL이면 무시
+- `DO $$ ... IF NOT EXISTS ... $$` CHECK 제약: 이미 있으면 no-op
+
+COALESCE 단일 UPDATE는 3개 컬럼을 한 번의 테이블 스캔과 하나의 잠금으로 처리한다.
+3개 별도 UPDATE 대비 잠금 시간과 I/O가 1/3로 줄어든다.
+
+### 12.4 확인 방법
+
+```bash
+# 4개 파일이 dry-run에 포함되어야 한다
+tm-ai-storage-migrate --dry-run
+# 기대 출력:
+# planned 001_post_review_tables.sql
+# planned 002_postgresql_policy_control_plane_tables.sql
+# planned 005_post_review_runs_schema_drift.sql
+# planned 006_post_review_session_results_schema_drift.sql
+# ... JSON summary with "output_count": 4, "status": "dry_run"
+```
+
+### 12.5 재발 방지
+
+`SaveContractTests` (in `tests/defense/test_backoffice_copilot_storage.py`)가
+serializer output key, INSERT SQL column list, UPSERT SQL column list의 3-way 일치를 상시 검증한다.
+
+새 컬럼을 추가할 때:
+1. `PostReviewRunRecord` 또는 `PostReviewSessionResultRecord` 모델 필드 추가
+2. `serialize_run_record()` 또는 `serialize_session_result_record()` key 추가
+3. `_INSERT_*_SQL` 및 `_UPSERT_*_SQL` column list 추가
+4. `001_post_review_tables.sql` DDL 컬럼 추가 (신규 환경용)
+5. 새 drift migration 파일 추가 (기존 환경용, 파일명은 다음 번호 순서)
+6. `_POSTGRES_MIGRATION_FILES`에 새 파일 등록
+
+---
+
+## 13. 확인 파일
 
 - `src/traffic_master_ai/defense/storage_env.py`
 - `src/traffic_master_ai/defense/api/etl_worker.py`
