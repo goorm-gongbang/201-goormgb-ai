@@ -596,7 +596,7 @@ def _derive_failure_stage(errors: list) -> str | None:
         "candidate_selection_failed": "candidate_select",
         "llm_review_failed": "session_review",
         "summary_generation_failed": "summary_generate",
-        "output_build_failed": "output_build",
+        "output_build_failed": "output_persist",
         "db_persistence_failed": "output_persist",
         "run_status_persistence_failed": "output_persist",
         "backend_delivery_failed": "output_persist",
