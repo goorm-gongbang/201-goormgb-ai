@@ -277,9 +277,7 @@ class DdlContractAlignmentTests(unittest.TestCase):
     tests will break before any data reaches the database.
     """
 
-    _SQL_DIR = Path(
-        "src/traffic_master_ai/defense/backoffice_copilot/storage/sql"
-    )
+    _SQL_DIR = Path(__file__).resolve().parents[2] / "src/traffic_master_ai/defense/backoffice_copilot/storage/sql"
 
     def _read_sql(self, filename: str) -> str:
         return (self._SQL_DIR / filename).read_text(encoding="utf-8")
