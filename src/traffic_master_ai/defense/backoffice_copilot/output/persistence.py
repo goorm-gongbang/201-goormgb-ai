@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+
+LOGGER = logging.getLogger(__name__)
 
 from ..core.issues import PipelineIssue
 from ..core.models import (
@@ -76,7 +79,36 @@ def execute_output_stage(
         now=now,
     )
 
-    repository.save_bundle(run_row, session_rows)
+    LOGGER.info(
+        "post_review_db_persist_start match_id=%s window_start_ms=%s window_end_ms=%s "
+        "session_result_row_count=%s run_row_present=true",
+        match_id,
+        window_start_ms,
+        window_end_ms,
+        len(session_rows),
+    )
+    try:
+        repository.save_bundle(run_row, session_rows)
+    except Exception as exc:
+        LOGGER.error(
+            "post_review_db_persist_failed match_id=%s window_start_ms=%s window_end_ms=%s "
+            "session_result_row_count=%s run_row_present=true exception_type=%s exception_message=%s",
+            match_id,
+            window_start_ms,
+            window_end_ms,
+            len(session_rows),
+            type(exc).__name__,
+            str(exc),
+        )
+        raise
+    LOGGER.info(
+        "post_review_db_persist_success match_id=%s window_start_ms=%s window_end_ms=%s "
+        "session_result_row_count=%s run_row_present=true",
+        match_id,
+        window_start_ms,
+        window_end_ms,
+        len(session_rows),
+    )
 
     backend_request = build_backend_request(
         match_id=match_id,

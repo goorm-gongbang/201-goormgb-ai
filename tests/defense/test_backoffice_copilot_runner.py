@@ -355,6 +355,8 @@ class BackofficeCopilotRunnerTests(unittest.TestCase):
                             post_review_runs_row=None,
                             warnings=[],
                             errors=[],
+                            db_persist_attempted=False,
+                            db_persist_succeeded=False,
                         ),
                     )
 
