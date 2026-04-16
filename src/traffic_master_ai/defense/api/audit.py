@@ -26,7 +26,7 @@ def _path_context(path: Path) -> str:
     try:
         st = path.stat()
         return f"pid={os.getpid()} host={_HOSTNAME} inode={st.st_ino} size={st.st_size}"
-    except FileNotFoundError:
+    except OSError:
         return f"pid={os.getpid()} host={_HOSTNAME} inode=? size=missing"
 
 
