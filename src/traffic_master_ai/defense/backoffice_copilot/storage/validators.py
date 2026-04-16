@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Mapping, Sequence
@@ -154,7 +155,13 @@ def validate_session_result_record(
 
 
 def serialize_run_record(record: PostReviewRunRecord) -> dict[str, object]:
-    """Validate and convert a run record into SQL parameter payload."""
+    """Validate and convert a run record into SQL parameter payload.
+
+    JSONB columns (summary_text_json) are serialized to JSON strings so that
+    psycopg / psycopg2 binds them as ``text`` and PostgreSQL casts to ``jsonb``.
+    Passing a raw Python list would cause psycopg to infer ``text[]`` (PostgreSQL
+    array), which raises DatatypeMismatch against a ``jsonb`` column.
+    """
 
     validate_run_record(record)
     return {
@@ -163,7 +170,7 @@ def serialize_run_record(record: PostReviewRunRecord) -> dict[str, object]:
         "window_end_ms": record.window_end_ms,
         "candidate_count": record.candidate_count,
         "suspicious_count": record.suspicious_count,
-        "summary_text_json": list(record.summary_text_json),
+        "summary_text_json": json.dumps(list(record.summary_text_json), ensure_ascii=False),
         "status": record.status,
         "created_at": record.created_at,
         "updated_at": record.updated_at,
@@ -171,7 +178,13 @@ def serialize_run_record(record: PostReviewRunRecord) -> dict[str, object]:
 
 
 def serialize_session_result_record(record: PostReviewSessionResultRecord) -> dict[str, object]:
-    """Validate and convert a session result record into SQL parameter payload."""
+    """Validate and convert a session result record into SQL parameter payload.
+
+    JSONB columns (session_analysis_json) are serialized to JSON strings for the
+    same reason as serialize_run_record: psycopg infers ``text`` from a JSON string,
+    while a Python dict might be adapted differently depending on driver version or
+    registered adapters. Explicit json.dumps makes the binding driver-independent.
+    """
 
     validate_session_result_record(record)
     return {
@@ -179,7 +192,10 @@ def serialize_session_result_record(record: PostReviewSessionResultRecord) -> di
         "session_id": record.session_id,
         "review_result": record.review_result,
         "evidence_summary": record.evidence_summary,
-        "session_analysis_json": validate_session_analysis_json(record.session_analysis_json),
+        "session_analysis_json": json.dumps(
+            validate_session_analysis_json(record.session_analysis_json),
+            ensure_ascii=False,
+        ),
         "backend_delivery_status": record.backend_delivery_status,
         "created_at": record.created_at,
         "updated_at": record.updated_at,

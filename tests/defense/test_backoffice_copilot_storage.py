@@ -106,6 +106,47 @@ class BackofficeCopilotStorageTests(unittest.TestCase):
         self.assertEqual(serialized_session["review_result"], "SUSPICIOUS")
         self.assertEqual(serialized_session["backend_delivery_status"], "PENDING")
 
+    def test_jsonb_columns_serialized_as_json_strings_not_python_collections(self) -> None:
+        """Regression test for DatatypeMismatch: psycopg binds Python list as text[]
+        and Python dict with implicit adapters. Both JSONB columns must be serialized
+        to JSON strings so psycopg sends them as text, letting PostgreSQL cast to jsonb.
+
+        If this test fails it means a JSONB column would cause:
+          psycopg2.errors.DatatypeMismatch: column "..." is of type jsonb
+          but expression is of type text[]
+        """
+        import json as _json
+
+        serialized_run = serialize_run_record(_run_record())
+        serialized_session = serialize_session_result_record(_session_record())
+
+        # summary_text_json must be a str (JSON-encoded), not list
+        summary_val = serialized_run["summary_text_json"]
+        self.assertIsInstance(
+            summary_val,
+            str,
+            "summary_text_json must be a JSON string for psycopg jsonb binding, "
+            f"got {type(summary_val).__name__}",
+        )
+        # Must be valid JSON and decode back to a list of 3 strings
+        decoded_summary = _json.loads(summary_val)  # type: ignore[arg-type]
+        self.assertIsInstance(decoded_summary, list)
+        self.assertEqual(len(decoded_summary), 3)
+        self.assertTrue(all(isinstance(s, str) for s in decoded_summary))
+
+        # session_analysis_json must be a str (JSON-encoded), not dict
+        analysis_val = serialized_session["session_analysis_json"]
+        self.assertIsInstance(
+            analysis_val,
+            str,
+            "session_analysis_json must be a JSON string for psycopg jsonb binding, "
+            f"got {type(analysis_val).__name__}",
+        )
+        # Must be valid JSON and decode back to a dict with expected fields
+        decoded_analysis = _json.loads(analysis_val)  # type: ignore[arg-type]
+        self.assertIsInstance(decoded_analysis, dict)
+        self.assertEqual(decoded_analysis["session_id"], "sess-1")
+
     def test_validators_reject_invalid_summary_and_session_analysis_shapes(self) -> None:
         with self.assertRaises(StorageValidationError):
             validate_summary_text_json(["only", "two"])
@@ -200,17 +241,23 @@ class SaveContractTests(unittest.TestCase):
         )
 
     def test_save_bundle_executes_both_run_and_session_in_one_transaction(self) -> None:
-        """save_bundle() must open exactly one transaction and execute both the run and session writes."""
+        """save_bundle() must open exactly one transaction and execute both the run and session writes.
+
+        Also verifies that JSONB columns (summary_text_json, session_analysis_json) arrive
+        at the execute boundary as JSON strings — not as Python list/dict — so that psycopg
+        sends them as text and PostgreSQL casts to jsonb without DatatypeMismatch.
+        """
+        import json as _json
         from unittest.mock import patch
         from traffic_master_ai.defense.backoffice_copilot.storage.repository import (
             PostgresPostReviewWriteRepository,
             PkConflictPolicy,
         )
 
-        execute_calls: list[frozenset[str]] = []
+        execute_calls: list[dict] = []
 
         def _fake_execute(_self_repo: object, _connection: object, _sql_text: str, params: dict) -> None:
-            execute_calls.append(frozenset(params.keys()))
+            execute_calls.append(dict(params))
 
         class _FakeTxn:
             def __enter__(self) -> object:
@@ -236,22 +283,32 @@ class SaveContractTests(unittest.TestCase):
         self.assertEqual(_FakeEngine.begin_count, 1)
         # Two _execute calls: one for the run row, one for the session row
         self.assertEqual(len(execute_calls), 2)
-        # First call carries run record params, second carries session result params
         run_params, session_params = execute_calls
+
+        # Key presence
         self.assertIn("candidate_count", run_params)
         self.assertIn("summary_text_json", run_params)
         self.assertIn("session_analysis_json", session_params)
         self.assertIn("backend_delivery_status", session_params)
 
+        # JSONB binding check: values must be JSON strings, not Python list/dict.
+        # A Python list bound to a jsonb column causes:
+        #   DatatypeMismatch: column "summary_text_json" is of type jsonb
+        #   but expression is of type text[]
+        summary_val = run_params["summary_text_json"]
+        self.assertIsInstance(summary_val, str, "summary_text_json must be a JSON string at execute boundary")
+        self.assertIsInstance(_json.loads(summary_val), list)
+
+        analysis_val = session_params["session_analysis_json"]
+        self.assertIsInstance(analysis_val, str, "session_analysis_json must be a JSON string at execute boundary")
+        self.assertIsInstance(_json.loads(analysis_val), dict)
+
 
 def _extract_create_table_columns(sql: str, table_name: str) -> frozenset[str]:
     """Extract column names from CREATE TABLE block in DDL SQL."""
-    import re
-
-    # Match the CREATE TABLE block for the given table
-    pattern = rf"CREATE TABLE\s+(?:IF NOT EXISTS\s+)?{re.escape(table_name)}\s*\(\n(.*?)(?:\n\);|\n\s+CONSTRAINT|\n\s+PRIMARY KEY \()"
+    pattern = rf"CREATE TABLE IF NOT EXISTS {re.escape(table_name)} \(\n(.*?)(?:\n\);|\n    CONSTRAINT|\n    PRIMARY KEY \()"
+    match = re.search(pattern, sql, re.DOTALL)
     if match is None:
-        # Try without IF NOT EXISTS
         pattern = rf"CREATE TABLE {re.escape(table_name)} \(\n(.*?)(?:\n\);|\n    CONSTRAINT|\n    PRIMARY KEY \()"
         match = re.search(pattern, sql, re.DOTALL)
     assert match is not None, f"Could not find CREATE TABLE block for {table_name}"
@@ -261,7 +318,6 @@ def _extract_create_table_columns(sql: str, table_name: str) -> frozenset[str]:
         stripped = line.strip()
         if not stripped or stripped.startswith("--"):
             continue
-        # First token is the column name
         token = stripped.split()[0]
         if token.upper() in ("CONSTRAINT", "PRIMARY", "UNIQUE", "CHECK", "FOREIGN"):
             continue
