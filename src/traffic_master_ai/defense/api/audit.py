@@ -230,7 +230,7 @@ def rotate_and_upload_audit_log(
         # Re-check existence under the lock so a concurrent rotator that
         # already renamed the file does not cause a FileNotFoundError here.
         with logger_instance._lock:
-        try:
+          try:
             if source_path.stat().st_size == 0:
                 return
             source_path.rename(rotated_path)
