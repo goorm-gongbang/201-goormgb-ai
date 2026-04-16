@@ -75,15 +75,49 @@ def summarize_sessions(analysis_input: AnalysisInput) -> tuple[SessionSummary, .
 
 
 def is_candidate_session(summary: SessionSummary) -> bool:
-    """Apply the agreed Task 4 candidate hard filter only."""
+    """Hard filter for Task 4 candidate sessions.
 
-    return (
-        (summary.seen_t1 or summary.seen_t2)
-        and summary.block_event_count == 0
-        and summary.latest_action != "BLOCK"
-        and summary.latest_tier != "T3"
-        and summary.terminal_outcome == "NOT_BLOCKED"
+    Exclusions are evaluated first and are non-negotiable:
+    - any block event recorded in the session
+    - latest resolved action is BLOCK
+    - latest risk tier is T3 (already handled at the highest severity)
+    - session terminated as BLOCKED
+
+    Inclusion requires at least one signal of interest:
+    1. Tier signal: T1 or T2 was observed during the session, OR
+    2. Protection-context signal: the defense system already applied a throttle
+       or the session had a challenge failure — both indicate the session was
+       flagged by runtime even when tier data in the audit log is sparse.
+
+    This widens candidate coverage so that sessions where runtime acted
+    (throttle / challenge) but tier fields are missing or ambiguous are still
+    reviewed by the LLM, increasing candidate_count without loosening
+    the safety exclusions.
+    """
+    # --- safety exclusions (always applied first) ---
+    if summary.block_event_count > 0:
+        return False
+    if summary.latest_action == "BLOCK":
+        return False
+    if summary.latest_tier == "T3":
+        return False
+    if summary.terminal_outcome == "BLOCKED":
+        return False
+
+    # --- inclusion: tier signal (original path) ---
+    has_tier_signal = summary.seen_t1 or summary.seen_t2
+
+    # --- inclusion: protection-context signal (widened path) ---
+    # A session that was throttled or failed a challenge has already been
+    # identified as risky by the runtime engine; it deserves LLM review
+    # regardless of whether a T1/T2 tier stamp is present in the audit window.
+    has_protection_context = (
+        summary.throttle_event_count >= 1
+        or summary.vqa_fail_count >= 1
+        or summary.latest_action == "THROTTLE"
     )
+
+    return has_tier_signal or has_protection_context
 
 
 def _summarize_session(
