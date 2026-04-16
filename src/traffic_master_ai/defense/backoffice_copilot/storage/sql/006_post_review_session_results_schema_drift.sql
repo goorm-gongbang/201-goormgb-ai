@@ -1,3 +1,13 @@
+-- OBSOLETE: Superseded by 007_post_review_tables_rebuild.sql
+--
+-- This file is no longer part of the active migration sequence.
+-- It was a partial drift patch that added evidence_summary, session_analysis_json,
+-- and backend_delivery_status via ADD COLUMN IF NOT EXISTS, but could not fix the
+-- structural problems (BIGSERIAL PK, final_label instead of review_result, FK to
+-- post_review_runs.id). Migration 007 replaces this with a conditional DROP+CREATE.
+--
+-- Kept for git history. Do not add back to _POSTGRES_MIGRATION_FILES.
+--
 -- Migration: post_review_session_results schema drift fix (idempotent)
 --
 -- Problem:

@@ -244,5 +244,186 @@ class SaveContractTests(unittest.TestCase):
         self.assertIn("backend_delivery_status", session_params)
 
 
+def _extract_create_table_columns(sql: str, table_name: str) -> frozenset[str]:
+    """Extract column names from CREATE TABLE block in DDL SQL."""
+    import re
+
+    # Match the CREATE TABLE block for the given table
+    pattern = rf"CREATE TABLE\s+(?:IF NOT EXISTS\s+)?{re.escape(table_name)}\s*\(\n(.*?)(?:\n\);|\n\s+CONSTRAINT|\n\s+PRIMARY KEY \()"
+    if match is None:
+        # Try without IF NOT EXISTS
+        pattern = rf"CREATE TABLE {re.escape(table_name)} \(\n(.*?)(?:\n\);|\n    CONSTRAINT|\n    PRIMARY KEY \()"
+        match = re.search(pattern, sql, re.DOTALL)
+    assert match is not None, f"Could not find CREATE TABLE block for {table_name}"
+
+    col_names: set[str] = set()
+    for line in match.group(1).splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+        # First token is the column name
+        token = stripped.split()[0]
+        if token.upper() in ("CONSTRAINT", "PRIMARY", "UNIQUE", "CHECK", "FOREIGN"):
+            continue
+        col_names.add(token)
+    return frozenset(col_names)
+
+
+class DdlContractAlignmentTests(unittest.TestCase):
+    """Regression-prevention tests that ensure 001 DDL, 007 rebuild DDL,
+    INSERT SQL, and serializer output all define the same column sets.
+
+    If a new column is added to one place but not another, one of these
+    tests will break before any data reaches the database.
+    """
+
+    _SQL_DIR = Path(__file__).resolve().parents[2] / "src/traffic_master_ai/defense/backoffice_copilot/storage/sql"
+
+    def _read_sql(self, filename: str) -> str:
+        return (self._SQL_DIR / filename).read_text(encoding="utf-8")
+
+    # ------------------------------------------------------------------
+    # 001 DDL vs serializer contract
+    # ------------------------------------------------------------------
+
+    def test_001_ddl_post_review_runs_columns_match_serializer_output(self) -> None:
+        """Columns in 001_post_review_tables.sql must equal serialize_run_record() keys."""
+        from traffic_master_ai.defense.backoffice_copilot.storage.repository import (
+            _INSERT_RUN_SQL,
+        )
+
+        sql_001 = self._read_sql("001_post_review_tables.sql")
+        ddl_columns = _extract_create_table_columns(sql_001, "post_review_runs")
+        insert_columns = _extract_insert_columns(_INSERT_RUN_SQL)
+        serializer_keys = frozenset(serialize_run_record(_run_record()).keys())
+
+        self.assertEqual(
+            ddl_columns,
+            insert_columns,
+            "001 DDL post_review_runs columns differ from _INSERT_RUN_SQL columns",
+        )
+        self.assertEqual(
+            insert_columns,
+            serializer_keys,
+            "serialize_run_record() keys differ from _INSERT_RUN_SQL columns",
+        )
+
+    def test_001_ddl_post_review_session_results_columns_match_serializer_output(self) -> None:
+        """Columns in 001_post_review_tables.sql must equal serialize_session_result_record() keys."""
+        from traffic_master_ai.defense.backoffice_copilot.storage.repository import (
+            _INSERT_SESSION_RESULT_SQL,
+        )
+
+        sql_001 = self._read_sql("001_post_review_tables.sql")
+        ddl_columns = _extract_create_table_columns(sql_001, "post_review_session_results")
+        insert_columns = _extract_insert_columns(_INSERT_SESSION_RESULT_SQL)
+        serializer_keys = frozenset(serialize_session_result_record(_session_record()).keys())
+
+        self.assertEqual(
+            ddl_columns,
+            insert_columns,
+            "001 DDL post_review_session_results columns differ from _INSERT_SESSION_RESULT_SQL",
+        )
+        self.assertEqual(
+            insert_columns,
+            serializer_keys,
+            "serialize_session_result_record() keys differ from _INSERT_SESSION_RESULT_SQL",
+        )
+
+    # ------------------------------------------------------------------
+    # 007 rebuild DDL vs 001 DDL (must be identical for both tables)
+    # ------------------------------------------------------------------
+
+    def test_007_rebuild_ddl_post_review_runs_matches_001(self) -> None:
+        """007 rebuild must create post_review_runs with the same columns as 001."""
+        sql_001 = self._read_sql("001_post_review_tables.sql")
+        sql_007 = self._read_sql("007_post_review_tables_rebuild.sql")
+
+        cols_001 = _extract_create_table_columns(sql_001, "post_review_runs")
+        cols_007 = _extract_create_table_columns(sql_007, "post_review_runs")
+
+        self.assertEqual(
+            cols_001,
+            cols_007,
+            "007 rebuild post_review_runs columns diverge from 001 DDL — update both together",
+        )
+
+    def test_007_rebuild_ddl_post_review_session_results_matches_001(self) -> None:
+        """007 rebuild must create post_review_session_results with the same columns as 001."""
+        sql_001 = self._read_sql("001_post_review_tables.sql")
+        sql_007 = self._read_sql("007_post_review_tables_rebuild.sql")
+
+        cols_001 = _extract_create_table_columns(sql_001, "post_review_session_results")
+        cols_007 = _extract_create_table_columns(sql_007, "post_review_session_results")
+
+        self.assertEqual(
+            cols_001,
+            cols_007,
+            "007 rebuild post_review_session_results columns diverge from 001 DDL — update both",
+        )
+
+    # ------------------------------------------------------------------
+    # Guard: old bootstrap column names must not sneak back in
+    # ------------------------------------------------------------------
+
+    def test_old_schema_column_names_absent_from_insert_sql_and_serializers(self) -> None:
+        """Column names from the old bootstrap schema must not appear in current INSERT SQL
+        or serializer output. This catches regressions where someone accidentally
+        re-introduces the old design."""
+        from traffic_master_ai.defense.backoffice_copilot.storage.repository import (
+            _INSERT_RUN_SQL,
+            _INSERT_SESSION_RESULT_SQL,
+            _UPSERT_RUN_SQL,
+            _UPSERT_SESSION_RESULT_SQL,
+        )
+
+        old_column_names = {
+            "final_label",        # was review_result in old bootstrap
+            "decision_summary_json",  # was session_analysis_json
+            "evidence_json",      # was evidence_summary (different type too)
+            "post_review_run_id", # surrogate FK; new schema has no FK
+            "completed_at",       # was updated_at
+        }
+        all_sql = "\n".join([
+            _INSERT_RUN_SQL,
+            _UPSERT_RUN_SQL,
+            _INSERT_SESSION_RESULT_SQL,
+            _UPSERT_SESSION_RESULT_SQL,
+        ])
+        all_keys = set(serialize_run_record(_run_record()).keys()) | set(
+            serialize_session_result_record(_session_record()).keys()
+        )
+
+        for bad_col in old_column_names:
+            with self.subTest(bad_col=bad_col):
+                self.assertNotIn(
+                    bad_col,
+                    all_sql,
+                    f"Old bootstrap column '{bad_col}' found in INSERT/UPSERT SQL",
+                )
+                self.assertNotIn(
+                    bad_col,
+                    all_keys,
+                    f"Old bootstrap column '{bad_col}' found in serializer output",
+                )
+
+    def test_upsert_conflict_targets_match_pk_definitions_in_007_ddl(self) -> None:
+        """ON CONFLICT targets in repository.py must match PKs defined in 007 rebuild DDL."""
+        from traffic_master_ai.defense.backoffice_copilot.storage.repository import (
+            _UPSERT_RUN_SQL,
+            _UPSERT_SESSION_RESULT_SQL,
+        )
+
+        # run upsert must conflict on match_id (TEXT PK, not surrogate BIGSERIAL)
+        self.assertIn("ON CONFLICT (match_id)", _UPSERT_RUN_SQL)
+        # session result upsert must conflict on composite (match_id, session_id)
+        self.assertIn("ON CONFLICT (match_id, session_id)", _UPSERT_SESSION_RESULT_SQL)
+
+        # Verify 007 DDL defines these exact PKs
+        sql_007 = self._read_sql("007_post_review_tables_rebuild.sql")
+        self.assertIn("match_id TEXT PRIMARY KEY", sql_007)
+        self.assertIn("PRIMARY KEY (match_id, session_id)", sql_007)
+
+
 if __name__ == "__main__":
     unittest.main()
