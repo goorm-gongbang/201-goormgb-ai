@@ -32,7 +32,10 @@ def _env(key: str, default: Any) -> Any:
 # ===================================================================
 # Risk Model — L0/l0_defense_policy.yaml §3, policy_v1 §risk
 # ===================================================================
-RISK_ALPHA: float = _env("TM_RISK_ALPHA", 0.30)
+# Raised from 0.30 → 0.45 so each event carries more weight and
+# moderately bot-like signals (s_t ≈ 0.65) reach T2 within ~3 events
+# instead of never converging. Still below 0.60 to avoid single-event spikes.
+RISK_ALPHA: float = _env("TM_RISK_ALPHA", 0.45)
 PASSIVE_DECAY_AFTER_INACTIVE_S: int = _env("TM_PASSIVE_DECAY_INACTIVE_S", 30)
 PASSIVE_DECAY_MULTIPLIER: float = _env("TM_PASSIVE_DECAY_MULTIPLIER", 0.98)
 PASSIVE_DECAY_TICK_S: int = _env("TM_PASSIVE_DECAY_TICK_S", 5)
@@ -42,7 +45,11 @@ PASSIVE_DECAY_TICK_S: int = _env("TM_PASSIVE_DECAY_TICK_S", 5)
 # ===================================================================
 TIER_T0_MAX: float = _env("TM_T0_MAX", 0.20)
 TIER_T1_MAX: float = _env("TM_T1_MAX", 0.50)
-TIER_T2_MAX: float = _env("TM_T2_MAX", 0.80)
+# Lowered from 0.80 → 0.65: with RISK_ALPHA=0.45 the EWMA converges at ~s_t,
+# so a session producing s_t≈0.65 would never exceed the old 0.80 ceiling.
+# 0.65 lets moderately-anomalous patterns reach T2 without making T3 trivial
+# (T3 still requires persistent strong signals, ~s_t>0.65 for several events).
+TIER_T2_MAX: float = _env("TM_T2_MAX", 0.65)
 TIER_HYSTERESIS_MARGIN: float = _env("TM_TIER_HYSTERESIS_MARGIN", 0.02)
 
 # ===================================================================
@@ -139,11 +146,15 @@ TURNSTILE_COOLDOWN_SECONDS: int = _env("TM_TURNSTILE_COOLDOWN_SECONDS", 30)
 # ===================================================================
 # Guard — annex/guard_spec.yaml §internal_score.weights
 # ===================================================================
-GUARD_WEIGHT_TREMOR: float = 0.35
+# Weight rebalance: LINEAR_PATH raised 0.10 → 0.20 (straight-line bot paths are
+# a strong, reliable signal); TREMOR reduced 0.35 → 0.30 (human tremor varies
+# widely in ticketing contexts); DWELL reduced 0.15 → 0.10 (less distinctive).
+# Sum is preserved at 1.00: 0.30 + 0.25 + 0.15 + 0.10 + 0.20 = 1.00.
+GUARD_WEIGHT_TREMOR: float = 0.30
 GUARD_WEIGHT_LINEARITY: float = 0.25
 GUARD_WEIGHT_VELOCITY: float = 0.15
-GUARD_WEIGHT_DWELL: float = 0.15
-GUARD_WEIGHT_LINEAR_PATH: float = 0.10
+GUARD_WEIGHT_DWELL: float = 0.10
+GUARD_WEIGHT_LINEAR_PATH: float = 0.20
 GUARD_STEP_RISK_EXT_WEIGHT: float = 0.30
 GUARD_STEP_RISK_INT_WEIGHT: float = 0.70
 GUARD_FEATURE_SUMMARY_MAX_EPM: int = _env("TM_FEATURE_SUMMARY_MAX_EPM", 12)
