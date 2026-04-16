@@ -147,6 +147,95 @@ class BackofficeCopilotStorageTests(unittest.TestCase):
         self.assertIsInstance(decoded_analysis, dict)
         self.assertEqual(decoded_analysis["session_id"], "sess-1")
 
+    def test_serialize_run_record_raises_when_timestamps_are_none(self) -> None:
+        """serialize_run_record must reject None timestamps at the Python layer.
+
+        PostReviewRunRecord.created_at/updated_at default to None.  Passing None
+        through to psycopg sends NULL to a NOT NULL TIMESTAMPTZ column, producing
+        an opaque DB error instead of a clear Python-layer StorageValidationError.
+        The serializer must be the last line of defence before any DB binding.
+        """
+        record_no_created = _run_record()
+        record_no_created.created_at = None
+        with self.assertRaisesRegex(StorageValidationError, "created_at"):
+            serialize_run_record(record_no_created)
+
+        record_no_updated = _run_record()
+        record_no_updated.updated_at = None
+        with self.assertRaisesRegex(StorageValidationError, "updated_at"):
+            serialize_run_record(record_no_updated)
+
+    def test_serialize_session_result_record_raises_when_timestamps_are_none(self) -> None:
+        """serialize_session_result_record must reject None timestamps at the Python layer."""
+        record_no_created = _session_record()
+        record_no_created.created_at = None
+        with self.assertRaisesRegex(StorageValidationError, "created_at"):
+            serialize_session_result_record(record_no_created)
+
+        record_no_updated = _session_record()
+        record_no_updated.updated_at = None
+        with self.assertRaisesRegex(StorageValidationError, "updated_at"):
+            serialize_session_result_record(record_no_updated)
+
+    def test_all_serialized_column_types_match_postgres_binding_contract(self) -> None:
+        """Full 17-column binding audit: every serialized value must carry the Python type
+        that psycopg maps to the correct PostgreSQL wire type.
+
+        post_review_runs (9 columns):
+          TEXT NOT NULL        → str (non-empty)
+          BIGINT/INTEGER NOT NULL → int (not bool)
+          JSONB NOT NULL       → str (JSON-encoded)
+          TIMESTAMPTZ NOT NULL → datetime (not None)
+
+        post_review_session_results (8 columns):
+          TEXT NOT NULL        → str (non-empty)
+          JSONB NOT NULL       → str (JSON-encoded)
+          TIMESTAMPTZ NOT NULL → datetime (not None)
+        """
+        import json as _json
+
+        run = serialize_run_record(_run_record())
+        session = serialize_session_result_record(_session_record())
+
+        # ── post_review_runs ──────────────────────────────────────────────
+        for col in ("match_id", "status"):
+            with self.subTest(table="post_review_runs", col=col, expected="str"):
+                self.assertIsInstance(run[col], str)
+                self.assertTrue(run[col], f"{col} must be non-empty")
+
+        for col in ("window_start_ms", "window_end_ms", "candidate_count", "suspicious_count"):
+            with self.subTest(table="post_review_runs", col=col, expected="int"):
+                self.assertIsInstance(run[col], int)
+                self.assertNotIsInstance(run[col], bool)  # bool is a subclass of int
+
+        with self.subTest(table="post_review_runs", col="summary_text_json", expected="str (JSON)"):
+            val = run["summary_text_json"]
+            self.assertIsInstance(val, str)
+            decoded = _json.loads(val)  # type: ignore[arg-type]
+            self.assertIsInstance(decoded, list)
+            self.assertEqual(len(decoded), 3)
+
+        for col in ("created_at", "updated_at"):
+            with self.subTest(table="post_review_runs", col=col, expected="datetime"):
+                self.assertIsInstance(run[col], datetime)
+
+        # ── post_review_session_results ───────────────────────────────────
+        for col in ("match_id", "session_id", "review_result", "evidence_summary", "backend_delivery_status"):
+            with self.subTest(table="post_review_session_results", col=col, expected="str"):
+                self.assertIsInstance(session[col], str)
+                self.assertTrue(session[col], f"{col} must be non-empty")
+
+        with self.subTest(table="post_review_session_results", col="session_analysis_json", expected="str (JSON)"):
+            val = session["session_analysis_json"]
+            self.assertIsInstance(val, str)
+            decoded = _json.loads(val)  # type: ignore[arg-type]
+            self.assertIsInstance(decoded, dict)
+            self.assertIn("session_id", decoded)
+
+        for col in ("created_at", "updated_at"):
+            with self.subTest(table="post_review_session_results", col=col, expected="datetime"):
+                self.assertIsInstance(session[col], datetime)
+
     def test_validators_reject_invalid_summary_and_session_analysis_shapes(self) -> None:
         with self.assertRaises(StorageValidationError):
             validate_summary_text_json(["only", "two"])

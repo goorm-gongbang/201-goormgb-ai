@@ -45,6 +45,16 @@ def _ensure_int(value: object, field_name: str) -> int:
     return value
 
 
+def _ensure_datetime(value: object, field_name: str) -> datetime:
+    """Require a non-None datetime — used in serializers where the DB column is NOT NULL."""
+    if not isinstance(value, datetime):
+        raise StorageValidationError(
+            f"{field_name} must be a datetime before persistence (got {type(value).__name__!r}). "
+            "The DB column is NOT NULL — set created_at/updated_at before calling serialize."
+        )
+    return value
+
+
 def _ensure_datetime_or_none(value: object, field_name: str) -> datetime | None:
     if value is None:
         return None
@@ -172,8 +182,8 @@ def serialize_run_record(record: PostReviewRunRecord) -> dict[str, object]:
         "suspicious_count": record.suspicious_count,
         "summary_text_json": json.dumps(list(record.summary_text_json), ensure_ascii=False),
         "status": record.status,
-        "created_at": record.created_at,
-        "updated_at": record.updated_at,
+        "created_at": _ensure_datetime(record.created_at, "created_at"),
+        "updated_at": _ensure_datetime(record.updated_at, "updated_at"),
     }
 
 
@@ -197,6 +207,6 @@ def serialize_session_result_record(record: PostReviewSessionResultRecord) -> di
             ensure_ascii=False,
         ),
         "backend_delivery_status": record.backend_delivery_status,
-        "created_at": record.created_at,
-        "updated_at": record.updated_at,
+        "created_at": _ensure_datetime(record.created_at, "created_at"),
+        "updated_at": _ensure_datetime(record.updated_at, "updated_at"),
     }
