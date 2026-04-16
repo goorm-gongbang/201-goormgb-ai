@@ -21,10 +21,12 @@ _SQL_DIR = Path(__file__).resolve().parent / "sql"
 _POST_REVIEW_MIGRATION_FILE = "001_post_review_tables.sql"
 _POLICY_CONTROL_PLANE_MIGRATION_FILE = "002_postgresql_policy_control_plane_tables.sql"
 _POST_REVIEW_SCHEMA_DRIFT_FILE = "005_post_review_runs_schema_drift.sql"
+_SESSION_RESULTS_SCHEMA_DRIFT_FILE = "006_post_review_session_results_schema_drift.sql"
 _POSTGRES_MIGRATION_FILES = (
     _POST_REVIEW_MIGRATION_FILE,
     _POLICY_CONTROL_PLANE_MIGRATION_FILE,
     _POST_REVIEW_SCHEMA_DRIFT_FILE,
+    _SESSION_RESULTS_SCHEMA_DRIFT_FILE,
 )
 _LOGGER = logging.getLogger(__name__)
 

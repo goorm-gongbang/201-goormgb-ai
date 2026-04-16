@@ -23,19 +23,18 @@ ALTER TABLE post_review_runs
     ADD COLUMN IF NOT EXISTS suspicious_count INTEGER,
     ADD COLUMN IF NOT EXISTS summary_text_json JSONB;
 
--- Step 2: Backfill NULL rows with safe defaults
---   (only affects rows that pre-date the schema addition; fresh installs have no rows here)
+-- Step 2: Backfill all NULL columns in a single pass
+--   (avoids 3 sequential full-table scans and minimises lock duration)
+--   Only affects rows that pre-date the schema addition; fresh installs have no rows here.
 UPDATE post_review_runs
-    SET candidate_count = 0
-    WHERE candidate_count IS NULL;
-
-UPDATE post_review_runs
-    SET suspicious_count = 0
-    WHERE suspicious_count IS NULL;
-
-UPDATE post_review_runs
-    SET summary_text_json = '["[migrated]", "[migrated]", "[migrated]"]'::jsonb
-    WHERE summary_text_json IS NULL;
+    SET
+        candidate_count   = COALESCE(candidate_count,   0),
+        suspicious_count  = COALESCE(suspicious_count,  0),
+        summary_text_json = COALESCE(summary_text_json, '["[migrated]", "[migrated]", "[migrated]"]'::jsonb)
+    WHERE
+        candidate_count IS NULL
+        OR suspicious_count IS NULL
+        OR summary_text_json IS NULL;
 
 -- Step 3: Enforce NOT NULL (idempotent: PostgreSQL ignores if constraint already set)
 ALTER TABLE post_review_runs

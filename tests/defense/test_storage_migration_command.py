@@ -94,6 +94,7 @@ class StorageMigrationCommandTests(unittest.TestCase):
                 "001_post_review_tables.sql",
                 "002_postgresql_policy_control_plane_tables.sql",
                 "005_post_review_runs_schema_drift.sql",
+                "006_post_review_session_results_schema_drift.sql",
             ),
         )
         self.assertIn("CREATE TABLE IF NOT EXISTS post_review_runs", executed_sql)
@@ -102,10 +103,14 @@ class StorageMigrationCommandTests(unittest.TestCase):
         self.assertIn("CREATE TABLE IF NOT EXISTS policy_rollout_state", executed_sql)
         self.assertIn("CREATE TABLE IF NOT EXISTS policy_rollout_events", executed_sql)
         self.assertIn("CREATE TABLE IF NOT EXISTS policy_optimization_runs", executed_sql)
-        # schema drift migration must be included
+        # runs schema drift migration must be included
         self.assertIn("ADD COLUMN IF NOT EXISTS candidate_count", executed_sql)
         self.assertIn("ADD COLUMN IF NOT EXISTS suspicious_count", executed_sql)
         self.assertIn("ADD COLUMN IF NOT EXISTS summary_text_json", executed_sql)
+        # session results schema drift migration must be included
+        self.assertIn("ADD COLUMN IF NOT EXISTS evidence_summary", executed_sql)
+        self.assertIn("ADD COLUMN IF NOT EXISTS session_analysis_json", executed_sql)
+        self.assertIn("ADD COLUMN IF NOT EXISTS backend_delivery_status", executed_sql)
         self.assertTrue(engine.raw_connection_obj.committed)
         self.assertFalse(engine.raw_connection_obj.rolled_back)
         self.assertFalse(engine.disposed)
@@ -136,11 +141,12 @@ class StorageMigrationCommandTests(unittest.TestCase):
         self.assertIn("planned 001_post_review_tables.sql", stdout.getvalue())
         self.assertIn("planned 002_postgresql_policy_control_plane_tables.sql", stdout.getvalue())
         self.assertIn("planned 005_post_review_runs_schema_drift.sql", stdout.getvalue())
+        self.assertIn("planned 006_post_review_session_results_schema_drift.sql", stdout.getvalue())
         summary = json.loads(stdout.getvalue().strip().splitlines()[-1])
         self.assertEqual(summary["command"], "tm-ai-storage-migrate")
         self.assertEqual(summary["mode"], "dry_run")
         self.assertEqual(summary["status"], "dry_run")
-        self.assertEqual(summary["output_count"], 3)
+        self.assertEqual(summary["output_count"], 4)
 
     def test_storage_migration_fails_with_clear_error_when_sql_file_is_missing(self) -> None:
         engine = _FakeEngine()
@@ -221,7 +227,7 @@ class SchemaDriftMigrationTests(unittest.TestCase):
     def test_schema_drift_sql_contains_null_backfill_before_not_null(self) -> None:
         sql = self._get_schema_drift_sql()
         # Backfill must appear before SET NOT NULL
-        backfill_pos = sql.index("WHERE candidate_count IS NULL")
+        backfill_pos = sql.index("candidate_count IS NULL")
         not_null_pos = sql.index("ALTER COLUMN candidate_count SET NOT NULL")
         self.assertLess(backfill_pos, not_null_pos, "Backfill UPDATE must precede SET NOT NULL")
 
@@ -239,7 +245,7 @@ class SchemaDriftMigrationTests(unittest.TestCase):
         applied = apply_postgres_storage_migrations(engine)
 
         self.assertIn("005_post_review_runs_schema_drift.sql", applied)
-        # 005 must come AFTER 001 and 002
+        # 005 must come AFTER 001 and 002, and BEFORE 006
         applied_list = list(applied)
         self.assertLess(
             applied_list.index("001_post_review_tables.sql"),
@@ -248,6 +254,10 @@ class SchemaDriftMigrationTests(unittest.TestCase):
         self.assertLess(
             applied_list.index("002_postgresql_policy_control_plane_tables.sql"),
             applied_list.index("005_post_review_runs_schema_drift.sql"),
+        )
+        self.assertLess(
+            applied_list.index("005_post_review_runs_schema_drift.sql"),
+            applied_list.index("006_post_review_session_results_schema_drift.sql"),
         )
 
     def test_schema_drift_sql_rolled_back_on_failure(self) -> None:
@@ -271,6 +281,111 @@ class SchemaDriftMigrationTests(unittest.TestCase):
         engine = _FailOn005Engine()
 
         with self.assertRaisesRegex(RuntimeError, "column error"):
+            apply_postgres_storage_migrations(engine)
+
+        self.assertTrue(engine.raw_connection_obj.rolled_back)
+        self.assertFalse(engine.raw_connection_obj.committed)
+
+
+class SessionResultsSchemaDriftMigrationTests(unittest.TestCase):
+    """Verify that 006_post_review_session_results_schema_drift.sql is correct and idempotent."""
+
+    def _get_schema_drift_sql(self) -> str:
+        """Read the session results schema drift migration file directly."""
+        from pathlib import Path
+        sql_path = (
+            Path(__file__).resolve().parents[2]
+            / "src/traffic_master_ai/defense/backoffice_copilot/storage/sql"
+            / "006_post_review_session_results_schema_drift.sql"
+        )
+        return sql_path.read_text(encoding="utf-8")
+
+    def test_schema_drift_file_exists_and_is_registered(self) -> None:
+        from traffic_master_ai.defense.backoffice_copilot.storage.migration import (
+            _POSTGRES_MIGRATION_FILES,
+        )
+        self.assertIn("006_post_review_session_results_schema_drift.sql", _POSTGRES_MIGRATION_FILES)
+        # verify file is readable (would raise if absent)
+        self.assertGreater(len(self._get_schema_drift_sql()), 0)
+
+    def test_schema_drift_sql_contains_add_column_if_not_exists_for_all_missing_columns(self) -> None:
+        sql = self._get_schema_drift_sql()
+        self.assertIn("ADD COLUMN IF NOT EXISTS evidence_summary", sql)
+        self.assertIn("ADD COLUMN IF NOT EXISTS session_analysis_json", sql)
+        self.assertIn("ADD COLUMN IF NOT EXISTS backend_delivery_status", sql)
+
+    def test_schema_drift_sql_contains_not_null_enforcement(self) -> None:
+        sql = self._get_schema_drift_sql()
+        self.assertIn("ALTER COLUMN evidence_summary SET NOT NULL", sql)
+        self.assertIn("ALTER COLUMN session_analysis_json SET NOT NULL", sql)
+        self.assertIn("ALTER COLUMN backend_delivery_status SET NOT NULL", sql)
+
+    def test_schema_drift_sql_uses_single_coalesce_update(self) -> None:
+        sql = self._get_schema_drift_sql()
+        # All three columns backfilled in the same UPDATE via COALESCE
+        self.assertIn("COALESCE(evidence_summary", sql)
+        self.assertIn("COALESCE(session_analysis_json", sql)
+        self.assertIn("COALESCE(backend_delivery_status", sql)
+        # Must have exactly one UPDATE statement
+        self.assertEqual(sql.upper().count("\nUPDATE "), 1)
+
+    def test_schema_drift_sql_contains_null_backfill_before_not_null(self) -> None:
+        sql = self._get_schema_drift_sql()
+        # Backfill must appear before SET NOT NULL
+        backfill_pos = sql.index("COALESCE(evidence_summary")
+        not_null_pos = sql.index("ALTER COLUMN evidence_summary SET NOT NULL")
+        self.assertLess(backfill_pos, not_null_pos, "Backfill UPDATE must precede SET NOT NULL")
+
+    def test_schema_drift_sql_contains_idempotent_constraint_guards(self) -> None:
+        sql = self._get_schema_drift_sql()
+        self.assertIn("post_review_session_results_review_result_check", sql)
+        self.assertIn("post_review_session_results_backend_delivery_status_check", sql)
+        self.assertIn("post_review_session_results_session_analysis_json_check", sql)
+        self.assertIn("IF NOT EXISTS", sql)
+
+    def test_schema_drift_applied_via_migration_runner(self) -> None:
+        """Migration runner executes 006 SQL and includes it in the applied list."""
+        engine = _FakeEngine()
+
+        applied = apply_postgres_storage_migrations(engine)
+
+        self.assertIn("006_post_review_session_results_schema_drift.sql", applied)
+        applied_list = list(applied)
+        # 006 must come AFTER 001, 002, and 005
+        self.assertLess(
+            applied_list.index("001_post_review_tables.sql"),
+            applied_list.index("006_post_review_session_results_schema_drift.sql"),
+        )
+        self.assertLess(
+            applied_list.index("002_postgresql_policy_control_plane_tables.sql"),
+            applied_list.index("006_post_review_session_results_schema_drift.sql"),
+        )
+        self.assertLess(
+            applied_list.index("005_post_review_runs_schema_drift.sql"),
+            applied_list.index("006_post_review_session_results_schema_drift.sql"),
+        )
+
+    def test_schema_drift_sql_rolled_back_on_failure(self) -> None:
+        """A failure in 006 triggers rollback and does not commit."""
+        class _FailOn006Cursor(_FakeCursor):
+            def execute(self, sql: str) -> None:
+                super().execute(sql)
+                if "ADD COLUMN IF NOT EXISTS evidence_summary" in sql:
+                    raise RuntimeError("session column error")
+
+        class _FailOn006RawConnection(_FakeRawConnection):
+            def __init__(self) -> None:
+                super().__init__()
+                self.cursor_obj = _FailOn006Cursor()
+
+        class _FailOn006Engine(_FakeEngine):
+            def __init__(self) -> None:
+                super().__init__()
+                self.raw_connection_obj = _FailOn006RawConnection()
+
+        engine = _FailOn006Engine()
+
+        with self.assertRaisesRegex(RuntimeError, "session column error"):
             apply_postgres_storage_migrations(engine)
 
         self.assertTrue(engine.raw_connection_obj.rolled_back)
