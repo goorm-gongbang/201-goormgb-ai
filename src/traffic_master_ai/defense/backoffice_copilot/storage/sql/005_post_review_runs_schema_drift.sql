@@ -1,3 +1,14 @@
+-- OBSOLETE: Superseded by 007_post_review_tables_rebuild.sql
+--
+-- This file is no longer part of the active migration sequence.
+-- It was a partial drift patch that added candidate_count, suspicious_count,
+-- and summary_text_json via ADD COLUMN IF NOT EXISTS, but could not fix the
+-- structural schema problems introduced by the old bootstrap (BIGSERIAL PK,
+-- missing review_result column, FK constraint). Migration 007 replaces this
+-- with a conditional DROP+CREATE that correctly rebuilds both tables.
+--
+-- Kept for git history. Do not add back to _POSTGRES_MIGRATION_FILES.
+--
 -- Migration: post_review_runs schema drift fix (idempotent)
 --
 -- Problem:
