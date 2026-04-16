@@ -199,9 +199,12 @@ def build_openai_summary_adapter(
             "You are a Traffic-Master defense analyst AI. "
             "Generate a 3-line summary of the current operational window metrics. "
             "You must output exactly valid JSON with one key: 'summary_text', which maps to an array of exactly 3 strings.\n"
-            "Line 1: Summarize total candidates and number of suspicious sessions.\n"
-            "Line 2: Summarize top signals or mitigation events (like throttle or block).\n"
-            "Line 3: Recommend overall status or outline raw fallback needs if applicable."
+            "Line 1: State total candidate sessions reviewed, the suspicious count, and the normal count.\n"
+            "Line 2: Cite concrete mitigation evidence — use throttle_total (total throttle events applied), "
+            "challenge_fail_total (total challenge failures), and tier_breakdown (tier distribution across sessions); "
+            "name the dominant tier and highlight any T2 or T3 presence.\n"
+            "Line 3: Operational assessment — reference action_breakdown to describe which actions were applied and how often; "
+            "note sessions still needing raw context (needs_raw_fallback_count) and characterize the overall window risk level."
         )
 
         user_input_str = json.dumps(summary_input, ensure_ascii=False)

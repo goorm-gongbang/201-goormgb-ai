@@ -36,6 +36,11 @@ def build_window_summary_input(
         for signal, count in signal_counter.most_common(3)
     ]
 
+    throttle_total = sum(a.throttle_event_count for a in analysis_list)
+    challenge_fail_total = sum(a.vqa_fail_count for a in analysis_list)
+    tier_breakdown = dict(Counter(a.latest_tier for a in analysis_list))
+    action_breakdown = dict(Counter(a.latest_action for a in analysis_list))
+
     return {
         "match_id": match_id,
         "window_start_ms": window_start_ms,
@@ -50,6 +55,10 @@ def build_window_summary_input(
             1 for analysis in analysis_list if analysis.needs_raw_fallback
         ),
         "top_signals": top_signals,
+        "throttle_total": throttle_total,
+        "challenge_fail_total": challenge_fail_total,
+        "tier_breakdown": tier_breakdown,
+        "action_breakdown": action_breakdown,
         "session_results": [
             {
                 "session_id": result.session_id,

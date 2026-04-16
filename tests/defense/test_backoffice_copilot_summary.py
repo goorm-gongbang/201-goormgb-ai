@@ -133,6 +133,112 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(summary_input["normal_count"], 1)
         self.assertEqual(summary_input["needs_raw_fallback_count"], 1)
         self.assertTrue(summary_input["top_signals"])
+        # Evidence-driven fields
+        self.assertEqual(summary_input["throttle_total"], 1)   # only sess-1 (suspicious)
+        self.assertEqual(summary_input["challenge_fail_total"], 1)   # only sess-1
+        tier_breakdown = summary_input["tier_breakdown"]
+        self.assertIsInstance(tier_breakdown, dict)
+        self.assertEqual(tier_breakdown.get("T2"), 1)   # sess-1
+        self.assertEqual(tier_breakdown.get("T1"), 1)   # sess-2
+        action_breakdown = summary_input["action_breakdown"]
+        self.assertIsInstance(action_breakdown, dict)
+        self.assertEqual(action_breakdown.get("THROTTLE"), 1)
+        self.assertEqual(action_breakdown.get("NONE"), 1)
+
+    def test_build_window_summary_input_zero_mitigations(self) -> None:
+        """All-normal sessions produce zero throttle/challenge totals."""
+        review_results = (
+            SessionReviewResult(session_id="sess-x", review_result="NORMAL", evidence_summary="ok"),
+        )
+        session_analysis_list = (
+            _session_analysis("sess-x", suspicious=False),
+        )
+
+        summary_input = build_window_summary_input(
+            match_id="match-z",
+            window_start_ms=0,
+            window_end_ms=1,
+            review_results=review_results,
+            session_analysis_list=session_analysis_list,
+        )
+
+        self.assertEqual(summary_input["throttle_total"], 0)
+        self.assertEqual(summary_input["challenge_fail_total"], 0)
+        self.assertNotIn("T2", summary_input["tier_breakdown"])  # only T1
+
+    def test_fallback_summary_includes_mitigation_counts(self) -> None:
+        """Fallback line 2 must mention throttle and challenge counts when > 0."""
+        from traffic_master_ai.defense.backoffice_copilot.summary.fallback import build_fallback_summary_text
+
+        lines = build_fallback_summary_text({
+            "match_id": "m1",
+            "window_start_ms": 0,
+            "window_end_ms": 600000,
+            "candidate_count": 3,
+            "reviewed_count": 3,
+            "suspicious_count": 2,
+            "normal_count": 1,
+            "needs_raw_fallback_count": 0,
+            "top_signals": [],
+            "throttle_total": 4,
+            "challenge_fail_total": 2,
+            "tier_breakdown": {"T1": 1, "T2": 2},
+            "action_breakdown": {"THROTTLE": 3, "NONE": 1},
+        })
+
+        self.assertEqual(len(lines), 3)
+        self.assertIn("4 throttle event(s)", lines[1])
+        self.assertIn("2 challenge failure(s)", lines[1])
+        self.assertIn("T1:1", lines[2])
+        self.assertIn("T2:2", lines[2])
+        self.assertIn("THROTTLE:3", lines[2])
+
+    def test_fallback_summary_no_mitigations_falls_back_to_signals(self) -> None:
+        """When throttle/challenge totals are 0, line 2 falls back to top_signals."""
+        from traffic_master_ai.defense.backoffice_copilot.summary.fallback import build_fallback_summary_text
+
+        lines = build_fallback_summary_text({
+            "match_id": "m2",
+            "window_start_ms": 0,
+            "window_end_ms": 600000,
+            "candidate_count": 1,
+            "reviewed_count": 1,
+            "suspicious_count": 0,
+            "normal_count": 1,
+            "needs_raw_fallback_count": 0,
+            "top_signals": [{"signal": "high_velocity", "count": 5}],
+            "throttle_total": 0,
+            "challenge_fail_total": 0,
+            "tier_breakdown": {"T1": 1},
+            "action_breakdown": {"NONE": 1},
+        })
+
+        self.assertIn("high_velocity (5)", lines[1])
+        self.assertNotIn("throttle", lines[1].lower())
+
+    def test_fallback_summary_no_mitigations_no_signals(self) -> None:
+        """When no mitigations and no signals, line 2 is the 'no pattern' message."""
+        from traffic_master_ai.defense.backoffice_copilot.summary.fallback import build_fallback_summary_text
+
+        lines = build_fallback_summary_text({
+            "match_id": "m3",
+            "window_start_ms": 0,
+            "window_end_ms": 600000,
+            "candidate_count": 0,
+            "reviewed_count": 0,
+            "suspicious_count": 0,
+            "normal_count": 0,
+            "needs_raw_fallback_count": 0,
+            "top_signals": [],
+            "throttle_total": 0,
+            "challenge_fail_total": 0,
+            "tier_breakdown": {},
+            "action_breakdown": {},
+        })
+
+        self.assertIn("No repeated suspicious signal", lines[1])
+        # Line 3 falls back to raw-context message when no breakdown data
+        self.assertIn("requiring additional raw context", lines[2])
 
 
 if __name__ == "__main__":
