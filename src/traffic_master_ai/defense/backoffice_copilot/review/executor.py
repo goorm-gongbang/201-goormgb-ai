@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable
+
+LOGGER = logging.getLogger(__name__)
 
 from ..core.issues import PipelineIssue
 from ..core.models import LlmReviewInput, SessionAnalysis, SessionReviewResult
@@ -88,23 +91,59 @@ def _execute_one_review(
     )
 
     if llm_review_adapter is None:
+        LOGGER.warning(
+            "post_review_review_fallback_applied match_id=%s window_start_ms=%s "
+            "window_end_ms=%s session_id=%s fallback_reason=adapter_missing "
+            "fallback_mode=deterministic degraded=true",
+            match_id,
+            window_start_ms,
+            window_end_ms,
+            session_analysis.session_id,
+        )
         return build_fallback_review_result(session_analysis, reason="adapter_missing")
 
     try:
         raw_output = llm_review_adapter(llm_input)
         parsed_output = parse_llm_review_output(raw_output)
     except TimeoutError:
-        return build_fallback_review_result(session_analysis, reason="adapter_timeout")
+        fallback_reason = "adapter_timeout"
+        LOGGER.warning(
+            "post_review_review_fallback_applied match_id=%s window_start_ms=%s "
+            "window_end_ms=%s session_id=%s fallback_reason=%s "
+            "fallback_mode=deterministic degraded=true",
+            match_id,
+            window_start_ms,
+            window_end_ms,
+            session_analysis.session_id,
+            fallback_reason,
+        )
+        return build_fallback_review_result(session_analysis, reason=fallback_reason)
     except LlmOutputValidationError as exc:
-        return build_fallback_review_result(
-            session_analysis,
-            reason=f"output_validation_failed:{exc}",
+        fallback_reason = f"output_validation_failed:{exc}"
+        LOGGER.warning(
+            "post_review_review_fallback_applied match_id=%s window_start_ms=%s "
+            "window_end_ms=%s session_id=%s fallback_reason=%s "
+            "fallback_mode=deterministic degraded=true",
+            match_id,
+            window_start_ms,
+            window_end_ms,
+            session_analysis.session_id,
+            fallback_reason,
         )
+        return build_fallback_review_result(session_analysis, reason=fallback_reason)
     except Exception as exc:
-        return build_fallback_review_result(
-            session_analysis,
-            reason=f"adapter_error:{type(exc).__name__}",
+        fallback_reason = f"adapter_error:{type(exc).__name__}"
+        LOGGER.warning(
+            "post_review_review_fallback_applied match_id=%s window_start_ms=%s "
+            "window_end_ms=%s session_id=%s fallback_reason=%s "
+            "fallback_mode=deterministic degraded=true",
+            match_id,
+            window_start_ms,
+            window_end_ms,
+            session_analysis.session_id,
+            fallback_reason,
         )
+        return build_fallback_review_result(session_analysis, reason=fallback_reason)
 
     return (
         SessionReviewResult(

@@ -837,7 +837,111 @@ tm-ai-post-review --dry-run
 
 ---
 
-## 11. 확인 파일
+## 11. Post-Review Observability (단계별 로그 가이드)
+
+### 11.1 추가된 structured log 목록
+
+아래 log key는 Grafana/Loki에서 `{app="tm-ai-post-review"}` 필터와 함께 grep 가능하다.
+
+| 단계 | 로그 키 | 수준 | 설명 |
+|------|---------|------|------|
+| input_load | `post_review_input_load_start` | INFO | ClickHouse/fixture 읽기 시작 |
+| input_load | `post_review_input_load_complete` | INFO | 읽기 완료, `event_count` 포함 |
+| input_load | `post_review_input_load_failed` | ERROR | 읽기 실패, `exception_type` / `exception_message` 포함 |
+| candidate_select | `post_review_candidate_select_start` | INFO | 후보 선정 시작, `event_count` |
+| candidate_select | `post_review_candidate_select_complete` | INFO | 선정 완료, `session_count` / `candidate_count` |
+| candidate_select | `post_review_candidate_select_failed` | ERROR | 선정 실패 |
+| session_review | `post_review_session_review_start` | INFO | 세션 분석 시작, `candidate_count` |
+| session_review | `post_review_session_review_complete` | INFO | 분석 완료, `analysis_count` |
+| session_review | `post_review_session_review_failed` | ERROR | 분석 실패 |
+| llm_review | `post_review_llm_review_start` | INFO | LLM 리뷰 시작, `llm_present` 포함 |
+| llm_review | `post_review_llm_adapter_missing` | WARNING | LLM key 없음 → deterministic fallback 예정 |
+| llm_review | `post_review_llm_review_complete` | INFO | 리뷰 완료, `fallback_count` |
+| llm_review | `post_review_llm_review_failed` | ERROR | 리뷰 예외 발생 |
+| llm_review | `post_review_review_fallback_applied` | WARNING | 세션 단위 fallback 적용됨, `fallback_reason` / `degraded=true` |
+| summary_generate | `post_review_summary_generate_start` | INFO | 요약 생성 시작 |
+| summary_generate | `post_review_summary_generate_complete` | INFO | 요약 완료, `fallback_applied` |
+| summary_generate | `post_review_summary_generate_failed` | ERROR | 요약 예외 발생 |
+| summary_generate | `post_review_summary_fallback_applied` | WARNING | 템플릿 fallback 적용됨, `degraded=true` |
+| output_persist | `post_review_output_build_start` | INFO | 출력 빌드 시작, `candidate_count` / `review_count` |
+| output_persist | `post_review_db_persist_start` | INFO | `save_bundle()` 호출 직전 |
+| output_persist | `post_review_db_persist_success` | INFO | `save_bundle()` 성공, `session_result_row_count` |
+| output_persist | `post_review_db_persist_failed` | ERROR | `save_bundle()` 실패, `exception_type` / `exception_message` |
+| output_persist | `post_review_output_persist_failed` | ERROR | output stage 전체 예외 |
+| output_persist | `post_review_output_persist_complete` | INFO | 출력 완료, `session_result_row_count` / `final_status` |
+| summary | `post_review_summary` | INFO | 파이프라인 최종 요약 (항상 마지막에 출력) |
+
+### 11.2 post_review_summary 필드 해석
+
+`post_review_summary` 로그에서 아래 필드를 확인하면 실패 원인을 바로 좁힐 수 있다.
+
+| 필드 | 의미 |
+|------|------|
+| `status` | CLI 결과: `completed` / `failed` / `no_input` |
+| `failure_stage` | 실패 단계: `input_load` / `candidate_select` / `session_review` / `summary_generate` / `output_persist` / `unknown` |
+| `error_code` | 첫 번째 에러 코드 |
+| `llm_used` | LLM API key가 존재하고 어댑터가 생성됐는지 여부 |
+| `fallback_used` | `llm_review_fallback_applied` 또는 `window_summary_fallback_applied` 경고가 발생했는지 |
+| `degraded` | fallback이 적용된 degraded 상태인지 |
+| `db_persist_attempted` | `save_bundle()` 호출 시도 여부 |
+| `db_persist_succeeded` | `save_bundle()` 성공 여부 |
+| `warning_codes` | 전체 경고 코드 목록 |
+| `error_codes` | 전체 에러 코드 목록 |
+
+### 11.3 운영자 Grafana/Loki 검색 예시
+
+**실패 원인 파악 (1차 조회):**
+```
+{app="tm-ai-post-review"} |= "post_review_summary" | logfmt | status="failed"
+```
+→ `failure_stage`, `error_code`, `db_persist_attempted`, `db_persist_succeeded` 한 줄로 확인 가능.
+
+**DB 저장 실패 확인:**
+```
+{app="tm-ai-post-review"} |= "post_review_db_persist_failed"
+```
+→ `exception_type`, `exception_message`로 DB 오류 상세 확인.
+
+**LLM fallback 적용 여부:**
+```
+{app="tm-ai-post-review"} |= "post_review_review_fallback_applied"
+```
+→ `fallback_reason`으로 원인 확인 (`adapter_missing` / `adapter_timeout` 등).
+
+**degraded 상태 확인:**
+```
+{app="tm-ai-post-review"} |= "post_review_summary" | logfmt | degraded="true"
+```
+
+### 11.4 fallback vs failed 구분 기준
+
+- **fallback (WARNING, degraded=true)**: 파이프라인이 완료됐지만 LLM 대신 rule-based 판정 또는 템플릿 요약을 사용했음. `status=completed`, DB 저장은 성공.
+- **failed (ERROR)**: 파이프라인이 중단됐음. `status=failed`, `db_persist_succeeded=false`.
+- **no_input**: candidate row가 0개. DB 저장 없음 (`db_persist_attempted=false`).
+
+### 11.5 표준 error_code / warning_code 목록
+
+**error_code:**
+- `clickhouse_read_failed` — ClickHouse 읽기 실패
+- `candidate_selection_failed` — 후보 선정 실패
+- `llm_review_failed` — LLM 리뷰 예외
+- `summary_generation_failed` — 요약 생성 예외
+- `output_build_failed` — 출력 빌드 실패
+- `db_persistence_failed` — save_bundle 실패
+- `run_status_persistence_failed` — 최종 status 저장 실패
+- `backend_delivery_failed` — backend 전달 실패
+- `validation_failed` — validation 실패
+- `workflow_node_failed` — 워크플로우 노드 예외 (context에 `node_name` 포함)
+- `unexpected_exception` — 분류되지 않은 예외
+
+**warning_code:**
+- `llm_review_fallback_applied` — 세션 단위 LLM → rule-based fallback 적용
+- `window_summary_fallback_applied` — 창 요약 LLM → 템플릿 fallback 적용
+- `backend_delivery_failed_partial` — 일부 세션 backend 전달 실패
+
+---
+
+## 12. 확인 파일
 
 - `src/traffic_master_ai/defense/storage_env.py`
 - `src/traffic_master_ai/defense/api/etl_worker.py`

@@ -80,6 +80,8 @@ class PostReviewGraphState:
     backend_response: BackendResponse | None = None
     warnings: list[PipelineIssue] = field(default_factory=list)
     errors: list[PipelineIssue] = field(default_factory=list)
+    db_persist_attempted: bool = False
+    db_persist_succeeded: bool = False
 
     @classmethod
     def from_input(cls, run_input: PostReviewRunInput) -> PostReviewGraphState:
