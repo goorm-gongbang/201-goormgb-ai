@@ -212,29 +212,26 @@ sequenceDiagram
 
 ### 티켓 예약 흐름
 
-```mermaid
-flowchart TD
-  A[경기 목록 조회] --> B[큐 입장\n/api/queue/]
-  B --> C[좌석 선택\n/api/seats/]
-  C --> D[좌석 홀드\n/api/holds/]
-  D --> E[결제\n/api/payments/]
-  E --> F{결제 완료}
-  F -->|성공| G[예약 확정\n/api/bookings/]
-  F -->|방어 차단| H[/terminal 종단 페이지]
-```
+1. 경기 목록 조회
+2. 큐 입장 — `POST /api/queue/`
+3. 좌석 선택 — `GET /api/seats/`
+4. 좌석 홀드 — `POST /api/holds/`
+5. 결제 — `POST /api/payments/`
+6. 예약 확정 — `POST /api/bookings/` (성공 시)
+7. `/terminal` 종단 처리 (방어 차단 시)
 
 ### AI Defense 의사결정 흐름 (D0 MVP)
 
 ```mermaid
 flowchart TD
-  T[텔레메트리 수신] --> A[analyzer\n증거 분석]
-  A --> P[planner\n액션 결정]
+  T[텔레메트리 수신] --> A[analyzer 증거 분석]
+  A --> P[planner 액션 결정]
   P --> ACT{액션}
   ACT -->|NONE| PASS[통과]
   ACT -->|CHALLENGE| CH[VQA Catch Ball 발행]
   ACT -->|THROTTLE| TH[T1/T2 딜레이 적용]
   ACT -->|GATE| GT[고가치 경로 재검증]
-  ACT -->|BLOCK| BL[차단 + /terminal]
+  ACT -->|BLOCK| BL[차단 및 terminal 종단]
   CH --> VER[챌린지 결과 검증]
   VER --> P
 ```
